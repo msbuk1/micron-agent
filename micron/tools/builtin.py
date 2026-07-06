@@ -189,7 +189,8 @@ def current_time(timezone: str = "UTC") -> dict:
 def save_memory(text: str, tags: list[str] = None, importance: int = 3) -> dict:
     """Save something to long-term memory."""
     import uuid
-    memory_dir = Path(os.getenv("MICRON_WORKDIR", os.getcwd())) / "context" / "memory"
+    context_dir = os.getenv("MICRON_CONTEXT_DIR", str(Path(os.getenv("MICRON_WORKDIR", os.getcwd())) / "context"))
+    memory_dir = Path(context_dir) / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
     memory_file = memory_dir / "memories.jsonl"
 
@@ -222,7 +223,8 @@ def search_memory(query: str = "", text: str = "", k: int = 5, tags: str = "") -
     actual_query = text or query
     if not actual_query:
         return {"count": 0, "results": [], "error": "No query provided"}
-    memory_dir = Path(os.getenv("MICRON_WORKDIR", os.getcwd())) / "context" / "memory"
+    context_dir = os.getenv("MICRON_CONTEXT_DIR", str(Path(os.getenv("MICRON_WORKDIR", os.getcwd())) / "context"))
+    memory_dir = Path(context_dir) / "memory"
     memory = Memory(memory_dir)
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
     results = memory.search(actual_query, k=k, tags=tag_list)
@@ -235,8 +237,8 @@ def search_memory(query: str = "", text: str = "", k: int = 5, tags: str = "") -
 def write_knowledge(title: str, content: str, tags: str = "") -> dict:
     """Save a knowledge document (markdown) to the knowledge folder."""
     import re
-    workdir = Path(os.getenv("MICRON_WORKDIR", os.getcwd()))
-    knowledge_dir = workdir / "context" / "knowledge"
+    context_dir = os.getenv("MICRON_CONTEXT_DIR", str(Path(os.getenv("MICRON_WORKDIR", os.getcwd())) / "context"))
+    knowledge_dir = Path(context_dir) / "knowledge"
     knowledge_dir.mkdir(parents=True, exist_ok=True)
 
     slug = re.sub(r"[^a-zA-Z0-9_-]", "_", title.lower().replace(" ", "_"))[:50]

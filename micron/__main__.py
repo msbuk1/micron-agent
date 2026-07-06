@@ -84,6 +84,10 @@ def load_config(args: argparse.Namespace | None = None, config_path: str = None)
         os.environ["FIRECRAWL_URL"] = config["firecrawl_url"]
     if "MICRON_WORKDIR" not in os.environ:
         os.environ["MICRON_WORKDIR"] = config["workdir"]
+    if "MICRON_CONTEXT_DIR" not in os.environ:
+        # Resolve context_dir relative to the project root
+        project_root = Path(__file__).parent.parent
+        os.environ["MICRON_CONTEXT_DIR"] = str(project_root / config["context_dir"])
     if "MICRON_PROVIDER" not in os.environ:
         os.environ["MICRON_PROVIDER"] = selected
 
