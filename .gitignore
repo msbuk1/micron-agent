@@ -1,0 +1,24 @@
+# micron venv
+.venv/
+
+# Model files
+models/*.gguf
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# User data (memory, sessions)
+context/memory/
+context/sessions/
