@@ -1,68 +1,64 @@
 # micron — Lightweight AI Agent
 
-A minimal, file-based AI agent with **Obsidian-style memory**, **Markdown skills**, and **tool calling** — designed to run on 1B models on CPU.
+A minimal, file-based AI agent with **Obsidian-style memory**, **Markdown skills**, **knowledge vault**, and **tool calling** — designed to run on 1B-12B models via llama.cpp, LM Studio, or cloud APIs.
 
 ## Features
 
-- 📁 **File-based memory** — JSONL storage, human-editable, git-friendly
+- 📁 **File-based memory** — JSONL storage, TF-IDF search, human-editable
 - 📚 **Markdown skills** — Drop `.md` files in `context/skills/` with YAML frontmatter
+- 📖 **Knowledge vault** — Store reference docs in `context/knowledge/`, auto-injected by query relevance
 - 🎭 **Composable personas** — Stack `.md` files in `context/persona/` for layered personality
-- 🛠️ **Tool calling** — OpenAI-compatible function calling with write-confirmation
-- ⚡ **Local-first** — Runs on SmolLM2-1.7B, Qwen2.5-1.5B, Gemma-2-2B via llama.cpp/Ollama
-- 🔌 **Extensible** — ~300 lines core, zero framework lock-in
+- 🛠️ **13 tools** — web search, files, shell, math, Python eval, memory, knowledge
+- 🔀 **Provider switching** — llamacpp, LM Studio, OpenRouter, OpenAI, Ollama, vLLM
+- 💾 **Session persistence** — Auto-logs conversations to `context/sessions/`
+- 🖥️ **Interactive CLI** — 15 slash commands, thinking indicator, history
+- 🌐 **API server** — FastAPI + SSE streaming
+- 🛡️ **Security** — Blocklists for dangerous commands, directory traversal guards
+- ⚡ **Local-first** — Runs on Gemma4 12B, Qwen3.5, MiniCPM 1B, or any OpenAI-compatible API
 
 ## Quick Start
 
 ```bash
-# 1. Clone and setup venv
-git clone <repo-url> micron && cd micron
+# 1. Clone and setup
+git clone https://github.com/msbuk1/micron-agent.git && cd micron-agent
 python3 -m venv .venv
 source .venv/bin/activate
+pip install -e ".[dev,server]"
 
-# 2. Install
-pip install -e .[dev,server]
+# 2. Run CLI
+python -m micron "What time is it?"
 
-# 3. Download a model (SmolLM2-1.7B recommended)
-mkdir -p models
-wget -O models/smollm2-1.7b-q4_k_m.gguf \
-  https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct-q4_k_m.gguf
+# 3. Interactive mode
+python -m micron -i
 
-# 4. Run CLI
-python -m micron "What's the weather in London?"
-
-# 5. Or start API server
-python -m micron --server
+# 4. Use LM Studio (or any OpenAI-compatible API)
+python -m micron --provider lmstudio "Search for python tips"
 ```
 
-## Project Structure
+## Configuration
 
+Edit `micron.yaml` to configure providers:
+
+```yaml
+default_provider: lmstudio
+
+providers:
+  llamacpp:
+    model: models/MiniCPM5-1B-Q8_0.gguf
+  lmstudio:
+    api_key: no_key
+    base_url: http://[IP_ADDRESS]:1234/v1
+    model: gemma-4-12b-it-qat
+  openrouter:
+    api_key: <your-api-key>
+    base_url: https://openrouter.ai/api/v1
+    model: openrouter/auto
 ```
-micron/
-├── context/
-│   ├── skills/        # Tool definitions (Markdown + YAML frontmatter)
-│   ├── knowledge/     # RAG documents (auto-indexed)
-│   ├── memory/        # Long-term memory (memory.jsonl)
-│   └── persona/       # Personality layers (concatenated)
-├── micron/
-│   ├── __init__.py
-│   ├── __main__.py    # CLI entry point
-│   ├── agent.py       # Core agent (~300 lines)
-│   ├── memory.py      # JSONL + TF-IDF memory (from agent-memory-lite)
-│   ├── skills.py      # Skill loader (Markdown + YAML)
-│   ├── tools/
-│   │   ├── __init__.py
-│   │   ├── builtin.py # Built-in tools (web search, files, calc, code)
-│   │   └── registry.py
-│   ├── llm.py         # llama.cpp / Ollama / OpenAI backends
-│   ├── prompt.py      # Prompt builder
-│   └── server.py      # FastAPI + SSE server
-├── models/            # GGUF model files (gitignored)
-├── tests/
-│   ├── test_memory.py
-│   ├── test_skills.py
-│   └── test_registry.py
-├── pyproject.toml
-└── README.md
+
+Override via CLI or env vars:
+```bash
+python -m micron --provider openrouter "query"
+MICRON_PROVIDER=lmstudio python -m micron "query"
 ```
 
 ## CLI Usage
@@ -74,118 +70,112 @@ python -m micron "What is 2+2?"
 # Interactive mode
 python -m micron -i
 
-# List available tools
+# List tools
 python -m micron --list-tools
 
-# List memories
+# Memory management
+python -m micron --add-memory "User prefers dark mode"
+python -m micron --search-memory "dark mode"
 python -m micron --list-memories
 
-# Add a memory
-python -m micron --add-memory "User prefers dark mode"
-
-# Search memories
-python -m micron --search-memory "dark mode"
-
-# Start server
-python -m micron --server
-
-# Provider options
-python -m micron --provider ollama --model smollm2:1.7b "Hello"
-python -m micron --provider openrouter --model mistralai/mistral-7b-instruct "Hello"
+# Server mode
+python -m micron --server --port 8000
 ```
+
+### Interactive Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all commands |
+| `/exit` | Exit interactive mode |
+| `/clear` | Clear conversation history |
+| `/mem` | List recent memories |
+| `/tools` | Show available tools |
+| `/model` | Show current model info |
+| `/providers` | List configured providers |
+| `/unload` | Unload model from RAM |
+| `/reload` | Reload skills from disk |
+| `/sessions` | List recent sessions |
+| `/resume ID` | Resume a previous session |
+| `/last` | Show last assistant response |
+
+## Tools (13)
+
+| Tool | Description | Write? |
+|------|-------------|--------|
+| `web_search` | Search web (Firecrawl + DuckDuckGo fallback) | No |
+| `fetch_url` | Fetch and extract URL content | No |
+| `read_file` | Read file (supports line ranges) | No |
+| `write_file` | Write/append file (security guardrails) | ✅ |
+| `list_files` | List directory contents | No |
+| `run_command` | Run shell command (30s timeout, blocklist) | ✅ |
+| `calculate` | Evaluate math expression | No |
+| `python_eval` | Execute Python code (sandboxed) | ✅ |
+| `current_time` | Get current date/time | No |
+| `save_memory` | Save fact to long-term memory | No |
+| `search_memory` | Search saved memories | No |
+| `write_knowledge` | Write document to knowledge vault | ✅ |
+| `search_knowledge` | Search knowledge documents | No |
 
 ## API Server
 
 ```bash
-# Start server (default: http://localhost:8000)
 python -m micron --server
 
 # Endpoints
 GET  /health              # Health check
 GET  /tools               # List tools
-POST /chat                # Chat with agent (SSE stream)
+POST /chat                # Chat (SSE stream or JSON)
 POST /memory              # Add memory
 GET  /memory              # List memories
 POST /memory/search       # Search memories
 DELETE /memory/{id}       # Delete memory
-POST /skills/reload       # Reload skills from disk
+POST /skills/reload       # Reload skills
+```
 
-# Example chat request
+```bash
+# Example
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "Hello, what can you do?", "stream": false}'
+  -d '{"message": "Hello", "stream": false}'
 ```
 
-## Skills
+## Project Structure
 
-Skills are Markdown files with YAML frontmatter in `context/skills/`:
-
-```markdown
----
-name: web_search
-description: Search the web for current information
-write: false
-module: micron.tools.builtin
-parameters:
-  type: object
-  properties:
-    query:
-      type: string
-      description: Search query
-    max_results:
-      type: integer
-      default: 5
----
-
-# Implementation in micron/tools/builtin.py
-def web_search(query: str, max_results: int = 5) -> list[dict]:
-    ...
 ```
-
-### Built-in Tools
-
-| Tool | Description | Write? |
-|------|-------------|--------|
-| `web_search` | Search DuckDuckGo | No |
-| `fetch_url` | Fetch and extract URL content | No |
-| `read_file` | Read file from workspace | No |
-| `write_file` | Write file to workspace | Yes |
-| `list_files` | List files in directory | No |
-| `run_command` | Run shell command | Yes |
-| `calculate` | Evaluate math expression | No |
-| `python_eval` | Execute Python code | Yes |
-| `current_time` | Get current date/time | No |
-
-## Memory
-
-Memory is stored as JSONL in `context/memory/memory.jsonl`:
-
-```json
-{"id": "a1b2c3d4e5f6", "timestamp": "2026-01-15T10:30:00+00:00", "text": "User prefers dark mode", "tags": ["preference", "ui"], "importance": 3}
+micron/
+├── context/
+│   ├── skills/        # Tool definitions (Markdown + YAML)
+│   ├── knowledge/     # Reference docs (auto-injected by query)
+│   ├── memory/        # Long-term memory (memories.jsonl)
+│   ├── sessions/      # Conversation logs (JSONL)
+│   └── persona/       # Personality layers
+├── micron/
+│   ├── __main__.py    # CLI + interactive mode
+│   ├── agent.py       # Core agent loop
+│   ├── llm.py         # LLM backends (llamacpp, OpenAI, Ollama)
+│   ├── memory.py      # JSONL + TF-IDF memory
+│   ├── prompt.py      # Prompt builder (persona, knowledge, skills)
+│   ├── sessions.py    # Session persistence
+│   ├── skills.py      # Skill loader
+│   ├── server.py      # FastAPI + SSE server
+│   └── tools/
+│       ├── builtin.py # 13 built-in tools
+│       └── registry.py
+├── tests/
+│   ├── test_memory.py
+│   ├── test_skills.py
+│   ├── test_registry.py
+│   └── test_server.py
+├── micron.yaml        # Provider config
+└── pyproject.toml
 ```
-
-Search uses TF-IDF + time-decay + importance scoring (pure Python, zero deps).
 
 ## Testing
 
 ```bash
-# Run all tests
-python -m pytest tests/ -v
-
-# Run specific test file
-python -m pytest tests/test_memory.py -v
+python -m pytest tests/ -v        # 26 tests
 ```
-
-## LLM Providers
-
-| Provider | Flag | Notes |
-|----------|------|-------|
-| llama.cpp | `--provider llamacpp` | Default, local GGUF files |
-| Ollama | `--provider ollama` | Requires Ollama running |
-| OpenRouter | `--provider openrouter` | Cloud API |
-| OpenAI | `--provider openai` | Cloud API |
-| vLLM | `--provider vllm` | Self-hosted |
-| LM Studio | `--provider lmstudio` | Desktop app |
 
 ## License
 
