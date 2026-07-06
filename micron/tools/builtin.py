@@ -134,41 +134,49 @@ def write_file(path: str, content: str, mode: str = "w") -> str:
     except Exception as e:
         return f"Error writing file: {e}"
 
-def list_files(path: str = ".", pattern: str = "**/*", recursive: bool = True) -> dict:
-    """List files in a directory (recursive by default)."""
+def list_files(path: str = ".") -> str:
+    """List files and directories in the specified path."""
     try:
-        p = _resolve_path(path)
-        if not p.exists():
-            return {"error": f"Path not found: {p}"}
-        if p.is_file():
-            return {"total": 1, "files": [str(p.relative_to(_get_workdir()) if p.is_relative_to(_get_workdir()) else str(p))]}
-        files = []
-        ignore = {"__pycache__", ".git", ".venv", "node_modules", ".hg", ".svn", ".idea", ".vscode", "models"}
-        for f in sorted(p.glob(pattern)):
-            if any(part.startswith(".") and part != "." for part in f.relative_to(p).parts):
-                continue
-            if f.name in ignore or any(ign in f.parents for ign in ignore):
-                continue
-            if f.is_file():
-                try:
-                    rel = f.relative_to(_get_workdir())
-                    files.append(str(rel))
-                except ValueError:
-                    files.append(str(f))
-        return {"total": len(files), "files": files[:500]}
-    except Exception as e:
-        return {"error": str(e)}
+        workdir = _get_workdir()
+        target_path = (workdir / path).resolve()
 
-def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> dict:
-    """Run a shell command."""
-    wd = _resolve_path(cwd)
-    try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout, cwd=wd)
-        return {"cmd": cmd, "returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
-    except subprocess.TimeoutExpired:
-        return {"cmd": cmd, "returncode": -1, "stdout": "", "stderr": f"Timed out after {timeout}s"}
+        if not str(target_path).startswith(str(workdir.resolve())):
+            return "Error: Security violation. Access denied."
+
+        if not target_path.exists():
+            return f"Error: Path '{path}' does not exist."
+
+        items = sorted(os.listdir(target_path))
+        return "\n".join(items) if items else "Directory is empty."
     except Exception as e:
-        return {"cmd": cmd, "returncode": -1, "stdout": "", "stderr": str(e)}
+        return f"Error listing directory: {e}"
+
+def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
+    """Run a shell command and return its output."""
+    # Block dangerous commands
+    blocked = ["rm -rf", "mkfs", "dd if=", ":(){ :|:& };:", "chmod -R 777", "> /dev/sd"]
+    cmd_lower = cmd.lower().strip()
+    for pattern in blocked:
+        if pattern in cmd_lower:
+            return f"Error: Command blocked for safety: '{pattern}' is not allowed."
+
+    try:
+        workdir = _resolve_path(cwd)
+
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True,
+            timeout=timeout, cwd=workdir,
+        )
+
+        output = result.stdout
+        if result.stderr:
+            output += f"\n[STDERR]\n{result.stderr}"
+
+        return output.strip() if output.strip() else "Command executed successfully with no output returned."
+    except subprocess.TimeoutExpired:
+        return f"Error: Command timed out after {timeout} seconds."
+    except Exception as e:
+        return f"Error executing command: {e}"
 
 def calculate(expression: str) -> dict:
     """Evaluate a math expression."""
@@ -178,9 +186,19 @@ def calculate(expression: str) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-def python_eval(code: str) -> dict:
+def python_eval(code: str) -> str:
     """Execute Python code and return the result."""
-    namespace = {"json": json, "datetime": datetime, "Path": Path, "requests": requests, "BeautifulSoup": BeautifulSoup}
+    # Block dangerous operations
+    blocked = ["import os", "import subprocess", "import shutil", "__import__", "open(", "exec(", "eval("]
+    code_lower = code.lower().strip()
+    for pattern in blocked:
+        if pattern in code_lower:
+            return f"Error: Code blocked for safety: '{pattern}' is not allowed."
+
+    if len(code) > 5000:
+        return "Error: Code too long (max 5000 characters)."
+
+    namespace = {"json": json, "datetime": datetime, "Path": Path}
     import io
     old_stdout = sys.stdout
     sys.stdout = io.StringIO()
@@ -189,15 +207,15 @@ def python_eval(code: str) -> dict:
             result = eval(code, namespace, namespace)
             output = sys.stdout.getvalue()
             sys.stdout = old_stdout
-            return {"output": output, "result": repr(result)}
+            return output if output.strip() else repr(result)
         except SyntaxError:
             exec(code, namespace, namespace)
             output = sys.stdout.getvalue()
             sys.stdout = old_stdout
-            return {"output": output}
+            return output if output.strip() else "Code executed successfully."
     except Exception as e:
         sys.stdout = old_stdout
-        return {"error": str(e)}
+        return f"Error executing code: {e}"
 
 def current_time(timezone: str = "UTC") -> dict:
     """Get current date/time."""

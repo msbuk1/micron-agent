@@ -1,6 +1,6 @@
 ---
 name: web_search
-description: Search the web for current information
+description: Search the web for current information, documentation, or news
 write: false
 module: micron.tools.builtin
 parameters:
@@ -8,12 +8,10 @@ parameters:
   properties:
     query:
       type: string
-      description: Search query
+      description: "Search query — use keywords, not a question. Good: 'python pandas drop duplicates keep last'. Bad: 'how do i drop duplicate rows in pandas but keep the final one please'"
     max_results:
       type: integer
-      default: 5
+      description: Number of results to return (default 5)
+  required:
+    - query
 ---
-
-# Implementation in micron/tools/builtin.py
-def web_search(query: str, max_results: int = 5) -> list[dict]:
-    ...

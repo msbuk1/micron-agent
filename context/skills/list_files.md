@@ -1,6 +1,6 @@
 ---
 name: list_files
-description: List files in a directory
+description: List all files and directories in a specified path
 write: false
 module: micron.tools.builtin
 parameters:
@@ -8,10 +8,5 @@ parameters:
   properties:
     path:
       type: string
-      default: "."
-      description: Directory path
-    pattern:
-      type: string
-      default: "*"
-      description: Glob pattern
+      description: Directory path to list (relative to working directory, default ".")
 ---
