@@ -102,8 +102,8 @@
 | # | Task | Est. | Status |
 |---|------|------|--------|
 | 3.1 | Server mode integration tests | 2h | ⏳ |
-| 3.2 | GPU offload config (`n_gpu_layers`) | 1h | ⏳ |
-| 3.3 | Streaming output cleanup | 1h | ⏳ |
+| 3.2 | GPU offload config (`n_gpu_layers`) | 1h | ✅ DONE |
+| 3.3 | Streaming output cleanup | 1h | ✅ DONE |
 | 3.4 | Documentation updates | 1h | ⏳ |
 
 ---
