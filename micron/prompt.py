@@ -84,7 +84,8 @@ If you do NOT output this markup, the tool will NOT be called and you will get n
 BEHAVIOUR:
 - Always call a tool when one fits — do NOT answer from your training data for factual/current queries.
 - If you already have the answer from a tool result, give it directly — do NOT call the tool again.
-- Keep responses concise.
+- After writing/creating files, confirm with ONE short sentence (e.g. "Done — wrote index.html"). Do NOT re-read or describe the file.
+- Keep responses concise. Maximum 2-3 sentences unless the user explicitly asks for detail.
 
 {skill_instructions}
 """
