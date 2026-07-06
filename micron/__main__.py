@@ -466,26 +466,46 @@ def run_interactive(agent, no_stream: bool = False):
 
             # Confirm and execute write tools
             if pending_writes:
-                calls = []
+                # Ask user for confirmation
                 for w in pending_writes:
-                    calls.append(ToolCall(
-                        name=w["tool_name"], args=w.get("args", {}),
-                        call_id=w.get("call_id", f"confirm_{len(calls)}"),
-                        is_write=True,
-                    ))
-                if calls:
-                    result = ""
-                    confirmed_chunks = agent.run(query, history=history, confirm=True, pending_tool_calls=calls)
-                    for chunk in confirmed_chunks:
-                        if chunk["type"] == "text":
-                            result += chunk["content"]
-                        elif chunk["type"] == "tool_result":
-                            tool = chunk.get("name", "")
-                            print(f"\n[{tool} done]", file=sys.stderr)
-                        elif chunk["type"] == "tool_error":
-                            print(f"\n[Error] {chunk.get('error', 'unknown')}", file=sys.stderr)
-                        elif chunk["type"] == "done":
-                            break
+                    tool_name = w["tool_name"]
+                    args = w.get("args", {})
+                    if tool_name == "write_file":
+                        print(f"\n[Write file: {args.get('path', '?')}]", file=sys.stderr)
+                    elif tool_name == "write_knowledge":
+                        print(f"\n[Write knowledge: {args.get('title', '?')}]", file=sys.stderr)
+                    else:
+                        print(f"\n[Write: {tool_name}({args})]", file=sys.stderr)
+
+                try:
+                    confirm = input("Proceed? [Y/n] ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    confirm = "n"
+
+                if confirm in ("n", "no", ""):
+                    print("Cancelled.", file=sys.stderr)
+                    result = "Write operation cancelled by user."
+                else:
+                    calls = []
+                    for w in pending_writes:
+                        calls.append(ToolCall(
+                            name=w["tool_name"], args=w.get("args", {}),
+                            call_id=w.get("call_id", f"confirm_{len(calls)}"),
+                            is_write=True,
+                        ))
+                    if calls:
+                        result = ""
+                        confirmed_chunks = agent.run(query, history=history, confirm=True, pending_tool_calls=calls)
+                        for chunk in confirmed_chunks:
+                            if chunk["type"] == "text":
+                                result += chunk["content"]
+                            elif chunk["type"] == "tool_result":
+                                tool = chunk.get("name", "")
+                                print(f"\n[{tool} done]", file=sys.stderr)
+                            elif chunk["type"] == "tool_error":
+                                print(f"\n[Error] {chunk.get('error', 'unknown')}", file=sys.stderr)
+                            elif chunk["type"] == "done":
+                                break
 
             cleaned = _strip_thinking(result)
             if cleaned:

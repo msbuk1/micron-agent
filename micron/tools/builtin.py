@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -197,13 +198,13 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
     except Exception as e:
         return f"Error executing command: {e}"
 
-def calculate(expression: str) -> dict:
+def calculate(expression: str) -> str:
     """Evaluate a math expression."""
     try:
         result = eval(expression, {"__builtins__": {}}, {"abs": abs, "round": round, "int": int, "float": float, "min": min, "max": max, "sum": sum, "pow": pow, "sqrt": __import__("math").sqrt, "pi": __import__("math").pi})
-        return {"expression": expression, "result": result}
+        return str(result)
     except Exception as e:
-        return {"error": str(e)}
+        return f"Error: {e}"
 
 def python_eval(code: str) -> str:
     """Execute Python code and return the result."""
@@ -236,12 +237,12 @@ def python_eval(code: str) -> str:
         sys.stdout = old_stdout
         return f"Error executing code: {e}"
 
-def current_time(timezone: str = "UTC") -> dict:
+def current_time(timezone: str = "UTC") -> str:
     """Get current date/time."""
     now = datetime.utcnow() if timezone == "UTC" else datetime.now()
-    return {"iso": now.isoformat(), "date": now.date().isoformat(), "time": now.strftime("%H:%M:%S"), "timezone": timezone}
+    return now.strftime("%Y-%m-%d %H:%M:%S") + f" ({timezone})"
 
-def save_memory(text: str, tags: list[str] = None, importance: int = 3) -> dict:
+def save_memory(text: str, tags: list[str] = None, importance: int = 3) -> str:
     """Save something to long-term memory."""
     import uuid
     context_dir = os.getenv("MICRON_CONTEXT_DIR", str(Path(os.getenv("MICRON_WORKDIR", os.getcwd())) / "context"))
@@ -269,31 +270,33 @@ def save_memory(text: str, tags: list[str] = None, importance: int = 3) -> dict:
     with open(memory_file, "a") as f:
         f.write(json.dumps(entry) + "\n")
 
-    return {"id": entry["id"], "saved": True, "text": text, "tags": entry["tags"]}
+    return f"Saved: {text}"
 
 
-def search_memory(query: str = "", text: str = "", k: int = 5, tags: str = "") -> dict:
+def search_memory(query: str = "", text: str = "", k: int = 5, tags: str = "") -> str:
     """Search memories by keyword."""
     from micron.memory import Memory
     actual_query = text or query
     if not actual_query:
-        return {"count": 0, "results": [], "error": "No query provided"}
+        return "Error: No query provided."
     context_dir = os.getenv("MICRON_CONTEXT_DIR", str(Path(os.getenv("MICRON_WORKDIR", os.getcwd())) / "context"))
     memory_dir = Path(context_dir) / "memory"
     memory = Memory(memory_dir)
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
     results = memory.search(actual_query, k=k, tags=tag_list)
-    return {
-        "count": len(results),
-        "results": [{"id": r.id, "text": r.text, "tags": r.tags, "importance": r.importance, "timestamp": r.timestamp} for r in results],
-    }
+    if not results:
+        return "No memories found."
+    lines = []
+    for r in results:
+        tags_str = " ".join(f"#{t}" for t in r.tags) if r.tags else ""
+        lines.append(f"[{r.id[:8]}] {r.text} {tags_str}")
+    return "\n".join(lines)
 
 
-def write_knowledge(title: str, content: str, tags: str = "") -> dict:
+def write_knowledge(title: str, content: str, tags: str = "") -> str:
     """Save a knowledge document (markdown) to the knowledge folder."""
-    import re
-    context_dir = os.getenv("MICRON_CONTEXT_DIR", str(Path(os.getenv("MICRON_WORKDIR", os.getcwd())) / "context"))
-    knowledge_dir = Path(context_dir) / "knowledge"
+    workdir = Path(os.getenv("MICRON_WORKDIR", os.getcwd()))
+    knowledge_dir = workdir / "context" / "knowledge"
     knowledge_dir.mkdir(parents=True, exist_ok=True)
 
     slug = re.sub(r"[^a-zA-Z0-9_-]", "_", title.lower().replace(" ", "_"))[:50]
@@ -312,7 +315,59 @@ def write_knowledge(title: str, content: str, tags: str = "") -> dict:
     content += tag_line
 
     path.write_text(content)
-    return {"path": str(path), "slug": slug, "size": len(content), "saved": True}
+    return f"Saved: {path}"
+
+
+def search_knowledge(query: str = "", text: str = "") -> str:
+    """Search knowledge documents by keyword."""
+    actual_query = text or query
+    if not actual_query:
+        return "Error: No query provided."
+
+    workdir = Path(os.getenv("MICRON_WORKDIR", os.getcwd()))
+    knowledge_dir = workdir / "context" / "knowledge"
+    if not knowledge_dir.exists():
+        return "No knowledge documents found."
+
+    results = []
+    query_lower = actual_query.lower()
+    query_words = set(query_lower.split())
+
+    for f in sorted(knowledge_dir.glob("*.md")):
+        try:
+            content = f.read_text(encoding="utf-8")
+            content_lower = content.lower()
+
+            # Score: count matching words
+            score = sum(1 for word in query_words if word in content_lower)
+            if score == 0:
+                continue
+
+            # Extract relevant snippet (first match context)
+            snippet = ""
+            for word in query_words:
+                idx = content_lower.find(word)
+                if idx >= 0:
+                    start = max(0, idx - 100)
+                    end = min(len(content), idx + 200)
+                    snippet = content[start:end].strip()
+                    break
+
+            results.append({"file": f.name, "score": score, "snippet": snippet[:300]})
+        except Exception:
+            continue
+
+    if not results:
+        return f"No knowledge documents match '{actual_query}'."
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    lines = []
+    for r in results[:5]:
+        lines.append(f"--- {r['file']} (score: {r['score']}) ---")
+        lines.append(r["snippet"])
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 # Tool registry for easy importing
@@ -321,5 +376,5 @@ TOOLS = {
     "write_file": write_file, "list_files": list_files, "run_command": run_command,
     "calculate": calculate, "python_eval": python_eval, "current_time": current_time,
     "save_memory": save_memory, "search_memory": search_memory,
-    "write_knowledge": write_knowledge,
+    "write_knowledge": write_knowledge, "search_knowledge": search_knowledge,
 }
