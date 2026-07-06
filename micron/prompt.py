@@ -102,7 +102,7 @@ BEHAVIOUR:
     def build_system_prompt(self, query: str) -> str:
         """Build the complete system prompt for a query."""
         persona = self._load_persona()
-        knowledge = self._load_knowledge()
+        knowledge = self._load_knowledge(query)
         skill_instructions = self._load_skill_instructions()
 
         return self.BASE_TEMPLATE.format(
@@ -126,23 +126,50 @@ BEHAVIOUR:
 
         return "\n\n".join(parts) if parts else "You are a helpful, concise AI assistant."
 
-    def _load_knowledge(self) -> str:
-        """Load and concatenate all knowledge files."""
+    def _load_knowledge(self, query: str = "") -> str:
+        """Load knowledge files, filtered by query relevance if provided."""
         knowledge_dir = self.context_dir / "knowledge"
         if not knowledge_dir.exists():
             return "(no knowledge files loaded)"
+
+        files = sorted(knowledge_dir.glob("*.md"))
+        if not files:
+            return "(no knowledge files loaded)"
+
+        # If query provided, score and filter files
+        if query:
+            query_words = set(query.lower().split())
+            scored = []
+            for f in files:
+                try:
+                    content = f.read_text().strip()
+                    if not content:
+                        continue
+                    content_lower = content.lower()
+                    score = sum(1 for word in query_words if word in content_lower)
+                    scored.append((score, f, content))
+                except Exception:
+                    continue
+            # Sort by score descending, include files with score > 0
+            scored.sort(key=lambda x: x[0], reverse=True)
+            files_with_content = [(f, c) for s, f, c in scored if s > 0]
+            if not files_with_content:
+                # Fallback: include all files if no matches
+                files_with_content = [(f, f.read_text().strip()) for f in files if f.read_text().strip()]
+        else:
+            files_with_content = [(f, f.read_text().strip()) for f in files if f.read_text().strip()]
 
         parts = []
         total_chars = 0
         max_chars = 8000
 
-        for f in sorted(knowledge_dir.glob("*.md")):
-            content = f.read_text().strip()
+        for f, content in files_with_content:
             if not content:
                 continue
             if total_chars + len(content) > max_chars:
-                remaining = len([x for x in knowledge_dir.glob("*.md")]) - len(parts)
-                parts.append(f"*({remaining} more knowledge files not shown — prompt budget limit)*")
+                remaining = len(files_with_content) - len(parts)
+                if remaining > 0:
+                    parts.append(f"*({remaining} more knowledge files not shown — prompt budget limit)*")
                 break
             parts.append(content)
             total_chars += len(content)
