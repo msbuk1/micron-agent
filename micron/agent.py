@@ -48,7 +48,11 @@ class MicronAgent:
         self.memory = Memory(self.context_dir / "memory")
         self.skills = SkillLoader(self.context_dir / "skills")
         self.tools = ToolRegistry()
-        self.llm = create_backend(config.provider, config.model, **config.llm_kwargs)
+        # Use pre-built backend if provided, otherwise create one
+        if "backend" in config.llm_kwargs:
+            self.llm = config.llm_kwargs.pop("backend")
+        else:
+            self.llm = create_backend(config.provider, config.model, **config.llm_kwargs)
         self.prompt_builder = PromptBuilder(self.context_dir, self.memory, self.skills)
 
         self.skills.load_all()

@@ -116,13 +116,16 @@ async def chat(request: ChatRequest):
         )
     else:
         # Non-streaming: collect full response
-        response_text = ""
-        events = []
-        for chunk in agent.run(request.message, history=request.history):
-            if chunk["type"] == "text":
-                response_text += chunk["content"]
-            events.append(chunk)
-        return {"response": response_text, "events": events}
+        try:
+            response_text = ""
+            events = []
+            for chunk in agent.run(request.message, history=request.history):
+                if chunk["type"] == "text":
+                    response_text += chunk["content"]
+                events.append(chunk)
+            return {"response": response_text, "events": events}
+        except Exception as e:
+            return {"error": str(e), "response": ""}
 
 
 @app.get("/health")
