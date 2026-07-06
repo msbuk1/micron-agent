@@ -1,6 +1,6 @@
 ---
 name: write_file
-description: Write a file to the workspace
+description: Write or append content to a file in the working directory
 write: true
 module: micron.tools.builtin
 parameters:
@@ -8,8 +8,14 @@ parameters:
   properties:
     path:
       type: string
-      description: Path to the file
+      description: Path to the file (relative to working directory)
     content:
       type: string
-      description: Content to write
+      description: The full content to write to the file
+    mode:
+      type: string
+      description: "Write mode: 'w' to overwrite/create, 'a' to append. Default 'w'."
+  required:
+    - path
+    - content
 ---

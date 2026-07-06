@@ -101,20 +101,39 @@ def _fetch_url_basic(url: str, max_chars: int = 8000) -> dict:
 
 def read_file(path: str) -> dict:
     """Read a text file."""
-    resolved = _resolve_path(path)
-    if not resolved.exists():
-        return {"error": f"File not found: {resolved}"}
     try:
-        return {"path": str(resolved), "content": resolved.read_text()}
-    except Exception as e:
-        return {"error": str(e)}
+        workdir = _get_workdir()
+        target_path = (workdir / path).resolve()
 
-def write_file(path: str, content: str) -> dict:
-    """Write content to a text file."""
-    resolved = _resolve_path(path)
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(content)
-    return {"path": str(resolved), "bytes": len(content)}
+        if not str(target_path).startswith(str(workdir.resolve())):
+            return {"error": "Security violation: cannot read outside the working directory."}
+
+        if not target_path.exists():
+            return {"error": f"File not found: {path}"}
+
+        content = target_path.read_text(encoding="utf-8")
+        return {"path": str(target_path.relative_to(workdir)), "content": content, "bytes": len(content)}
+    except Exception as e:
+        return {"error": f"Failed to read file: {e}"}
+
+def write_file(path: str, content: str, mode: str = "w") -> dict:
+    """Write or append content to a text file."""
+    try:
+        workdir = _get_workdir()
+        target_path = (workdir / path).resolve()
+
+        # Security: prevent writing outside workdir
+        if not str(target_path).startswith(str(workdir.resolve())):
+            return {"error": "Security violation: cannot write outside the working directory."}
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(target_path, mode, encoding="utf-8") as f:
+            f.write(content)
+
+        return {"path": str(target_path.relative_to(workdir)), "bytes": len(content), "mode": mode}
+    except Exception as e:
+        return {"error": f"Failed to write file: {e}"}
 
 def list_files(path: str = ".", pattern: str = "**/*", recursive: bool = True) -> dict:
     """List files in a directory (recursive by default)."""
