@@ -380,9 +380,24 @@ def create_skill(name: str, description: str, parameters: str = "", module: str 
     if not slug:
         return "Error: Invalid skill name."
 
+    # Read-only core protection
+    if slug in CORE_SKILLS:
+        return f"Error: '{slug}' is a core skill and cannot be overwritten."
+
     path = skills_dir / f"{slug}.md"
     if path.exists():
         return f"Error: Skill '{slug}' already exists. Use write_file to modify it."
+
+    # Linter guardrail: validate YAML before saving
+    if parameters:
+        try:
+            import yaml
+            test_yaml = f"parameters:\n{parameters}"
+            parsed = yaml.safe_load(test_yaml)
+            if not isinstance(parsed.get("parameters"), dict):
+                return "Error: parameters must be a valid YAML mapping."
+        except Exception as e:
+            return f"Error: Invalid YAML in parameters: {e}"
 
     lines = ["---"]
     lines.append(f"name: {slug}")
@@ -413,6 +428,61 @@ def create_skill(name: str, description: str, parameters: str = "", module: str 
     return f"Created skill: {path.relative_to(workdir)}\nRun /reload to activate it."
 
 
+# Core skills that cannot be overwritten
+CORE_SKILLS = {"web_search", "fetch_url", "read_file", "write_file", "list_files",
+               "run_command", "calculate", "python_eval", "current_time",
+               "save_memory", "search_memory", "write_knowledge", "search_knowledge",
+               "create_skill", "search_skill_library"}
+
+
+def search_skill_library(query: str = "", text: str = "") -> str:
+    """Search skill files by keyword. Returns matching skills with descriptions."""
+    actual_query = text or query
+    if not actual_query:
+        return "Error: No query provided."
+
+    workdir = _get_workdir()
+    skills_dir = workdir / "context" / "skills"
+    if not skills_dir.exists():
+        return "No skills found."
+
+    query_lower = actual_query.lower()
+    query_words = set(query_lower.split())
+    results = []
+
+    for f in sorted(skills_dir.glob("*.md")):
+        try:
+            content = f.read_text(encoding="utf-8")
+            content_lower = content.lower()
+            score = sum(1 for word in query_words if word in content_lower)
+            if score == 0:
+                continue
+
+            # Extract frontmatter description
+            desc = ""
+            in_frontmatter = False
+            for line in content.split("\n"):
+                if line.strip() == "---":
+                    in_frontmatter = not in_frontmatter
+                    continue
+                if in_frontmatter and line.startswith("description:"):
+                    desc = line.split(":", 1)[1].strip()
+                    break
+
+            results.append({"file": f.name, "score": score, "description": desc})
+        except Exception:
+            continue
+
+    if not results:
+        return f"No skills match '{actual_query}'."
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    lines = []
+    for r in results[:10]:
+        lines.append(f"  {r['file']}: {r['description']} (score: {r['score']})")
+    return "\n".join(lines)
+
+
 # Tool registry for easy importing
 TOOLS = {
     "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
@@ -420,5 +490,5 @@ TOOLS = {
     "calculate": calculate, "python_eval": python_eval, "current_time": current_time,
     "save_memory": save_memory, "search_memory": search_memory,
     "write_knowledge": write_knowledge, "search_knowledge": search_knowledge,
-    "create_skill": create_skill,
+    "create_skill": create_skill, "search_skill_library": search_skill_library,
 }
