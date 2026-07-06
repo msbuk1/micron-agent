@@ -3,6 +3,8 @@ import argparse
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from collections import Counter
 
@@ -11,6 +13,35 @@ import re
 
 from micron.agent import MicronAgent, AgentConfig, ToolCall, create_agent
 from micron.sessions import SessionLogger
+
+
+class ThinkingIndicator:
+    """Shows 'Thinking...' with growing dots while the agent processes."""
+
+    def __init__(self):
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=1)
+        # Clear the line
+        sys.stderr.write("\r" + " " * 40 + "\r")
+        sys.stderr.flush()
+
+    def _run(self):
+        dots = 0
+        while not self._stop.is_set():
+            dots = (dots % 3) + 1
+            sys.stderr.write(f"\rThinking{'.' * dots}  ")
+            sys.stderr.flush()
+            time.sleep(0.5)
 
 
 def _strip_thinking(text: str) -> str:
@@ -205,31 +236,52 @@ def main():
 
 def run_query(agent, query: str, no_stream: bool = False):
     """Run a single query and print results."""
+    thinking = ThinkingIndicator()
+    thinking.start()
+
     if no_stream:
         result = ""
         for chunk in agent.run(query):
             if chunk["type"] == "text":
+                if not result:
+                    thinking.stop()
                 result += chunk["content"]
             elif chunk["type"] == "tool_call":
+                thinking.stop()
                 print(f"\n[Tool: {chunk['tool_name']}] {chunk['tool_args']}", file=sys.stderr)
+                thinking.start()
             elif chunk["type"] == "tool_result":
+                thinking.stop()
                 print(f"\n[Result] {chunk['summary']}", file=sys.stderr)
+                thinking.start()
             elif chunk["type"] == "tool_error":
+                thinking.stop()
                 err = chunk.get("error", "unknown error")
                 print(f"\n[Error] {err}", file=sys.stderr)
+                thinking.start()
+        thinking.stop()
         print(_strip_thinking(result))
     else:
         result = ""
         for chunk in agent.run(query):
             if chunk["type"] == "text":
+                if not result:
+                    thinking.stop()
                 result += chunk["content"]
             elif chunk["type"] == "tool_call":
+                thinking.stop()
                 print(f"\n[Tool: {chunk['tool_name']}] {chunk['tool_args']}", file=sys.stderr)
+                thinking.start()
             elif chunk["type"] == "tool_result":
+                thinking.stop()
                 print(f"\n[Result] {chunk['summary']}", file=sys.stderr)
+                thinking.start()
             elif chunk["type"] == "tool_error":
+                thinking.stop()
                 err = chunk.get("error", "unknown error")
                 print(f"\n[Error] {err}", file=sys.stderr)
+                thinking.start()
+        thinking.stop()
         cleaned = _strip_thinking(result)
         print(cleaned)
 
@@ -382,23 +434,35 @@ def run_interactive(agent, no_stream: bool = False):
             logger.log_turn("user", query)
 
             # Normal query
+            thinking = ThinkingIndicator()
+            thinking.start()
             result = ""
             pending_writes = None
             for chunk in agent.run(query, history=history):
                 if chunk["type"] == "text":
+                    if not result:
+                        thinking.stop()
                     result += chunk["content"]
                 elif chunk["type"] == "tool_call":
+                    thinking.stop()
                     print(f"\n[Using: {chunk['tool_name']}]", file=sys.stderr)
+                    thinking.start()
                 elif chunk["type"] == "tool_result":
+                    thinking.stop()
                     tool = chunk.get("name", "")
                     print(f"\n[{tool} done]", file=sys.stderr)
+                    thinking.start()
                 elif chunk["type"] == "confirmation_required":
+                    thinking.stop()
                     pending_writes = chunk.get("pending_writes", [])
                     break
                 elif chunk["type"] == "tool_error":
+                    thinking.stop()
                     print(f"\n[Error] {chunk.get('error', 'unknown')}", file=sys.stderr)
+                    thinking.start()
                 elif chunk["type"] == "done":
                     break
+            thinking.stop()
 
             # Confirm and execute write tools
             if pending_writes:
