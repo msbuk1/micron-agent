@@ -48,8 +48,8 @@ BOUNDARY RULES:
 
 ARGUMENT RULES:
 - All parameters are passed as strings or numbers through tool markup.
-- `run_command` takes a `cmd` parameter with the exact shell command to run.
-- `read_file`, `write_file`, `list_files` take a `path` parameter. Relative paths resolve against the working directory.
+- `run_command` takes a `cmd` parameter with the exact shell command to run. You MUST include the cmd parameter.
+- `write_file` REQUIRES both `path` (filename) and `content` (file content). You MUST output both parameters.
 - `web_search` takes `query` (string) and `max_results` (integer, default 5).
 - `save_memory` takes `text` (string), optional `tags` (string, comma-separated), optional `importance` (integer 1-5).
 - `search_memory` takes `query` (string) — search the user's past statements, NOT the web.
@@ -66,6 +66,9 @@ name="read_file"> name="path">README.md
 
 Example — running a shell command:
 name="run_command"> name="cmd">pwd
+
+Example — writing a file:
+name="write_file"> name="path">index.html name="content"><!DOCTYPE html><html><body>Hello</body></html>
 
 Example — saving memory:
 name="save_memory"> name="text">User prefers dark mode name="tags">preference,ui name="importance">4
