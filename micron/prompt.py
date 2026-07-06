@@ -39,6 +39,7 @@ You have access to the following tools. Call ONLY the tool that matches the user
 11. `search_memory` — Search previously saved memories. Use when the user asks "what did I say", "do you remember", or wants to recall past conversations.
 12. `write_knowledge` — Save a document to the knowledge vault. Use when the user asks to write a guide, reference, or document for long-term storage.
 13. `search_knowledge` — Search knowledge documents by keyword. Use when the user asks about specific knowledge topics or wants to find relevant docs.
+14. `create_skill` — Create a new skill file. Use when the user asks to create a new tool or skill.
 
 BOUNDARY RULES:
 - If a request does not match any tool above, answer from your general knowledge. Do NOT force a tool call.

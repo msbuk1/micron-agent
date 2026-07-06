@@ -370,6 +370,49 @@ def search_knowledge(query: str = "", text: str = "") -> str:
     return "\n".join(lines)
 
 
+def create_skill(name: str, description: str, parameters: str = "", module: str = "", write: bool = False) -> str:
+    """Create a new skill file in context/skills/. The skill is loaded after /reload."""
+    workdir = _get_workdir()
+    skills_dir = workdir / "context" / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+
+    slug = re.sub(r"[^a-z0-9_-]", "_", name.lower().replace(" ", "_"))[:50]
+    if not slug:
+        return "Error: Invalid skill name."
+
+    path = skills_dir / f"{slug}.md"
+    if path.exists():
+        return f"Error: Skill '{slug}' already exists. Use write_file to modify it."
+
+    lines = ["---"]
+    lines.append(f"name: {slug}")
+    lines.append(f"description: {description}")
+    lines.append(f"write: {'true' if write else 'false'}")
+    if module:
+        lines.append(f"module: {module}")
+    if parameters:
+        lines.append("parameters:")
+        lines.append(parameters)
+    lines.append("---")
+    lines.append("")
+    lines.append(f"# {name}")
+    lines.append("")
+    lines.append(f"{description}")
+    lines.append("")
+    if module:
+        lines.append(f"Implementation: `{module}.{slug}`")
+    else:
+        lines.append("This is a prompt-based skill. Add instructions below.")
+    lines.append("")
+    lines.append("## Instructions")
+    lines.append("")
+    lines.append("Add your skill instructions here.")
+    lines.append("")
+
+    path.write_text("\n".join(lines))
+    return f"Created skill: {path.relative_to(workdir)}\nRun /reload to activate it."
+
+
 # Tool registry for easy importing
 TOOLS = {
     "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
@@ -377,4 +420,5 @@ TOOLS = {
     "calculate": calculate, "python_eval": python_eval, "current_time": current_time,
     "save_memory": save_memory, "search_memory": search_memory,
     "write_knowledge": write_knowledge, "search_knowledge": search_knowledge,
+    "create_skill": create_skill,
 }
