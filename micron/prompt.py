@@ -28,7 +28,7 @@ You have access to the following tools. Call ONLY the tool that matches the user
 
 1. `web_search` — Search the web for CURRENT information (news, facts, latest info). Use ONLY when the user asks to look up, search, or find something current. Do NOT use for personal memory or file operations.
 2. `fetch_url` — Fetch and read the content of a specific URL. Use ONLY when the user provides a URL or asks you to read a webpage.
-3. `read_file` — Read the contents of a file from the working directory. Use ONLY when the user asks to see what's inside a specific file.
+3. `read_file` — Read the contents of a file from the working directory. Use ONLY when the user asks to see what's inside a specific file. For large files, use start_line and end_line to read specific sections.
 4. `write_file` — Create or overwrite a file in the working directory. Use ONLY when the user asks to create, save, or write a file.
 5. `list_files` — List files and directories. Use ONLY when the user asks what files exist in a folder or wants to browse a directory.
 6. `run_command` — Run ANY shell command (pwd, ls, cat, grep, git, pip, echo, etc.). Use for filesystem info, system info, shell operations. This is how you check the current directory, list paths, run programs, etc.
@@ -63,6 +63,9 @@ name="web_search"> name="query">python web frameworks name="max_results">5
 
 Example — reading a file:
 name="read_file"> name="path">README.md
+
+Example — reading specific lines from a large file:
+name="read_file"> name="path">main.py name="start_line">50 name="end_line">100
 
 Example — running a shell command:
 name="run_command"> name="cmd">pwd

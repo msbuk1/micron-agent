@@ -99,8 +99,9 @@ def _fetch_url_basic(url: str, max_chars: int = 8000) -> dict:
         text = r.read().decode("utf-8", errors="replace")
         return {"url": url, "content": text[:max_chars]}
 
-def read_file(path: str) -> str:
-    """Read and return the text content of a file from the working directory."""
+def read_file(path: str, start_line: int = 0, end_line: int = 0) -> str:
+    """Read and return the text content of a file from the working directory.
+    Optionally read specific line range (1-indexed). Use start_line/end_line for large files."""
     try:
         workdir = _get_workdir()
         target_path = (workdir / path).resolve()
@@ -112,7 +113,25 @@ def read_file(path: str) -> str:
             return f"Error: File '{path}' does not exist."
 
         with open(target_path, "r", encoding="utf-8") as f:
-            return f.read()
+            lines = f.readlines()
+
+        total = len(lines)
+
+        if start_line or end_line:
+            start = max(0, (start_line or 1) - 1)
+            end = end_line if end_line else total
+            selected = lines[start:end]
+            header = f"--- {path} (lines {start+1}-{min(end, total)} of {total}) ---\n"
+            return header + "".join(selected)
+
+        # Auto-truncate large files
+        if total > 500:
+            head = lines[:250]
+            tail = lines[-50:]
+            header = f"--- {path} ({total} lines, showing first 250 + last 50) ---\n"
+            return header + "".join(head) + f"\n... ({total - 300} lines omitted) ...\n" + "".join(tail)
+
+        return "".join(lines)
     except Exception as e:
         return f"Error reading file: {e}"
 

@@ -54,6 +54,7 @@ class MicronAgent:
         self.skills.load_all()
         self._register_skill_tools()
         self._tool_history: list[tuple[str, frozenset]] = []
+        self._consecutive_failures = 0
 
     def _register_skill_tools(self):
         for skill in self.skills.all():
@@ -87,6 +88,11 @@ class MicronAgent:
 
         system_prompt = self.prompt_builder.build_system_prompt(message)
         messages = [{"role": "system", "content": system_prompt}]
+
+        # Compress history if too long (summarize old turns)
+        if history and len(history) > 12:
+            history = self._compress_history(history)
+
         if history:
             for msg in history[-20:]:
                 messages.append(msg)
@@ -145,6 +151,7 @@ class MicronAgent:
                 messages.append({"role": "assistant", "content": full_text})
 
                 tool_results = []
+                has_errors = False
                 for tc in read_calls:
                     try:
                         result = self.tools.call(tc.name, **tc.args)
@@ -155,6 +162,21 @@ class MicronAgent:
                         friendly = self._friendly_error(tc.name, e)
                         tool_results.append(f"[{tc.name}] Error: {friendly}")
                         yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": friendly}
+                        has_errors = True
+
+                # Track consecutive failures
+                if has_errors:
+                    self._consecutive_failures += 1
+                else:
+                    self._consecutive_failures = 0
+
+                # Pivot thought after 3 consecutive failures
+                if self._consecutive_failures >= 3:
+                    pivot = ("You have failed 3 times in a row. STOP and think differently. "
+                             "Your current approach is not working. Try a completely different strategy "
+                             "or tell the user you cannot complete this task.")
+                    tool_results.append(f"\n[SYSTEM] {pivot}")
+                    self._consecutive_failures = 0
 
                 messages.append({"role": "user", "content": "Tool results:\n" + "\n".join(tool_results) + "\n\nProvide your final answer based on these results. Do not use any more tools."})
 
@@ -329,6 +351,26 @@ class MicronAgent:
         elif param_type == "boolean":
             return raw.lower() in ("true", "1", "yes")
         return raw
+
+    def _compress_history(self, history: list[dict], keep_recent: int = 8) -> list[dict]:
+        """Compress old history by summarizing tool results into a single summary turn."""
+        if len(history) <= keep_recent:
+            return history
+
+        old = history[:-keep_recent]
+        recent = history[-keep_recent:]
+
+        # Summarize old turns
+        parts = []
+        for msg in old:
+            role = msg["role"]
+            content = msg.get("content", "")
+            if len(content) > 200:
+                content = content[:200] + "..."
+            parts.append(f"{role}: {content}")
+
+        summary = "Previous conversation summary:\n" + "\n".join(parts)
+        return [{"role": "user", "content": summary}] + recent
 
     def _continue_conversation(self, user_message: str, history: list[dict] | None = None) -> Generator[dict, None, None]:
         yield from self.run(user_message, history=history)
