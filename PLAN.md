@@ -64,7 +64,7 @@
 
 | # | Task | Est. | Status |
 |---|------|------|--------|
-| 2.1 | Knowledge RAG (chunking + per-query retrieval) | 2h | ⏳ |
+| 2.1 | Knowledge RAG (query-aware injection) | 2h | ✅ DONE |
 | 2.2 | Interactive mode polish (slash cmds + history) | | 1h | ✅ DONE |
 | 2.3 | Better error messages for tool failures | 1h | ✅ DONE |
 | 2.4 | Add `search_knowledge` tool for explicit doc lookup | 1h | ⏳ |
