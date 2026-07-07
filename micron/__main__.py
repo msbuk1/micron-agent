@@ -249,16 +249,13 @@ def run_query(agent, query: str, no_stream: bool = False):
             elif chunk["type"] == "tool_call":
                 thinking.stop()
                 print(f"\n[Tool: {chunk['tool_name']}] {chunk['tool_args']}", file=sys.stderr)
-                thinking.start()
             elif chunk["type"] == "tool_result":
                 thinking.stop()
                 print(f"\n[Result] {chunk['summary']}", file=sys.stderr)
-                thinking.start()
             elif chunk["type"] == "tool_error":
                 thinking.stop()
                 err = chunk.get("error", "unknown error")
                 print(f"\n[Error] {err}", file=sys.stderr)
-                thinking.start()
         thinking.stop()
         print(_strip_thinking(result))
     else:
@@ -271,16 +268,13 @@ def run_query(agent, query: str, no_stream: bool = False):
             elif chunk["type"] == "tool_call":
                 thinking.stop()
                 print(f"\n[Tool: {chunk['tool_name']}] {chunk['tool_args']}", file=sys.stderr)
-                thinking.start()
             elif chunk["type"] == "tool_result":
                 thinking.stop()
                 print(f"\n[Result] {chunk['summary']}", file=sys.stderr)
-                thinking.start()
             elif chunk["type"] == "tool_error":
                 thinking.stop()
                 err = chunk.get("error", "unknown error")
                 print(f"\n[Error] {err}", file=sys.stderr)
-                thinking.start()
         thinking.stop()
         cleaned = _strip_thinking(result)
         print(cleaned)
@@ -446,12 +440,10 @@ def run_interactive(agent, no_stream: bool = False):
                 elif chunk["type"] == "tool_call":
                     thinking.stop()
                     print(f"\n[Using: {chunk['tool_name']}]", file=sys.stderr)
-                    thinking.start()
                 elif chunk["type"] == "tool_result":
                     thinking.stop()
                     tool = chunk.get("name", "")
                     print(f"\n[{tool} done]", file=sys.stderr)
-                    thinking.start()
                 elif chunk["type"] == "confirmation_required":
                     thinking.stop()
                     pending_writes = chunk.get("pending_writes", [])
@@ -459,7 +451,6 @@ def run_interactive(agent, no_stream: bool = False):
                 elif chunk["type"] == "tool_error":
                     thinking.stop()
                     print(f"\n[Error] {chunk.get('error', 'unknown')}", file=sys.stderr)
-                    thinking.start()
                 elif chunk["type"] == "done":
                     break
             thinking.stop()

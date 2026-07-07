@@ -1,13 +1,13 @@
 # micron — Development Plan
 
-**Last Updated:** 2026-07-06  
-**Status:** Active development — core agent working, Phase 1 complete
+**Last Updated:** 2026-07-07  
+**Status:** Active development — core agent working, P0/P1/P2 fixes complete
 
 ---
 
 ## Current State
 
-P0 fixes applied 2026-07-07. All 26 tests passing.
+P0 fixes applied 2026-07-07. All 34 tests passing.
 
 | Component | Status | Notes |
 |-----------|--------|-------|
@@ -20,9 +20,61 @@ P0 fixes applied 2026-07-07. All 26 tests passing.
 | Path traversal | ✅ Fixed | Uses `Path.relative_to(workdir)` |
 | `python_eval` sandbox | ✅ Fixed | Now uses `asteval` instead of blocklist + exec |
 | `run_command` restrictions | ✅ Fixed | Tighter blocklist + `MICRON_UNRESTRICTED` opt-in |
-| Tests | ✅ 26 passing | memory, skills, registry, server |
+| Write confirmation flow | ✅ Fixed | Confirmed writes inject `tool` messages into history |
+| Streaming dedup | ✅ Fixed | Suppress raw tool-call markup from text output |
+| Tests | ✅ 34 passing | agent, memory, skills, registry, server |
 
 ---
+
+## Completed P1/P2 Items (2026-07-07)
+
+| Item | File | Status |
+|------|------|--------|
+| Auto-detect llama.cpp `chat_format` per model file | `micron/llm.py` | ✅ Done |
+| Use official `openai` client for OpenAI-compatible backend | `micron/llm.py` | ✅ Done; added `openai>=1.30` to deps |
+| Clear loop-state per `run()` call | `micron/agent.py` | ✅ Done |
+| Move text tool parsing outside streaming loop | `micron/agent.py` | ✅ Done |
+| Confirmed writes inject `tool` messages into history | `micron/agent.py` | ✅ Done |
+| Refactored main loop with `_run_with_messages()` | `micron/agent.py` | ✅ Done |
+| Streaming dedup: buffer & suppress tool-call markup | `micron/agent.py` | ✅ Done |
+| Add path-traversal / `asteval` / `run_command` tests | — | ⏳ Pending |
+
+---
+
+## Completed P2 Items (2026-07-07)
+
+| Item | File | Status |
+|------|------|--------|
+| Streaming dedup: buffer & suppress tool-call markup | `micron/agent.py` | ✅ Done |
+| `_looks_like_tool_call()` helper for pattern detection | `micron/agent.py` | ✅ Done |
+
+---
+
+## Next Slices (Priority Order)
+
+| Slice | Description | Est. Effort |
+|-------|-------------|-------------|
+| **D** | Vector memory (sentence-transformers embeddings) | 2–4 hrs |
+| **E** | Conversation persistence (`context/sessions/*.jsonl`) | 1–2 hrs |
+| **F** | Ollama native tool calling (qwen2.5, llama3.1, etc.) | 2–3 hrs |
+| **G** | Knowledge RAG (query-aware injection over `context/knowledge/`) | 2–3 hrs |
+| **H** | Minimal web UI (FastAPI + vanilla JS SSE) | 3–4 hrs |
+
+---
+
+## Task Plan
+
+### Phase 1: Critical Fixes ✅ COMPLETE
+### Phase 2: Core UX ✅ COMPLETE  
+### Phase 3: Integration & Polish ✅ COMPLETE
+### Phase 4: Optional / Nice-to-Have
+
+| # | Task | Est. | Status |
+|---|------|------|--------|
+| 4.1 | Ollama provider with native tool calling | 4h | 💤 |
+| 4.2 | Conversation history persistence | 2h | ⏳ Next |
+| 4.3 | Web UI for chat | 8h | 💤 |
+| 4.4 | Plugin system for custom tools | 4h | 💤 |
 
 | Component | Status | Notes |
 |-----------|--------|-------|
