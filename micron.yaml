@@ -29,6 +29,7 @@ providers:
     n_threads: 8
     n_gpu_layers: 0
     n_ctx: 8192
+    chat_format: chatml
 
   openrouter:
     api_key: <your-openrouter-api-key>
@@ -37,16 +38,19 @@ providers:
 
   lmstudio:
     api_key: no_key
-    base_url: http://192.168.1.162:1234/v1
+    base_url: http://[IP_ADDRESS]:1234/v1
     model: gemma-4-12b-it-qat
     # model: qwen3.5-9b-deepseek-v4-flash
     # model: qwen/qwen3.5-9b
+    chat_format: gemmaml
 
   ollama:
     base_url: http://localhost:11434
     model: llama3
+    chat_format: chatml
 
   openai:
     api_key: <your-api-key>
     base_url: https://api.openai.com/v1
     model: gpt-4o-mini
+    chat_format: chatml
