@@ -5,7 +5,24 @@
 
 ---
 
-## 🎯 Current State
+## Current State
+
+P0 fixes applied 2026-07-07. All 26 tests passing.
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Tool-role message history | ✅ Fixed | `assistant` + `tool` messages with `tool_call_id` |
+| Text parsing gating | ✅ Fixed | Auto-enabled for `llamacpp`/`ollama`, off for API providers |
+| Dynamic tool prompt | ✅ Fixed | Generated from loaded skills, < 1k tokens |
+| Memory injection | ✅ Fixed | Relevant memories now in system prompt |
+| Knowledge fallback | ✅ Fixed | Returns "no relevant knowledge" instead of all files |
+| IDF calculation | ✅ Fixed | Corrected precedence |
+| Path traversal | ✅ Fixed | Uses `Path.relative_to(workdir)` |
+| `python_eval` sandbox | ✅ Fixed | Now uses `asteval` instead of blocklist + exec |
+| `run_command` restrictions | ✅ Fixed | Tighter blocklist + `MICRON_UNRESTRICTED` opt-in |
+| Tests | ✅ 26 passing | memory, skills, registry, server |
+
+---
 
 | Component | Status | Notes |
 |-----------|--------|-------|

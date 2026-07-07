@@ -11,84 +11,36 @@ from micron.skills import SkillLoader
 class PromptBuilder:
     """Builds the system prompt from various context sources."""
 
-    BASE_TEMPLATE = """You are a helpful AI assistant with access to tools.
+    BASE_TEMPLATE = """You are micron, a lightweight AI assistant with access to tools and memory.
 
 {persona}
 
 CURRENT CONTEXT:
 - Date: {today}
 
-KNOWLEDGE:
-Below is reference knowledge from the knowledge vault. This content is already injected above for your use — you do NOT need to read it from disk unless asked.
-The vault is stored in context/knowledge/ if you need to list or read files directly.
+MEMORY (relevant entries):
+{memory}
+
+KNOWLEDGE (relevant documents):
 {knowledge}
 
 AVAILABLE TOOLS:
-You have access to the following tools. Call ONLY the tool that matches the user's intent exactly.
+{tools}
 
-1. `web_search` — Search the web for CURRENT information (news, facts, latest info). Use ONLY when the user asks to look up, search, or find something current. Do NOT use for personal memory or file operations.
-2. `fetch_url` — Fetch and read the content of a specific URL. Use ONLY when the user provides a URL or asks you to read a webpage.
-3. `read_file` — Read the contents of a file from the working directory. Use ONLY when the user asks to see what's inside a specific file. For large files, use start_line and end_line to read specific sections.
-4. `write_file` — Create or overwrite a file in the working directory. Use ONLY when the user asks to create, save, or write a file.
-5. `list_files` — List files and directories. Use ONLY when the user asks what files exist in a folder or wants to browse a directory.
-6. `run_command` — Run ANY shell command (pwd, ls, cat, grep, git, pip, echo, etc.). Use for filesystem info, system info, shell operations. This is how you check the current directory, list paths, run programs, etc.
-7. `calculate` — Evaluate a math expression. Use ONLY for math calculations.
-8. `python_eval` — Execute Python code. Use ONLY when the user explicitly asks you to run Python.
-9. `current_time` — Get the current date and time. Use ONLY when the user asks what time or date it is. Do NOT use for filesystem or directory queries.
-10. `save_memory` — Save a fact to long-term memory. Use when the user says "remember", "save", or wants to store information.
-11. `search_memory` — Search previously saved memories. Use when the user asks "what did I say", "do you remember", or wants to recall past conversations.
-12. `write_knowledge` — Save a document to the knowledge vault. Use when the user asks to write a guide, reference, or document for long-term storage.
-13. `search_knowledge` — Search knowledge documents by keyword. Use when the user asks about specific knowledge topics or wants to find relevant docs.
-14. `create_skill` — Create a new skill file. Use when the user asks to create a new tool or skill. Always run `search_skill_library` first to check if it already exists.
-15. `search_skill_library` — Search existing skills by keyword. Use BEFORE creating a new skill to avoid duplicates.
-
-BOUNDARY RULES:
-- If a request does not match any tool above, answer from your general knowledge. Do NOT force a tool call.
-- If a tool call fails, inform the user what went wrong and suggest an alternative.
-- NEVER call `current_time` when the user asks about files, directories, the filesystem, or shell commands.
-- NEVER call `search_memory` for web searches. That tool is only for the user's past saved memories.
-- NEVER guess required parameters. If the user hasn't provided enough info, ask them to clarify.
-
-ARGUMENT RULES:
-- All parameters are passed as strings or numbers through tool markup.
-- `run_command` takes a `cmd` parameter with the exact shell command to run. You MUST include the cmd parameter.
-- `write_file` REQUIRES both `path` (filename) and `content` (file content). You MUST output both parameters.
-- `web_search` takes `query` (string) and `max_results` (integer, default 5).
-- `save_memory` takes `text` (string), optional `tags` (string, comma-separated), optional `importance` (integer 1-5).
-- `search_memory` takes `query` (string) — search the user's past statements, NOT the web.
-
-OUTPUT FORMAT:
-Always output your tool call using this exact markup format:
-name="tool_name"> name="param_name">value
-
-Example — searching the web:
-name="web_search"> name="query">python web frameworks name="max_results">5
-
-Example — reading a file:
-name="read_file"> name="path">README.md
-
-Example — reading specific lines from a large file:
-name="read_file"> name="path">main.py name="start_line">50 name="end_line">100
-
-Example — running a shell command:
-name="run_command"> name="cmd">pwd
-
-Example — writing a file:
-name="write_file"> name="path">index.html name="content"><!DOCTYPE html><html><body>Hello</body></html>
-
-Example — saving memory:
-name="save_memory"> name="text">User prefers dark mode name="tags">preference,ui name="importance">4
-
-If you do NOT output this markup, the tool will NOT be called and you will get no result.
-
-BEHAVIOUR:
-- Always call a tool when one fits — do NOT answer from your training data for factual/current queries.
-- If you already have the answer from a tool result, give it directly — do NOT call the tool again.
-- After writing/creating files, confirm with ONE short sentence (e.g. "Done — wrote index.html"). Do NOT re-read or describe the file.
-- Keep responses concise. Maximum 2-3 sentences unless the user explicitly asks for detail.
-
-{skill_instructions}
+INSTRUCTIONS:
+- Use a tool only when the user's request clearly requires it.
+- Call tools using the function-calling protocol provided by your model endpoint.
+- Tools marked with [WRITE] require user confirmation before execution.
+- Do not guess required parameters; ask for clarification if info is missing.
+- Do not call a tool again if the result has already been returned to you.
+- Keep responses concise unless asked for detail.
+{text_tool_format}
 """
+
+    TEXT_TOOL_FORMAT = """OUTPUT FORMAT (text-based model):
+When you need a tool, output exactly:
+<function name="TOOL_NAME">{"arg": "value"}</function>
+Tool results will be provided in the next message."""
 
     def __init__(
         self,
@@ -96,23 +48,33 @@ BEHAVIOUR:
         memory: Memory,
         skills: SkillLoader,
         user: str = "user",
+        use_text_tool_format: bool = False,
     ):
         self.context_dir = Path(context_dir)
         self.memory = memory
         self.skills = skills
         self.user = user
+        self.use_text_tool_format = use_text_tool_format
 
     def build_system_prompt(self, query: str) -> str:
         """Build the complete system prompt for a query."""
         persona = self._load_persona()
+        memory = self._load_memory(query)
         knowledge = self._load_knowledge(query)
+        tools = self._load_tools()
         skill_instructions = self._load_skill_instructions()
+        text_tool_format = self.TEXT_TOOL_FORMAT if self.use_text_tool_format else ""
+
+        if skill_instructions:
+            tools += "\n\n---\n\n" + skill_instructions
 
         return self.BASE_TEMPLATE.format(
             persona=persona,
+            memory=memory,
             knowledge=knowledge,
-            skill_instructions=skill_instructions,
+            tools=tools,
             today=date.today().isoformat(),
+            text_tool_format=text_tool_format,
         )
 
     def _load_persona(self) -> str:
@@ -128,6 +90,32 @@ BEHAVIOUR:
                 parts.append(f"## {f.stem}\n{content}")
 
         return "\n\n".join(parts) if parts else "You are a helpful, concise AI assistant."
+
+    def _load_memory(self, query: str = "") -> str:
+        """Load relevant memory entries."""
+        entries = self.memory.search(query, k=5)
+        if not entries:
+            return "(no relevant memories)"
+        lines = []
+        for e in entries:
+            tags = " ".join(f"#{t}" for t in e.tags) if e.tags else ""
+            lines.append(f"- [{e.timestamp[:10]}] {e.text} {tags}")
+        return "\n".join(lines)
+
+    def _load_tools(self) -> str:
+        """Generate tool description list dynamically from loaded skills."""
+        if not self.skills.all():
+            return "(no tools available)"
+        lines = []
+        for skill in self.skills.all():
+            marker = " [WRITE]" if skill.write else ""
+            params = skill.parameters.get("properties", {})
+            if params:
+                param_desc = ", ".join(f"{k}: {v.get('type', 'any')}" for k, v in params.items())
+            else:
+                param_desc = "no parameters"
+            lines.append(f"- {skill.name}{marker}: {skill.description} ({param_desc})")
+        return "\n".join(lines)
 
     def _load_knowledge(self, query: str = "") -> str:
         """Load knowledge files, filtered by query relevance if provided."""
@@ -153,14 +141,15 @@ BEHAVIOUR:
                     scored.append((score, f, content))
                 except Exception:
                     continue
-            # Sort by score descending, include files with score > 0
             scored.sort(key=lambda x: x[0], reverse=True)
             files_with_content = [(f, c) for s, f, c in scored if s > 0]
             if not files_with_content:
-                # Fallback: include all files if no matches
-                files_with_content = [(f, f.read_text().strip()) for f in files if f.read_text().strip()]
+                return "(no relevant knowledge)"
         else:
             files_with_content = [(f, f.read_text().strip()) for f in files if f.read_text().strip()]
+
+        if not files_with_content:
+            return "(no relevant knowledge)"
 
         parts = []
         total_chars = 0

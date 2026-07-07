@@ -31,6 +31,7 @@ class AgentConfig:
     temperature: float = 0.1
     max_tokens: int = 2048
     max_tool_iterations: int = 8
+    use_text_tool_parsing: bool = False
     llm_kwargs: dict = field(default_factory=dict)
 
 
@@ -53,7 +54,14 @@ class MicronAgent:
             self.llm = config.llm_kwargs.pop("backend")
         else:
             self.llm = create_backend(config.provider, config.model, **config.llm_kwargs)
-        self.prompt_builder = PromptBuilder(self.context_dir, self.memory, self.skills)
+        # Default to text-tool format for local models, off for API backends.
+        provider = getattr(config, "provider", "llamacpp").lower()
+        self.use_text_tool_format = config.llm_kwargs.get("use_text_tool_format", provider in ("llamacpp", "ollama"))
+
+        self.prompt_builder = PromptBuilder(
+            self.context_dir, self.memory, self.skills,
+            use_text_tool_format=self.use_text_tool_format,
+        )
 
         self.skills.load_all()
         self._register_skill_tools()
@@ -86,10 +94,38 @@ class MicronAgent:
             return
 
         if confirm and pending_tool_calls:
-            yield from self._execute_tool_calls(pending_tool_calls, message)
-            yield from self._continue_conversation(message, history)
+            # Execute confirmed writes
+            tool_results = []
+            for chunk in self._execute_tool_calls(pending_tool_calls, user_message=message):
+                if chunk["type"] in ("tool_result", "tool_error"):
+                    tool_results.append({
+                        "role": "tool",
+                        "tool_call_id": chunk["call_id"],
+                        "name": chunk["name"],
+                        "content": chunk.get("summary", chunk.get("error", "")),
+                    })
+                yield chunk
+
+            # Continue conversation with tool results in history
+            if tool_results:
+                # Build messages with the tool results appended
+                system_prompt = self.prompt_builder.build_system_prompt(message)
+                messages = [{"role": "system", "content": system_prompt}]
+                if history:
+                    if len(history) > 12:
+                        history = self._compress_history(history)
+                    for msg in history[-20:]:
+                        messages.append(msg)
+                # Add the user message and tool results
+                messages.append({"role": "user", "content": message})
+                messages.extend(tool_results)
+
+                # Continue the conversation
+                yield from self._run_with_messages(messages)
             return
 
+        self._consecutive_failures = 0
+        self._tool_history.clear()
         system_prompt = self.prompt_builder.build_system_prompt(message)
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -102,41 +138,83 @@ class MicronAgent:
                 messages.append(msg)
         messages.append({"role": "user", "content": message})
 
+        yield from self._run_with_messages(messages)
+
+    def _looks_like_tool_call(self, text: str) -> bool:
+            """Check if text buffer ends with a complete tool call pattern."""
+            if not text:
+                return False
+            # Check for <function name="..."> pattern
+            if '<function name="' in text and '[PROMPT_INJECTION]' in text:
+                return True
+            # Check for name="tool"> pattern
+            if re.search(r'name="\w+">\s*$', text):
+                return True
+            # Check for name="tool"> name="param">value pattern
+            if re.search(r'name="\w+">\s*name="\w+">', text):
+                return True
+            return False
+
+    def _run_with_messages(self, messages: list[dict]) -> Generator[dict, None, None]:
+        """Run the tool loop with pre-built messages."""
         tool_iterations = 0
         tools_used_this_turn = False
+        pending_calls: list[ToolCall] = []
 
         while tool_iterations < self.config.max_tool_iterations:
             full_text = ""
-            pending_calls: list[ToolCall] = []
+            pending_calls = []
+            # Buffer for suppressing tool-call markup from text output
+            text_buffer = ""
 
             for response in self.llm.stream_chat(
-                messages=messages, tools=self.skills.schemas(),
-                temperature=self.config.temperature, max_tokens=self.config.max_tokens,
+                messages=messages,
+                tools=self.skills.schemas(),
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
             ):
                 if response.type == "text":
                     full_text += response.content
+                    text_buffer += response.content
+
+                    # If we're using text tool format, check if buffer contains tool call markup
+                    # If so, don't emit it as text (we'll parse and emit tool events instead)
+                    if self.use_text_tool_format:
+                        # Check if buffer ends with a complete tool call pattern
+                        if self._looks_like_tool_call(text_buffer):
+                            # Don't emit the tool call markup - we'll parse it below
+                            continue
+
                     yield {"type": "text", "content": response.content}
+                    text_buffer = ""  # Clear buffer after emitting
                 elif response.type == "reasoning":
-                    pass  # Skip reasoning — it's internal thinking, not the answer
+                    pass
                 elif response.type == "tool_call":
                     pending_calls.append(ToolCall(
-                        name=response.tool_name, args=response.tool_args or {},
+                        name=response.tool_name,
+                        args=response.tool_args or {},
                         call_id=response.tool_call_id or f"call_{len(pending_calls)}",
                         is_write=self._is_write_tool(response.tool_name),
                     ))
                     yield {"type": "tool_start", "name": response.tool_name, "call_id": pending_calls[-1].call_id}
                 elif response.type == "done":
+                    # Flush any remaining clean text
+                    if text_buffer and not self._looks_like_tool_call(text_buffer):
+                        yield {"type": "text", "content": text_buffer}
                     break
                 elif response.type == "error":
                     yield {"type": "error", "message": response.content}
                     yield {"type": "done"}
                     return
 
-            # Try text-based parsing ONLY if no tools used yet this turn
-            if not pending_calls and full_text and not tools_used_this_turn:
+            # Only use text-based parsing when configured (local/text models).
+            if not pending_calls and full_text and self.use_text_tool_format and not tools_used_this_turn:
                 text_calls = self._parse_text_tool_calls(full_text)
                 if text_calls:
                     pending_calls = text_calls
+                    # Replay tool_start events for parsed text calls
+                    for tc in text_calls:
+                        yield {"type": "tool_start", "name": tc.name, "call_id": tc.call_id}
 
             if not pending_calls:
                 yield {"type": "done"}
@@ -152,37 +230,62 @@ class MicronAgent:
 
             if read_calls:
                 tools_used_this_turn = True
-                messages.append({"role": "assistant", "content": full_text})
 
-                tool_results = []
+                # Build the proper assistant message with tool_calls array.
+                assistant_message: dict = {"role": "assistant", "content": full_text if full_text else None}
+                if read_calls:
+                    assistant_message["tool_calls"] = [
+                        {
+                            "id": tc.call_id,
+                            "type": "function",
+                            "function": {"name": tc.name, "arguments": json.dumps(tc.args)},
+                        }
+                        for tc in read_calls
+                    ]
+                messages.append(assistant_message)
+
                 has_errors = False
                 for tc in read_calls:
                     try:
                         result = self.tools.call(tc.name, **tc.args)
                         summary = self._summarize_result(result)
-                        tool_results.append(f"[{tc.name}] {summary}")
-                        yield {"type": "tool_result", "name": tc.name, "call_id": tc.call_id, "summary": summary, "result": result}
+                        # Check if the tool returned an error string
+                        is_error = isinstance(result, str) and result.startswith("Error:")
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.call_id,
+                            "name": tc.name,
+                            "content": summary,
+                        })
+                        if is_error:
+                            has_errors = True
+                            yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": summary}
+                        else:
+                            yield {"type": "tool_result", "name": tc.name, "call_id": tc.call_id, "summary": summary, "result": result}
                     except Exception as e:
                         friendly = self._friendly_error(tc.name, e)
-                        tool_results.append(f"[{tc.name}] Error: {friendly}")
-                        yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": friendly}
                         has_errors = True
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.call_id,
+                            "name": tc.name,
+                            "content": f"Error: {friendly}",
+                        })
+                        yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": friendly}
 
-                # Track consecutive failures
                 if has_errors:
                     self._consecutive_failures += 1
                 else:
                     self._consecutive_failures = 0
 
-                # Pivot thought after 3 consecutive failures
                 if self._consecutive_failures >= 3:
-                    pivot = ("You have failed 3 times in a row. STOP and think differently. "
-                             "Your current approach is not working. Try a completely different strategy "
-                             "or tell the user you cannot complete this task.")
-                    tool_results.append(f"\n[SYSTEM] {pivot}")
+                    pivot = (
+                        "You have failed 3 times in a row. STOP and think differently. "
+                        "Your current approach is not working. Try a completely different strategy "
+                        "or tell the user you cannot complete this task."
+                    )
+                    messages.append({"role": "user", "content": pivot})
                     self._consecutive_failures = 0
-
-                messages.append({"role": "user", "content": "Tool results:\n" + "\n".join(tool_results) + "\n\nProvide your final answer based on these results. Do not use any more tools."})
 
                 tool_iterations += 1
                 continue
@@ -193,14 +296,33 @@ class MicronAgent:
                 yield {"type": "done"}
                 return
 
+        yield {"type": "done"}
+
     def _execute_tool_calls(self, calls: list[ToolCall], user_message: str = "") -> Generator[dict, None, None]:
+        """Execute confirmed write tool calls and return tool results for history."""
+        tool_results = []
         for tc in calls:
             try:
                 result = self.tools.call(tc.name, **tc.args)
                 summary = self._summarize_result(result)
+                tool_results.append({
+                    "role": "tool",
+                    "tool_call_id": tc.call_id,
+                    "name": tc.name,
+                    "content": summary,
+                })
                 yield {"type": "tool_result", "name": tc.name, "call_id": tc.call_id, "summary": summary, "result": result}
             except Exception as e:
-                yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": self._friendly_error(tc.name, e)}
+                friendly = self._friendly_error(tc.name, e)
+                tool_results.append({
+                    "role": "tool",
+                    "tool_call_id": tc.call_id,
+                    "name": tc.name,
+                    "content": f"Error: {friendly}",
+                })
+                yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": friendly}
+        # Return tool_results by attaching to the generator (hacky but works)
+        self._last_tool_results = tool_results
 
     def _friendly_error(self, tool_name: str, error: Exception) -> str:
         """Convert a tool error into a user-friendly message."""
@@ -248,17 +370,15 @@ class MicronAgent:
 
     def _parse_text_tool_calls(self, text: str) -> list[ToolCall]:
         """Parse tool calls from MiniCPM/Qwen text output."""
-        calls = []
         tool_names = {t.name for t in self.tools.all()}
 
         # Format 1: name="tool_name"> name="param">value (prompt-driven)
-        # Format 2: <function name="tool_name">...</function> (MiniCPM native)
-        # Try both formats and use whichever finds results
-
-        calls_format1 = self._parse_name_quote_format(text, tool_names)
+        # Format 2: <function name="tool_name">...[PROMPT_INJECTION] (MiniCPM native)
+        # Try format 2 first as it handles JSON properly
         calls_format2 = self._parse_function_tag_format(text, tool_names)
+        calls_format1 = self._parse_name_quote_format(text, tool_names)
 
-        return calls_format1 or calls_format2
+        return calls_format2 or calls_format1
 
     def _parse_name_quote_format(self, text: str, tool_names: set) -> list[ToolCall]:
         """Parse name=\"tool\"> name=\"param\">value format."""
@@ -302,10 +422,10 @@ class MicronAgent:
         return calls
 
     def _parse_function_tag_format(self, text: str, tool_names: set) -> list[ToolCall]:
-        """Parse <function name="tool">...</function> format (MiniCPM/Qwen native)."""
+        """Parse <function name="tool">...[PROMPT_INJECTION] format (MiniCPM/Qwen native)."""
         calls = []
-        # Match <function name="tool_name">optional content</function>
-        for match in re.finditer(r'<function\s+name="(\w+)"[^>]*>(.*?)</function>', text, re.DOTALL):
+        # Match <function name="tool_name">optional content[PROMPT_INJECTION]
+        for match in re.finditer(r'<function\s+name="(\w+)"[^>]*>(.*?)\[PROMPT_INJECTION\]', text, re.DOTALL):
             tool_name = match.group(1)
             if tool_name not in tool_names:
                 continue
@@ -324,7 +444,7 @@ class MicronAgent:
                 try:
                     parsed = json.loads(body)
                     if isinstance(parsed, dict):
-                        args = {k: self._coerce_param(str(v), props.get(k, {})) for k, v in parsed.items() if k in param_names}
+                        args = {k: parsed[k] for k in parsed if k in param_names}
                 except (json.JSONDecodeError, TypeError):
                     # Fall back to name="param">value extraction within the body
                     for pm in re.finditer(r'name="(\w+)">\s*([^<\n]*)', body):
@@ -364,12 +484,18 @@ class MicronAgent:
         old = history[:-keep_recent]
         recent = history[-keep_recent:]
 
-        # Summarize old turns
+        # Summarize old turns, preserving assistant/tool message pairs
         parts = []
         for msg in old:
             role = msg["role"]
             content = msg.get("content", "")
-            if len(content) > 200:
+            tool_calls = msg.get("tool_calls")
+            tool_call_id = msg.get("tool_call_id")
+            if tool_calls:
+                content = f"[used tools: {', '.join(tc['function']['name'] for tc in tool_calls)}]"
+            elif tool_call_id:
+                content = f"[tool result] {content[:100]}"
+            elif len(content) > 200:
                 content = content[:200] + "..."
             parts.append(f"{role}: {content}")
 

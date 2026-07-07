@@ -78,7 +78,7 @@ class Memory:
         self._idf = {}
         for term in self._vocab:
             df = sum(1 for tf in self._tf if term in tf)
-            self._idf[term] = math.log(n_docs / df) + 1.0 if df > 0 else 0.0
+            self._idf[term] = (math.log(n_docs / df) + 1.0) if df > 0 else 0.0
 
         self._dirty = False
 

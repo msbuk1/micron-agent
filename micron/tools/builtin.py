@@ -22,11 +22,17 @@ def _get_workdir() -> Path:
         _workdir_cache = new
     return _workdir_cache
 
-def _resolve_path(path: str) -> Path:
-    p = Path(path)
-    if p.is_absolute():
-        return p
-    return _get_workdir() / path
+def _resolve_path(path: str, *, must_exist: bool = False) -> Path | str:
+    """Resolve a path relative to the working directory. Returns error string on violation."""
+    workdir = _get_workdir().resolve()
+    try:
+        target = (workdir / path).resolve()
+        target.relative_to(workdir)
+    except (ValueError, RuntimeError):
+        return "Error: Security violation. Access denied."
+    if must_exist and not target.exists():
+        return f"Error: Path '{path}' does not exist."
+    return target
 
 # Firecrawl config (reads from env var set by CLI/server)
 FIRECRAWL_URL = os.getenv("FIRECRAWL_URL", "http://localhost:3002")
@@ -102,17 +108,12 @@ def _fetch_url_basic(url: str, max_chars: int = 8000) -> dict:
 
 def read_file(path: str, start_line: int = 0, end_line: int = 0) -> str:
     """Read and return the text content of a file from the working directory.
-    Optionally read specific line range (1-indexed). Use start_line/end_line for large files."""
+    Optionally read specific line range (1-indexed)."""
+    target_path = _resolve_path(path, must_exist=True)
+    if isinstance(target_path, str):
+        return target_path
+
     try:
-        workdir = _get_workdir()
-        target_path = (workdir / path).resolve()
-
-        if not str(target_path).startswith(str(workdir.resolve())):
-            return "Error: Security violation. Access denied."
-
-        if not target_path.exists():
-            return f"Error: File '{path}' does not exist."
-
         with open(target_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
@@ -138,13 +139,11 @@ def read_file(path: str, start_line: int = 0, end_line: int = 0) -> str:
 
 def write_file(path: str, content: str, mode: str = "w") -> str:
     """Write or append content to a text file."""
+    target_path = _resolve_path(path)
+    if isinstance(target_path, str):
+        return target_path
+
     try:
-        workdir = _get_workdir()
-        target_path = (workdir / path).resolve()
-
-        if not str(target_path).startswith(str(workdir.resolve())):
-            return "Error: Security violation. Access denied."
-
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(target_path, mode, encoding="utf-8") as f:
@@ -156,16 +155,11 @@ def write_file(path: str, content: str, mode: str = "w") -> str:
 
 def list_files(path: str = ".") -> str:
     """List files and directories in the specified path."""
+    target_path = _resolve_path(path, must_exist=True)
+    if isinstance(target_path, str):
+        return target_path
+
     try:
-        workdir = _get_workdir()
-        target_path = (workdir / path).resolve()
-
-        if not str(target_path).startswith(str(workdir.resolve())):
-            return "Error: Security violation. Access denied."
-
-        if not target_path.exists():
-            return f"Error: Path '{path}' does not exist."
-
         items = sorted(os.listdir(target_path))
         return "\n".join(items) if items else "Directory is empty."
     except Exception as e:
@@ -173,15 +167,22 @@ def list_files(path: str = ".") -> str:
 
 def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
     """Run a shell command and return its output."""
-    # Block dangerous commands
-    blocked = ["rm -rf", "mkfs", "dd if=", ":(){ :|:& };:", "chmod -R 777", "> /dev/sd"]
+    # Restrict mode. If MICRON_UNRESTRICTED=1, only block truly destructive patterns.
+    unrestricted = os.getenv("MICRON_UNRESTRICTED", "").lower() in ("1", "true", "yes")
+
+    denied_patterns = [":(){", "fork bomb", "chmod -R 777", "> /dev/sd"]
+    if not unrestricted:
+        denied_patterns.extend(["rm -rf", "mkfs", "dd if=", "sudo ", "su -", "curl |", "wget -O -|bash"])
+
     cmd_lower = cmd.lower().strip()
-    for pattern in blocked:
-        if pattern in cmd_lower:
+    for pattern in denied_patterns:
+        if pattern in cmd_lower or cmd_lower.startswith(pattern.strip()):
             return f"Error: Command blocked for safety: '{pattern}' is not allowed."
 
     try:
         workdir = _resolve_path(cwd)
+        if isinstance(workdir, str):
+            return workdir
 
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True,
@@ -207,34 +208,32 @@ def calculate(expression: str) -> str:
         return f"Error: {e}"
 
 def python_eval(code: str) -> str:
-    """Execute Python code and return the result."""
-    # Block dangerous operations
-    blocked = ["import os", "import subprocess", "import shutil", "__import__", "open(", "exec(", "eval("]
-    code_lower = code.lower().strip()
-    for pattern in blocked:
-        if pattern in code_lower:
-            return f"Error: Code blocked for safety: '{pattern}' is not allowed."
+    """Execute a restricted subset of Python code and return the result.
+
+    The sandbox allows only pure expressions and print statements.
+    It cannot import new modules, access the filesystem, or run arbitrary code.
+    """
+    try:
+        import asteval
+    except ImportError:
+        return "Error: python_eval requires the 'asteval' package. Install with: pip install asteval"
 
     if len(code) > 5000:
         return "Error: Code too long (max 5000 characters)."
 
-    namespace = {"json": json, "datetime": datetime, "Path": Path}
-    import io
-    old_stdout = sys.stdout
-    sys.stdout = io.StringIO()
+    # Create a sandboxed interpreter with safe builtins
+    aeval = asteval.Interpreter(
+        usersyms={"json": json, "datetime": datetime},
+        no_print=False,
+        raise_errors=True,
+    )
+
     try:
-        try:
-            result = eval(code, namespace, namespace)
-            output = sys.stdout.getvalue()
-            sys.stdout = old_stdout
-            return output if output.strip() else repr(result)
-        except SyntaxError:
-            exec(code, namespace, namespace)
-            output = sys.stdout.getvalue()
-            sys.stdout = old_stdout
-            return output if output.strip() else "Code executed successfully."
+        result = aeval.eval(code)
+        if result is None and aeval.error:
+            return f"Error: {aeval.error[0].get_error()}"
+        return str(result) if result is not None else "Code executed successfully."
     except Exception as e:
-        sys.stdout = old_stdout
         return f"Error executing code: {e}"
 
 def current_time(timezone: str = "UTC") -> str:

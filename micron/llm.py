@@ -5,6 +5,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Generator, Optional
 
+try:
+    from openai import OpenAI
+    _HAS_OPENAI = True
+except ImportError:
+    _HAS_OPENAI = False
+
 
 @dataclass
 class LLMResponse:
@@ -61,7 +67,26 @@ class LlamaCppBackend(LLMBackend):
     def _load(self):
         if self._llm is None:
             from llama_cpp import Llama
+            # Determine chat format from model filename if not provided
+            chat_format = self._init_kwargs.pop("chat_format", self._detect_chat_format())
+            if chat_format:
+                self._init_kwargs["chat_format"] = chat_format
             self._llm = Llama(**self._init_kwargs)
+
+    def _detect_chat_format(self) -> str:
+        """Infer chat format from model filename."""
+        name = self.model_path.lower()
+        if "qwen" in name or "qwen2" in name or "qwen3" in name:
+            return "qwen"
+        if "gemma" in name:
+            return "gemma"
+        if "llama-3" in name or "llama3" in name or "meta-llama-3" in name:
+            return "llama-3"
+        if "mistral" in name or "mixtral" in name or "nemo" in name:
+            return "mistral-instruct"
+        if "smollm" in name or "small" in name:
+            return "smollm"
+        return "chatml"
 
     def is_available(self) -> bool:
         return os.path.exists(self.model_path)
@@ -272,7 +297,14 @@ class OpenAICompatibleBackend(LLMBackend):
         temperature: float = 0.1,
         max_tokens: int = 2048,
     ) -> Generator[LLMResponse, None, None]:
-        import requests
+        if not _HAS_OPENAI:
+            yield LLMResponse(
+                type="error", content="OpenAI client not installed. Run: pip install openai"
+            )
+            yield LLMResponse(type="done")
+            return
+
+        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
 
         payload = {
             "model": self.model,
@@ -285,76 +317,48 @@ class OpenAICompatibleBackend(LLMBackend):
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
-        resp = requests.post(
-            f"{self.base_url}/chat/completions",
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            stream=True,
-            timeout=300,
-        )
-        resp.raise_for_status()
+        try:
+            stream = client.chat.completions.create(**payload)
+            tool_calls_buffer: dict[int, dict] = {}
 
-        tool_calls_buffer: dict[int, dict] = {}
+            for chunk in stream:
+                delta = chunk.choices[0].delta
 
-        for line in resp.iter_lines():
-            if not line:
-                continue
-            line = line.decode()
-            if not line.startswith("data: "):
-                continue
-            if line.strip() == "data: [DONE]":
-                break
+                if delta.content:
+                    yield LLMResponse(type="text", content=delta.content)
 
-            try:
-                data = json.loads(line[6:])
-            except json.JSONDecodeError:
-                continue
+                if getattr(delta, "reasoning_content", None):
+                    yield LLMResponse(type="reasoning", content=delta.reasoning_content)
 
-            choices = data.get("choices", [])
-            if not choices:
-                continue
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index or 0
+                        if idx not in tool_calls_buffer:
+                            tool_calls_buffer[idx] = {"id": tc.id or f"call_{idx}", "name": "", "arguments": ""}
+                        if tc.function:
+                            if tc.function.name:
+                                tool_calls_buffer[idx]["name"] += tc.function.name
+                            if tc.function.arguments:
+                                tool_calls_buffer[idx]["arguments"] += tc.function.arguments
 
-            delta = choices[0].get("delta", {})
+            for buf in tool_calls_buffer.values():
+                if buf["name"]:
+                    try:
+                        args = json.loads(buf["arguments"]) if buf["arguments"] else {}
+                    except json.JSONDecodeError:
+                        args = {}
+                    yield LLMResponse(
+                        type="tool_call",
+                        tool_name=buf["name"],
+                        tool_args=args,
+                        tool_call_id=buf["id"],
+                    )
 
-            if "content" in delta and delta["content"]:
-                yield LLMResponse(type="text", content=delta["content"])
+            yield LLMResponse(type="done")
 
-            # Reasoning models (ornith, deepseek-r1, etc.) put output in reasoning_content
-            if "reasoning_content" in delta and delta["reasoning_content"]:
-                yield LLMResponse(type="reasoning", content=delta["reasoning_content"])
-
-            if "tool_calls" in delta:
-                for tc in delta["tool_calls"]:
-                    idx = tc.get("index", 0)
-                    if idx not in tool_calls_buffer:
-                        tool_calls_buffer[idx] = {
-                            "id": tc.get("id", f"call_{idx}"),
-                            "name": "",
-                            "arguments": "",
-                        }
-                    if "function" in tc:
-                        if "name" in tc["function"]:
-                            tool_calls_buffer[idx]["name"] = tc["function"]["name"]
-                        if "arguments" in tc["function"]:
-                            tool_calls_buffer[idx]["arguments"] += tc["function"]["arguments"]
-
-        for buf in tool_calls_buffer.values():
-            if buf["name"]:
-                try:
-                    args = json.loads(buf["arguments"]) if buf["arguments"] else {}
-                except json.JSONDecodeError:
-                    args = {}
-                yield LLMResponse(
-                    type="tool_call",
-                    tool_name=buf["name"],
-                    tool_args=args,
-                    tool_call_id=buf["id"],
-                )
-
-        yield LLMResponse(type="done")
+        except Exception as e:
+            yield LLMResponse(type="error", content=f"OpenAI API error: {e}")
+            yield LLMResponse(type="done")
 
 
 def create_backend(provider: str, model: str, **kwargs) -> LLMBackend:
