@@ -1,6 +1,7 @@
 """LLM backends — llama.cpp, Ollama, OpenAI-compatible APIs."""
 import json
 import os
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Generator, Optional
@@ -164,6 +165,35 @@ class LlamaCppBackend(LLMBackend):
         yield LLMResponse(type="done")
 
 
+class OllamaToolAdapter:
+    """Converts tool schemas to Ollama native format and detects model support."""
+
+    @staticmethod
+    def to_ollama_tools(tools: list[dict]) -> list[dict]:
+        """Convert OpenAI-format tool schemas to Ollama's native tool format.
+
+        Ollama expects: [{"function": {"name": ..., "description": ..., "parameters": ...}}]
+        """
+        return [
+            {
+                "function": {
+                    "name": t["function"]["name"],
+                    "description": t["function"].get("description", ""),
+                    "parameters": t["function"].get("parameters", {}),
+                }
+            }
+            for t in tools
+        ]
+
+    @staticmethod
+    def needs_native_tools(model_name: str) -> bool:
+        """Detect if a model supports native Ollama tool calling."""
+        return bool(re.search(
+            r"(qwen2\.5|qwen3|llama3\.1|llama3\.2|llama3\.3|gemma2|gemma3|mistral|mixtral|nemo|command\s*r|command-r|smollm2)",
+            model_name, re.I,
+        ))
+
+
 class OllamaBackend(LLMBackend):
     """Ollama HTTP API backend."""
 
@@ -171,11 +201,16 @@ class OllamaBackend(LLMBackend):
         self,
         model: str = "smollm2:1.7b",
         base_url: str = "http://localhost:11434",
+        use_native_tools: bool | None = None,
         **kwargs,
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self._available = None
+        # Auto-detect unless explicitly set
+        if use_native_tools is None:
+            use_native_tools = OllamaToolAdapter.needs_native_tools(model)
+        self.use_native_tools = use_native_tools
 
     def is_available(self) -> bool:
         if self._available is not None:
@@ -204,16 +239,46 @@ class OllamaBackend(LLMBackend):
             "stream": True,
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }
-        if tools:
-            payload["tools"] = [t["function"] for t in tools]
 
-        resp = requests.post(
-            f"{self.base_url}/api/chat",
-            json=payload,
-            stream=True,
-            timeout=300,
-        )
-        resp.raise_for_status()
+        # Native tool calling for supported models
+        use_native = self.use_native_tools and bool(tools)
+        if use_native:
+            payload["tools"] = OllamaToolAdapter.to_ollama_tools(tools)
+            payload["format"] = "json"
+        elif tools and not self.use_native_tools:
+            # Use text-based tool calling format for older models
+            pass
+
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+                stream=True,
+                timeout=300,
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            # Graceful fallback: if native tools fail, retry without them
+            if use_native:
+                payload.pop("tools", None)
+                payload.pop("format", None)
+                try:
+                    resp = requests.post(
+                        f"{self.base_url}/api/chat",
+                        json=payload,
+                        stream=True,
+                        timeout=300,
+                    )
+                    resp.raise_for_status()
+                    yield LLMResponse(type="text", content="[Native tool call failed. Falling back to text-based tool format.] ")
+                except Exception as fallback_err:
+                    yield LLMResponse(type="error", content=f"Ollama API error (fallback also failed): {fallback_err}")
+                    yield LLMResponse(type="done")
+                    return
+            else:
+                yield LLMResponse(type="error", content=f"Ollama API error: {e}")
+                yield LLMResponse(type="done")
+                return
 
         tool_calls_buffer: list[dict] = []
 

@@ -1,6 +1,6 @@
 ---
 name: search_knowledge
-description: Search knowledge documents by keyword. Finds relevant sections from the knowledge vault.
+description: Search knowledge documents and long-term memories by keyword. Returns ranked results by relevance.
 write: false
 module: micron.tools.builtin
 parameters:
@@ -8,10 +8,10 @@ parameters:
   properties:
     query:
       type: string
-      description: Keywords to search for in knowledge documents
-    text:
-      type: string
-      description: Alias for query (search text)
+      description: The search query to find in knowledge documents
+    k:
+      type: integer
+      description: Number of results to return (default 5)
   required:
     - query
 ---

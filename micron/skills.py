@@ -87,3 +87,27 @@ class SkillLoader:
     def reload(self):
         """Reload all skills."""
         self.load_all()
+
+    def add_plugin(self, td) -> Skill:
+        """Add a plugin tool as a synthetic Skill.
+
+        Args:
+            td: A ToolDescriptor from the plugin system.
+
+        Returns:
+            The newly created Skill, or the existing one if a skill with
+            the same name already exists.
+        """
+        if td.name in self._skills:
+            return self._skills[td.name]
+
+        skill = Skill(
+            name=td.name,
+            description=td.description,
+            parameters=td.parameters or {"type": "object", "properties": {}},
+            write=td.write,
+            module=None,
+            content=f"Plugin tool: {td.description}",
+        )
+        self._skills[td.name] = skill
+        return skill

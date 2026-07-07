@@ -187,7 +187,10 @@ def main():
         max_tool_iterations=config["max_tool_iterations"],
         llm_kwargs=backend_kwargs,
     ))
-
+    sessions_dir = Path(agent.context_dir) / "sessions"
+    logger = SessionLogger(sessions_dir)
+    session_id = logger.start_session()
+    print(f"Session: {session_id}")
     if args.server:
         host = args.host or config.get("host", "0.0.0.0")
         port = args.port or config.get("port", 8000)
@@ -278,6 +281,7 @@ def run_query(agent, query: str, no_stream: bool = False):
         thinking.stop()
         cleaned = _strip_thinking(result)
         print(cleaned)
+        logger.log_turn("assistant", cleaned or result)
 
 
 def run_interactive(agent, no_stream: bool = False):

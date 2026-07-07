@@ -237,5 +237,120 @@ def test_consecutive_failure_pivot():
         assert any("STOP and think differently" in str(m.get("content", "")) for m in flattened)
 
 
+def test_ollama_tool_adapter_needs_native_tools():
+    """OllamaToolAdapter correctly detects models that support native tools."""
+    from micron.llm import OllamaToolAdapter
+
+    # Models that SHOULD support native tools
+    supported = [
+        "llama3.1:7b", "llama3.2:3b", "llama3.3:70b",
+        "qwen2.5:7b", "qwen3:8b",
+        "gemma2:9b", "gemma3:12b",
+        "mistral:7b", "mixtral:8x7b",
+        "nemo:12b", "command-r:35b",
+        "smollm2:1.7b",
+    ]
+    # Models that should NOT support native tools
+    unsupported = [
+        "llama2:7b", "llama:13b",
+        "qwen:7b", "qwen2:7b",
+        "phi3:14b", "deepseek-coder:6.7b",
+        "codellama:34b", "orca-mini:3b",
+    ]
+
+    for name in supported:
+        assert OllamaToolAdapter.needs_native_tools(name), f"Should detect {name} as native-tool capable"
+    for name in unsupported:
+        assert not OllamaToolAdapter.needs_native_tools(name), f"Should NOT detect {name} as native-tool capable"
+
+
+def test_ollama_tool_adapter_converts_schemas():
+    """OllamaToolAdapter.to_ollama_tools converts OpenAI-format schemas correctly."""
+    from micron.llm import OllamaToolAdapter
+
+    schemas = [
+        {
+            "type": "function",
+            "function": {
+                "name": "current_time",
+                "description": "Get the current date/time",
+                "parameters": {"type": "object", "properties": {"timezone": {"type": "string"}}, "required": []},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            },
+        },
+    ]
+
+    result = OllamaToolAdapter.to_ollama_tools(schemas)
+
+    assert len(result) == 2
+    assert result[0]["function"]["name"] == "current_time"
+    assert result[0]["function"]["description"] == "Get the current date/time"
+    assert "timezone" in result[0]["function"]["parameters"]["properties"]
+    assert result[1]["function"]["name"] == "web_search"
+    assert "query" in result[1]["function"]["parameters"]["required"]
+
+
+def test_plugin_discovery_and_registration():
+    """Plugin system discovers .py files, registers tools, and appears in tool list."""
+    from micron.agent import MicronAgent, AgentConfig
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        context_dir = Path(tmpdir)
+        plugins_dir = context_dir / "plugins"
+        plugins_dir.mkdir()
+
+        # Write an inline plugin
+        (plugins_dir / "hello_plugin.py").write_text("""
+from micron.plugins import tool
+
+@tool(name="say_hello", description="Greet someone")
+def say_hello(person: str = "world") -> str:
+    return f"Hello, {person}!"
+
+@tool(name="add_numbers", description="Add two numbers", write=True)
+def add_numbers(a: int = 0, b: int = 0) -> int:
+    return a + b
+""")
+
+        # Init agent with temp context
+        agent = MicronAgent(AgentConfig(
+            context_dir=str(context_dir),
+            provider="llamacpp",
+            model="nonexistent.gguf",
+            llm_kwargs={"backend": type("Fake", (), {"is_available": lambda: True, "stream_chat": lambda *a,**kw: iter([type("R",(),{"type":"done"})()])})()},
+        ))
+
+        # Check tools are registered in registry
+        tools = agent.tools.list()
+        names = {t["name"] for t in tools}
+        assert "say_hello" in names, f"say_hello not in {names}"
+        assert "add_numbers" in names, f"add_numbers not in {names}"
+
+        # Check schemas include plugin tools
+        schemas = agent.skills.schemas()
+        schema_names = {s["function"]["name"] for s in schemas}
+        assert "say_hello" in schema_names
+        assert "add_numbers" in schema_names
+
+        # Verify write flag
+        add_tool = next(t for t in tools if t["name"] == "add_numbers")
+        assert add_tool["write"] is True
+        hello_tool = next(t for t in tools if t["name"] == "say_hello")
+        assert hello_tool["write"] is False
+
+        # Verify tool execution
+        result = agent.tools.call("say_hello", person="plugin")
+        assert result == "Hello, plugin!"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

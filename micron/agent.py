@@ -65,6 +65,7 @@ class MicronAgent:
 
         self.skills.load_all()
         self._register_skill_tools()
+        self._load_plugins()
         self._tool_history: list[tuple[str, frozenset]] = []
         self._consecutive_failures = 0
 
@@ -80,6 +81,25 @@ class MicronAgent:
                     )
                 except (ImportError, AttributeError) as e:
                     print(f"[WARN] Could not load tool {skill.name} from {skill.module}: {e}")
+
+    def _load_plugins(self):
+        """Discover and register plugin tools from context/plugins/."""
+        from micron.plugins.loader import discover_plugins
+
+        plugin_dir = self.context_dir / "plugins"
+        descriptors = discover_plugins(plugin_dir)
+        for td in descriptors:
+            # Add as a synthetic Skill so it appears in the tool schema list
+            self.skills.add_plugin(td)
+            # Register the function in ToolRegistry
+            self.tools.register(
+                name=td.name,
+                func=td.func,
+                description=td.description,
+                parameters=td.parameters or {"type": "object", "properties": {}},
+                write=td.write,
+            )
+            print(f"[plugin] Loaded: {td.name}")
 
     def register_tool(self, name: str, func, description: str, parameters: dict, write: bool = False):
         self.tools.register(name, func, description, parameters, write)
@@ -121,7 +141,7 @@ class MicronAgent:
                 messages.extend(tool_results)
 
                 # Continue the conversation
-                yield from self._run_with_messages(messages)
+                yield from self._run_with_messages(messages, skip_write_confirm=True)
             return
 
         self._consecutive_failures = 0
@@ -155,8 +175,14 @@ class MicronAgent:
                 return True
             return False
 
-    def _run_with_messages(self, messages: list[dict]) -> Generator[dict, None, None]:
-        """Run the tool loop with pre-built messages."""
+    def _run_with_messages(self, messages: list[dict], skip_write_confirm: bool = False) -> Generator[dict, None, None]:
+        """Run the tool loop with pre-built messages.
+
+        Args:
+            skip_write_confirm: If True, execute write tools directly without
+                requiring user confirmation.  Used after the user has already
+                confirmed one write in the current turn.
+        """
         tool_iterations = 0
         tools_used_this_turn = False
         pending_calls: list[ToolCall] = []
@@ -291,10 +317,27 @@ class MicronAgent:
                 continue
 
             if write_calls:
-                summaries = [{"tool_name": tc.name, "args": tc.args, "call_id": tc.call_id} for tc in write_calls]
-                yield {"type": "confirmation_required", "pending_writes": summaries}
-                yield {"type": "done"}
-                return
+                # Execute write tools directly — workdir is a sandbox
+                tools_used_this_turn = True
+                assistant_message: dict = {"role": "assistant", "content": full_text if full_text else None}
+                assistant_message["tool_calls"] = [
+                    {"id": tc.call_id, "type": "function",
+                     "function": {"name": tc.name, "arguments": json.dumps(tc.args)}}
+                    for tc in write_calls
+                ]
+                messages.append(assistant_message)
+                for tc in write_calls:
+                    try:
+                        result = self.tools.call(tc.name, **tc.args)
+                        summary = self._summarize_result(result)
+                        messages.append({"role": "tool", "tool_call_id": tc.call_id, "name": tc.name, "content": summary})
+                        yield {"type": "tool_result", "name": tc.name, "call_id": tc.call_id, "summary": summary, "result": result}
+                    except Exception as e:
+                        friendly = self._friendly_error(tc.name, e)
+                        messages.append({"role": "tool", "tool_call_id": tc.call_id, "name": tc.name, "content": f"Error: {friendly}"})
+                        yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": friendly}
+                tool_iterations += 1
+                continue
 
         yield {"type": "done"}
 

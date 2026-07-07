@@ -7,7 +7,7 @@
 
 ## Current State
 
-P0 fixes applied 2026-07-07. All 34 tests passing.
+P0 fixes applied 2026-07-07. All 37 tests passing.
 
 | Component | Status | Notes |
 |-----------|--------|-------|
@@ -22,7 +22,7 @@ P0 fixes applied 2026-07-07. All 34 tests passing.
 | `run_command` restrictions | ✅ Fixed | Tighter blocklist + `MICRON_UNRESTRICTED` opt-in |
 | Write confirmation flow | ✅ Fixed | Confirmed writes inject `tool` messages into history |
 | Streaming dedup | ✅ Fixed | Suppress raw tool-call markup from text output |
-| Tests | ✅ 34 passing | agent, memory, skills, registry, server |
+| Tests | ✅ 37 passing | agent, memory, skills, registry, server |
 
 ---
 
@@ -54,11 +54,11 @@ P0 fixes applied 2026-07-07. All 34 tests passing.
 
 | Slice | Description | Est. Effort |
 |-------|-------------|-------------|
-| **D** | Vector memory (sentence-transformers embeddings) | 2–4 hrs |
-| **E** | Conversation persistence (`context/sessions/*.jsonl`) | 1–2 hrs |
-| **F** | Ollama native tool calling (qwen2.5, llama3.1, etc.) | 2–3 hrs |
-| **G** | Knowledge RAG (query-aware injection over `context/knowledge/`) | 2–3 hrs |
-| **H** | Minimal web UI (FastAPI + vanilla JS SSE) | 3–4 hrs |
+|| **D** | Knowledge RAG (query-aware injection over `context/knowledge/`) | ✅ Done |
+|| **E** | Conversation persistence (`context/sessions/*.jsonl`) | ✅ Done |
+|| **F** | Ollama native tool calling (qwen2.5, llama3.1, etc.) | ✅ Done |
+|| **G** | Plugin system for custom tools (`context/plugins/`) | ✅ Done |
+|| **H** | Minimal web UI (FastAPI + vanilla JS SSE) + file upload | ✅ Done |
 
 ---
 
@@ -71,27 +71,31 @@ P0 fixes applied 2026-07-07. All 34 tests passing.
 
 | # | Task | Est. | Status |
 |---|------|------|--------|
-| 4.1 | Ollama provider with native tool calling | 4h | 💤 |
-| 4.2 | Conversation history persistence | 2h | ⏳ Next |
-| 4.3 | Web UI for chat | 8h | 💤 |
-| 4.4 | Plugin system for custom tools | 4h | 💤 |
+| 4.1 | Ollama native tool calling (adapter + format) | 4h | ✅ DONE |
+| 4.2 | Web UI for chat | 8h | ✅ DONE |
+| 4.3 | Plugin system for custom tools (context/plugins/) | 4h | ✅ DONE |
 
 | Component | Status | Notes |
 |-----------|--------|-------|
 | CLI | ✅ Working | query, interactive, tools, memory, server |
-| 11 Tools | ✅ Working | web_search, fetch_url, read/write_file, list_files, run_command, calculate, python_eval, current_time, save_memory, search_memory, write_knowledge |
-| Text-based tool calling | ✅ Working | Parses MiniCPM's `name="tool"> name="param">value` format |
+| Web UI | ✅ Working | GET / chat page + POST /upload file endpoint |
+| 14 Tools | ✅ Working | web_search, fetch_url, read_file, write_file, list_files, run_command, calculate, python_eval, current_time, save_memory, search_knowledge, write_knowledge, create_skill, search_skill_library |
+| Plugin tools | ✅ Working | @tool decorator + context/plugins/ discovery |
+| Ollama native tools | ✅ Working | Auto-detected per model, graceful fallback |
+| Session persistence | ✅ Working | context/sessions/*.jsonl logging + /sessions, /resume |
+| Knowledge RAG | ✅ Working | TF-IDF search_knowledge + query-aware injection |
+| Text-based tool calling | ✅ Working | Parses name="tool" name="param">value format |
 | Firecrawl web search | ✅ Working | Via localhost:3002 |
-| Workdir support | ✅ Working | `micron.yaml` + env var override |
-| Loop prevention | ✅ Working | `tools_used_this_turn` flag + tool results in history |
-| Config system | ✅ Working | `micron.yaml` + CLI + env var priority |
-| Tests | ✅ 15 passing | memory, skills, registry |
-| save_memory truncation | ✅ FIXED | Parser slices between `name="param">` positions |
-| Model output cleanup | ✅ FIXED | Strips `` tags and tool call markup from CLI |
-| Knowledge injection | ✅ WORKING | `PromptBuilder._load_knowledge()` reads all `*.md` files (8K char budget) |
-| Persona injection | ✅ WORKING | `PromptBuilder._load_persona()` reads `context/persona/*.md` |
-| write_knowledge tool | ✅ WORKING | Saves `.md` to `context/knowledge/` with auto-slug |
-| Search memory skill | ✅ WORKING | TF-IDF keyword search via `search_memory` |
+| Workdir support | ✅ Working | micron.yaml + env var override |
+| Loop prevention | ✅ Working | tools_used_this_turn flag + tool results in history |
+| Config system | ✅ Working | micron.yaml + CLI + env var priority |
+| Tests | ✅ 37 passing | memory, skills, registry, agent, server |
+| save_memory truncation | ✅ FIXED | Parser slices between name="param"> positions |
+| Model output cleanup | ✅ FIXED | Strips tool call markup from CLI output |
+| Knowledge injection | ✅ WORKING | PromptBuilder reads context/knowledge/*.md (8K char budget) |
+| Persona injection | ✅ WORKING | PromptBuilder reads context/persona/*.md |
+| write_knowledge tool | ✅ WORKING | Saves .md to context/knowledge/ with auto-slug |
+| Search knowledge skill | ✅ WORKING | TF-IDF keyword search via search_knowledge |
 | Interactive mode UX | 🟡 Needs polish | No chat history display, raw event output |
 
 ---
@@ -136,8 +140,8 @@ P0 fixes applied 2026-07-07. All 34 tests passing.
 | 2.1 | Knowledge RAG (query-aware injection) | 2h | ✅ DONE |
 | 2.2 | Interactive mode polish (slash cmds + history) | | 1h | ✅ DONE |
 | 2.3 | Better error messages for tool failures | 1h | ✅ DONE |
-| 2.4 | Add `search_knowledge` tool for explicit doc lookup | 1h | ⏳ |
-| 2.5 | Wire `write_knowledge` confirmation flow in CLI | 30m | ⏳ |
+| 2.4 | Add `search_knowledge` tool | 1h | ✅ DONE |
+| 2.5 | Wire `write_knowledge` confirmation flow in CLI | 30m | ✅ DONE |
 
 #### 2.1 Knowledge RAG improvements
 **Current:** All knowledge files injected into every prompt (flat, up to 8K chars).  
@@ -181,10 +185,10 @@ P0 fixes applied 2026-07-07. All 34 tests passing.
 
 | # | Task | Est. | Status |
 |---|------|------|--------|
-| 4.1 | Ollama provider with native tool calling | 4h | 💤 |
-| 4.2 | Conversation history persistence | 2h | 💤 |
-| 4.3 | Web UI for chat | 8h | 💤 |
-| 4.4 | Plugin system for custom tools | 4h | 💤 |
+| 4.1 | Ollama provider with native tool calling | 4h | ✅ DONE |
+| 4.2 | Conversation history persistence | 2h | ✅ DONE |
+| 4.3 | Web UI for chat | 8h | ✅ DONE |
+| 4.4 | Plugin system for custom tools | 4h | ✅ DONE |
 
 ---
 

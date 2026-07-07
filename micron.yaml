@@ -13,7 +13,7 @@ workdir: /home/matt/Documents/micron/
 # Generation settings
 temperature: 0.1
 max_tokens: 10000
-max_tool_iterations: 8
+max_tool_iterations: 10
 
 # Server settings
 host: 0.0.0.0
@@ -39,9 +39,10 @@ providers:
   lmstudio:
     api_key: no_key
     base_url: http://192.168.1.162:1234/v1
-    model: gemma-4-12b-it-qat
+    # model: gemma-4-12b-it-qat
     # model: qwen3.5-9b-deepseek-v4-flash
     # model: qwen/qwen3.5-9b
+    model: mistralai/ministral-3-3b
     chat_format: gemmaml
 
   ollama:

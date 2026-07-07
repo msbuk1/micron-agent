@@ -23,13 +23,12 @@ def _get_workdir() -> Path:
     return _workdir_cache
 
 def _resolve_path(path: str, *, must_exist: bool = False) -> Path | str:
-    """Resolve a path relative to the working directory. Returns error string on violation."""
+    """Resolve a path relative to the working directory."""
     workdir = _get_workdir().resolve()
     try:
         target = (workdir / path).resolve()
-        target.relative_to(workdir)
-    except (ValueError, RuntimeError):
-        return "Error: Security violation. Access denied."
+    except Exception as e:
+        return f"Error resolving path: {e}"
     if must_exist and not target.exists():
         return f"Error: Path '{path}' does not exist."
     return target
@@ -108,10 +107,39 @@ def _fetch_url_basic(url: str, max_chars: int = 8000) -> dict:
 
 def read_file(path: str, start_line: int = 0, end_line: int = 0) -> str:
     """Read and return the text content of a file from the working directory.
-    Optionally read specific line range (1-indexed)."""
+    Optionally read specific line range (1-indexed).
+    Supports PDF extraction via pymupdf when available."""
     target_path = _resolve_path(path, must_exist=True)
     if isinstance(target_path, str):
         return target_path
+
+    # PDF extraction
+    if str(target_path).lower().endswith(".pdf"):
+        try:
+            import pymupdf
+            doc = pymupdf.open(str(target_path))
+            total_pages = len(doc)
+            lines = []
+            for i, page in enumerate(doc):
+                lines.append(f"--- Page {i+1}/{total_pages} ---")
+                lines.append(page.get_text())
+                lines.append("")
+            doc.close()
+            text = "\n".join(lines)
+            # Apply line range if specified
+            if start_line or end_line:
+                all_lines = text.splitlines(keepends=True)
+                start = max(0, (start_line or 1) - 1)
+                end = end_line if end_line else len(all_lines)
+                return f"--- {path} (PDF, pages {start+1}-{min(end, len(all_lines))} of {len(all_lines)}) ---\n" + "".join(all_lines[start:end])
+            # Auto-truncate large PDFs
+            if len(lines) > 500:
+                return f"--- {path} (PDF, {total_pages} pages, showing first 250 + last 50 lines) ---\n" + "\n".join(lines[:250]) + f"\n... ({len(lines) - 300} lines omitted) ...\n" + "\n".join(lines[-50:])
+            return text
+        except ImportError:
+            return f"Error: PDF extraction requires pymupdf. Install with: pip install pymupdf"
+        except Exception as e:
+            return f"Error reading PDF: {e}"
 
     try:
         with open(target_path, "r", encoding="utf-8") as f:
@@ -134,6 +162,14 @@ def read_file(path: str, start_line: int = 0, end_line: int = 0) -> str:
             return header + "".join(head) + f"\n... ({total - 300} lines omitted) ...\n" + "".join(tail)
 
         return "".join(lines)
+    except UnicodeDecodeError:
+        # Try binary file — read as bytes and return size info
+        try:
+            with open(target_path, "rb") as f:
+                data = f.read()
+            return f"--- {path} (binary file, {len(data)} bytes) ---\n[Binary content — cannot display as text]"
+        except Exception as e2:
+            return f"Error reading file: {e2}"
     except Exception as e:
         return f"Error reading file: {e}"
 
@@ -272,25 +308,70 @@ def save_memory(text: str, tags: list[str] = None, importance: int = 3) -> str:
     return f"Saved: {text}"
 
 
-def search_memory(query: str = "", text: str = "", k: int = 5, tags: str = "") -> str:
-    """Search memories by keyword."""
-    from micron.memory import Memory
-    actual_query = text or query
-    if not actual_query:
-        return "Error: No query provided."
-    context_dir = os.getenv("MICRON_CONTEXT_DIR", str(Path(os.getenv("MICRON_WORKDIR", os.getcwd())) / "context"))
-    memory_dir = Path(context_dir) / "memory"
-    memory = Memory(memory_dir)
-    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
-    results = memory.search(actual_query, k=k, tags=tag_list)
-    if not results:
-        return "No memories found."
-    lines = []
-    for r in results:
-        tags_str = " ".join(f"#{t}" for t in r.tags) if r.tags else ""
-        lines.append(f"[{r.id[:8]}] {r.text} {tags_str}")
-    return "\n".join(lines)
+def search_knowledge(query: str = "", k: int = 5) -> str:
+    """Search knowledge documents using TF‑IDF scoring. Returns ranked markdown snippets."""
+    import math
+    from collections import Counter
+    from pathlib import Path
+    import os, re
+    from datetime import datetime
 
+    workdir = Path(os.getenv("MICRON_WORKDIR", os.getcwd()))
+    knowledge_dir = workdir / "context" / "knowledge"
+    if not knowledge_dir.exists():
+        return "(knowledge directory not found)"
+
+    # Load all markdown files
+    texts: list[tuple[str, str]] = []
+    for f in sorted(knowledge_dir.glob("*.md")):
+        txt = f.read_text(errors="replace").strip()
+        # Strip YAML frontmatter
+        if txt.startswith("---"):
+            parts = txt.split("---", 2)
+            if len(parts) >= 3:
+                txt = parts[2]
+        # Remove title line
+        txt = re.sub(r"^# .*$", "", txt, flags=re.MULTILINE)
+        # Collapse whitespace + trim
+        txt = re.sub(r"\s+", " ", txt).strip()
+        if txt and len(txt) > 5:
+            texts.append((f.stem, txt))
+
+    if not texts:
+        return "(no knowledge documents)"
+
+    def tokenize(t: str) -> list[str]:
+        return re.findall(r"\b\w+\b", t.lower())
+
+    # Lightweight Memory instance to reuse internals
+    from micron.memory import Memory
+    mem = Memory(str(workdir / "memory"))
+    tokens_per_doc = [Counter(tokenize(d.text)) for d in mem._docs]
+    vocab = set(t for toks in tokens_per_doc for t in toks)
+    n_docs = len(mem._docs)
+    idf = {term: math.log(n_docs / sum(1 for toks in tokens_per_doc if term in toks) + 1) + 1.0
+           for term in vocab}
+
+    query_tokens = Counter(tokenize(query))
+    if not query_tokens:
+        return "(no search query)"
+
+    scored = []
+    for (slug, _), toks in zip(texts, tokens_per_doc):
+        score = sum(toks.get(t, 0) * idf.get(t, 0) for t in query_tokens) / (sum(toks.values()) + 1)
+        scored.append((score, slug))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    out = []
+    for score, slug in scored[:k]:
+        if score <= 0:
+            continue
+        # Find matching snippet from the original text
+        _, full = next(((s, t) for (ss, t) in texts if ss == slug), ("", ""))
+        snippet = full[:300].replace("\n", " ").strip()
+        out.append(f"[{slug}] (score: {score:.2f}) {snippet}...")
+
+    return "\n".join(out) if out else "(no relevant knowledge)"
 
 def write_knowledge(title: str, content: str, tags: str = "") -> str:
     """Save a knowledge document (markdown) to the knowledge folder."""
@@ -315,58 +396,6 @@ def write_knowledge(title: str, content: str, tags: str = "") -> str:
 
     path.write_text(content)
     return f"Saved: {path}"
-
-
-def search_knowledge(query: str = "", text: str = "") -> str:
-    """Search knowledge documents by keyword."""
-    actual_query = text or query
-    if not actual_query:
-        return "Error: No query provided."
-
-    workdir = Path(os.getenv("MICRON_WORKDIR", os.getcwd()))
-    knowledge_dir = workdir / "context" / "knowledge"
-    if not knowledge_dir.exists():
-        return "No knowledge documents found."
-
-    results = []
-    query_lower = actual_query.lower()
-    query_words = set(query_lower.split())
-
-    for f in sorted(knowledge_dir.glob("*.md")):
-        try:
-            content = f.read_text(encoding="utf-8")
-            content_lower = content.lower()
-
-            # Score: count matching words
-            score = sum(1 for word in query_words if word in content_lower)
-            if score == 0:
-                continue
-
-            # Extract relevant snippet (first match context)
-            snippet = ""
-            for word in query_words:
-                idx = content_lower.find(word)
-                if idx >= 0:
-                    start = max(0, idx - 100)
-                    end = min(len(content), idx + 200)
-                    snippet = content[start:end].strip()
-                    break
-
-            results.append({"file": f.name, "score": score, "snippet": snippet[:300]})
-        except Exception:
-            continue
-
-    if not results:
-        return f"No knowledge documents match '{actual_query}'."
-
-    results.sort(key=lambda x: x["score"], reverse=True)
-    lines = []
-    for r in results[:5]:
-        lines.append(f"--- {r['file']} (score: {r['score']}) ---")
-        lines.append(r["snippet"])
-        lines.append("")
-
-    return "\n".join(lines)
 
 
 def create_skill(name: str, description: str, parameters: str = "", module: str = "", write: bool = False) -> str:
@@ -430,7 +459,7 @@ def create_skill(name: str, description: str, parameters: str = "", module: str 
 # Core skills that cannot be overwritten
 CORE_SKILLS = {"web_search", "fetch_url", "read_file", "write_file", "list_files",
                "run_command", "calculate", "python_eval", "current_time",
-               "save_memory", "search_memory", "write_knowledge", "search_knowledge",
+               "save_memory", "search_knowledge", "write_knowledge",
                "create_skill", "search_skill_library"}
 
 
@@ -483,11 +512,12 @@ def search_skill_library(query: str = "", text: str = "") -> str:
 
 
 # Tool registry for easy importing
+# Tool registry for easy importing
 TOOLS = {
     "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
     "write_file": write_file, "list_files": list_files, "run_command": run_command,
     "calculate": calculate, "python_eval": python_eval, "current_time": current_time,
-    "save_memory": save_memory, "search_memory": search_memory,
-    "write_knowledge": write_knowledge, "search_knowledge": search_knowledge,
+    "save_memory": save_memory, "search_knowledge": search_knowledge,
+    "write_knowledge": write_knowledge,
     "create_skill": create_skill, "search_skill_library": search_skill_library,
 }

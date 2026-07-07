@@ -6,13 +6,14 @@ A minimal, file-based AI agent with **Obsidian-style memory**, **Markdown skills
 
 - 📁 **File-based memory** — JSONL storage, TF-IDF search, human-editable
 - 📚 **Markdown skills** — Drop `.md` files in `context/skills/` with YAML frontmatter
+- 🔌 **Python plugins** — Drop `.py` files in `context/plugins/` with `@tool` decorator
 - 📖 **Knowledge vault** — Store reference docs in `context/knowledge/`, auto-injected by query relevance
 - 🎭 **Composable personas** — Stack `.md` files in `context/persona/` for layered personality
-- 🛠️ **13 tools** — web search, files, shell, math, Python eval, memory, knowledge
+- 🛠️ **14 tools + plugins** — web search, files, shell, math, Python eval, memory, knowledge
 - 🔀 **Provider switching** — llamacpp, LM Studio, OpenRouter, OpenAI, Ollama, vLLM
 - 💾 **Session persistence** — Auto-logs conversations to `context/sessions/`
 - 🖥️ **Interactive CLI** — 15 slash commands, thinking indicator, history
-- 🌐 **API server** — FastAPI + SSE streaming
+- 🌐 **Web UI** — Dark-themed chat at `GET /` + file upload at `POST /upload`
 - 🛡️ **Security** — Blocklists for dangerous commands, directory traversal guards
 - ⚡ **Local-first** — Runs on Gemma4 12B, Qwen3.5, MiniCPM 1B, or any OpenAI-compatible API
 
@@ -99,7 +100,7 @@ python -m micron --server --port 8000
 | `/resume ID` | Resume a previous session |
 | `/last` | Show last assistant response |
 
-## Tools (13)
+## Tools (14 + plugins)
 
 | Tool | Description | Write? |
 |------|-------------|--------|
@@ -113,9 +114,11 @@ python -m micron --server --port 8000
 | `python_eval` | Execute Python code (sandboxed) | ✅ |
 | `current_time` | Get current date/time | No |
 | `save_memory` | Save fact to long-term memory | No |
-| `search_memory` | Search saved memories | No |
-| `write_knowledge` | Write document to knowledge vault | ✅ |
 | `search_knowledge` | Search knowledge documents | No |
+| `write_knowledge` | Write document to knowledge vault | ✅ |
+| `create_skill` | Create a new skill file | No |
+| `search_skill_library` | Search skill files by keyword | No |
+| (plugins) | Custom tools via `@tool` decorator in `context/plugins/` | configurable |
 
 ## API Server
 
@@ -123,9 +126,11 @@ python -m micron --server --port 8000
 python -m micron --server
 
 # Endpoints
+GET  /                    # Web UI (dark-themed chat)
 GET  /health              # Health check
 GET  /tools               # List tools
 POST /chat                # Chat (SSE stream or JSON)
+POST /upload              # Upload file (saves to context/uploads/)
 POST /memory              # Add memory
 GET  /memory              # List memories
 POST /memory/search       # Search memories
@@ -143,29 +148,34 @@ curl -X POST http://localhost:8000/chat \
 ## Project Structure
 
 ```
+```
 micron/
 ├── context/
 │   ├── skills/        # Tool definitions (Markdown + YAML)
 │   ├── knowledge/     # Reference docs (auto-injected by query)
 │   ├── memory/        # Long-term memory (memories.jsonl)
 │   ├── sessions/      # Conversation logs (JSONL)
-│   └── persona/       # Personality layers
+│   ├── persona/       # Personality layers
+│   ├── plugins/       # Python plugin tools (@tool decorator)
+│   └── uploads/       # Uploaded files (via web UI)
 ├── micron/
 │   ├── __main__.py    # CLI + interactive mode
 │   ├── agent.py       # Core agent loop
-│   ├── llm.py         # LLM backends (llamacpp, OpenAI, Ollama)
+│   ├── llm.py         # LLM backends + OllamaToolAdapter
 │   ├── memory.py      # JSONL + TF-IDF memory
-│   ├── prompt.py      # Prompt builder (persona, knowledge, skills)
+│   ├── prompt.py      # Prompt builder (persona, memory, skills, knowledge)
 │   ├── sessions.py    # Session persistence
-│   ├── skills.py      # Skill loader
-│   ├── server.py      # FastAPI + SSE server
+│   ├── skills.py      # Skill loader + plugin integration
+│   ├── server.py      # FastAPI + SSE server + web UI + file upload
+│   ├── plugins/       # @tool decorator + discover_plugins()
 │   └── tools/
-│       ├── builtin.py # 13 built-in tools
+│       ├── builtin.py # 14 built-in tools
 │       └── registry.py
 ├── tests/
 │   ├── test_memory.py
 │   ├── test_skills.py
 │   ├── test_registry.py
+│   ├── test_agent.py  # Also tests OllamaToolAdapter + plugin discovery
 │   └── test_server.py
 ├── micron.yaml        # Provider config
 └── pyproject.toml
@@ -174,7 +184,7 @@ micron/
 ## Testing
 
 ```bash
-python -m pytest tests/ -v        # 26 tests
+python -m pytest tests/ -v        # 37 tests
 ```
 
 ## License
