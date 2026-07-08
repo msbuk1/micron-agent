@@ -22,3 +22,106 @@ Thumbs.db
 # User data (memory, sessions)
 context/memory/
 context/sessions/
+
+# Configuration
+micron.yaml
+.env
+
+# Uploads
+context/uploads/
+
+# Knowledge and persona
+context/knowledge/
+context/persona/
+
+# Test artifacts
+tests/__pycache__/
+*.pyc
+
+# Build artifacts
+build/
+*.egg-info/
+
+# Cache
+.cache/
+*.py[cod]
+*$py.class
+
+# Distribution
+*.egg
+*.whl
+*.tar.gz
+
+# Environment files
+.env.local
+.env*.local
+
+# IDE specific
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Python virtual environments
+.env
+.venv
+venv/
+env/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.tmp
+*.temp
+*.cache
+*.lnk
+
+# Linux
+*~
+
+# Security
+*.key
+*.pem
+*.crt
+*.cer
+
+# Documentation
+_site/
+_site_dev/
+
+# Build output
+build/
+dist/
+*.egg-info
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Pytest cache
+.pytest_cache/
+
+# Coverage reports
+htmlcov/
+.coverage

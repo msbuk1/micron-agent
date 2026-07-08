@@ -48,8 +48,8 @@ providers:
     model: models/MiniCPM5-1B-Q8_0.gguf
   lmstudio:
     api_key: no_key
-    base_url: http://[IP_ADDRESS]:1234/v1
-    model: gemma-4-12b-it-qat
+    base_url: http://localhost:1234/v1
+    # model: gemma-4-12b-it-qat
   openrouter:
     api_key: <your-api-key>
     base_url: https://openrouter.ai/api/v1

@@ -22,6 +22,8 @@ from micron.llm import create_backend
 agent: MicronAgent | None = None
 
 
+from micron.config import load_config
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize agent on startup if not already set (e.g. via run_server)."""
@@ -33,52 +35,33 @@ async def lifespan(app: FastAPI):
         yield
         return
     
-    # Get config from environment variables
-    provider = os.getenv("MICRON_PROVIDER", "llamacpp")
-    model = os.getenv("MICRON_MODEL", "models/smollm2-1.7b-q4_k_m.gguf")
-    context_dir = os.getenv("MICRON_CONTEXT_DIR", "context")
-    temperature = float(os.getenv("MICRON_TEMPERATURE", "0.1"))
-    max_tokens = int(os.getenv("MICRON_MAX_TOKENS", "2048"))
-    n_threads = int(os.getenv("MICRON_THREADS", "8"))
-    n_gpu_layers = int(os.getenv("MICRON_GPU_LAYERS", "0"))
-    
-    # Set environment variables for consistency with CLI
-    if "MICRON_WORKDIR" not in os.environ:
-        # Load workdir from micron.yaml config
-        import yaml
-        config_path = Path(__file__).parent.parent / "micron.yaml"
-        if config_path.exists():
-            with open(config_path) as f:
-                config = yaml.safe_load(f) or {}
-            os.environ["MICRON_WORKDIR"] = config.get("workdir", str(Path(__file__).parent.parent))
-        else:
-            os.environ["MICRON_WORKDIR"] = str(Path(__file__).parent.parent)
-    if "MICRON_CONTEXT_DIR" not in os.environ:
-        # Resolve context_dir relative to the project root
-        project_root = Path(__file__).parent.parent
-        os.environ["MICRON_CONTEXT_DIR"] = str(project_root / context_dir)
+    # Load configuration
+    config = load_config()
     
     # Create agent
     agent = create_agent(
-        context_dir=context_dir,
-        temperature=temperature,
-        max_tokens=max_tokens,
+        context_dir=config.get("context_dir"),
+        temperature=config.get("temperature", 0.1),
+        max_tokens=config.get("max_tokens", 2048),
     )
     
     # Create and attach LLM backend
     try:
+        provider_config = config.get_provider_config()
         backend = create_backend(
-            provider=provider,
-            model=model,
-            n_threads=n_threads,
-            n_gpu_layers=n_gpu_layers,
+            provider=config.get("default_provider"),
+            model=provider_config.get("model"),
+            n_threads=provider_config.get("n_threads", 8),
+            n_gpu_layers=provider_config.get("n_gpu_layers", 0),
+            api_key=provider_config.get("api_key"),
+            base_url=provider_config.get("base_url"),
         )
         agent.llm = backend
-        print(f"[micron] Loaded {provider} backend with model: {model}")
+        print(f"[micron] Loaded {config.get('default_provider')} backend with model: {provider_config.get('model')}")
     except Exception as e:
         print(f"[micron] Warning: Could not load LLM backend: {e}")
         print("[micron] Server will run without LLM (tools/memory only)")
-    
+
     yield
     # Cleanup on shutdown
 
@@ -463,7 +446,7 @@ async def upload_file(file: UploadFile = File(...)):
     }
 
 
-def run_server(agent_instance, host: str = "[IP_ADDRESS]", port: int = 8000):
+def run_server(agent_instance, host: str = "0.0.0.0", port: int = 8000):
     """Run the FastAPI server with the given agent instance."""
     global agent
     agent = agent_instance

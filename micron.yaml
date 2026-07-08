@@ -38,7 +38,7 @@ providers:
 
   lmstudio:
     api_key: no_key
-    base_url: http://192.168.1.162:1234/v1
+    base_url: http://lmserver:1234/v1
     # model: gemma-4-12b-it-qat
     # model: qwen3.5-9b-deepseek-v4-flash
     # model: qwen/qwen3.5-9b
@@ -46,7 +46,7 @@ providers:
     chat_format: gemmaml
 
   ollama:
-    base_url: http://localhost:11434
+    base_url: http://lmserver:11434
     model: llama3
     chat_format: chatml
 

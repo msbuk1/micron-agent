@@ -343,19 +343,22 @@ def search_knowledge(query: str = "", k: int = 5) -> str:
     def tokenize(t: str) -> list[str]:
         return re.findall(r"\b\w+\b", t.lower())
 
-    # Lightweight Memory instance to reuse internals
-    from micron.memory import Memory
-    mem = Memory(str(workdir / "memory"))
-    tokens_per_doc = [Counter(tokenize(d.text)) for d in mem._docs]
+    # Build TF-IDF index directly from knowledge documents
+    tokens_per_doc = [Counter(tokenize(text)) for _, text in texts]
     vocab = set(t for toks in tokens_per_doc for t in toks)
-    n_docs = len(mem._docs)
-    idf = {term: math.log(n_docs / sum(1 for toks in tokens_per_doc if term in toks) + 1) + 1.0
-           for term in vocab}
+    n_docs = len(texts)
+    
+    # Calculate IDF
+    idf = {}
+    for term in vocab:
+        df = sum(1 for toks in tokens_per_doc if term in toks)
+        idf[term] = math.log(n_docs / (df + 1)) + 1.0
 
     query_tokens = Counter(tokenize(query))
     if not query_tokens:
         return "(no search query)"
 
+    # Score documents
     scored = []
     for (slug, _), toks in zip(texts, tokens_per_doc):
         score = sum(toks.get(t, 0) * idf.get(t, 0) for t in query_tokens) / (sum(toks.values()) + 1)
@@ -463,6 +466,108 @@ CORE_SKILLS = {"web_search", "fetch_url", "read_file", "write_file", "list_files
                "create_skill", "search_skill_library"}
 
 
+def list_skills(query: str = "") -> str:
+    """List all available skills with descriptions."""
+    workdir = _get_workdir()
+    skills_dir = workdir / "context" / "skills"
+    if not skills_dir.exists():
+        return "No skills directory found. Create skills in context/skills/"
+
+    skills = []
+    for f in sorted(skills_dir.glob("*.md")):
+        try:
+            content = f.read_text(encoding="utf-8")
+            name = ""
+            description = ""
+            is_write = False
+            
+            # Parse frontmatter
+            in_frontmatter = False
+            for line in content.split("\n"):
+                if line.strip() == "---":
+                    in_frontmatter = not in_frontmatter
+                    continue
+                if in_frontmatter:
+                    if line.startswith("name:"):
+                        name = line.split(":", 1)[1].strip()
+                    elif line.startswith("description:"):
+                        description = line.split(":", 1)[1].strip()
+                    elif line.startswith("write:"):
+                        is_write = line.split(":", 1)[1].strip().lower() == "true"
+            
+            if not name:
+                name = f.stem
+            
+            skills.append({
+                "name": name,
+                "file": f.name,
+                "description": description,
+                "write": is_write
+            })
+        except Exception as e:
+            continue
+
+    if not skills:
+        return "No skills found in context/skills/"
+
+    # Filter by query if provided
+    if query:
+        query_lower = query.lower()
+        skills = [s for s in skills if query_lower in s["name"].lower() or query_lower in s["description"].lower()]
+
+    # Format output
+    lines = []
+    for skill in skills:
+        write_marker = " ✏️" if skill["write"] else ""
+        lines.append(f"{skill['name']}{write_marker}: {skill['description']}")
+    
+    return "\n".join(lines)
+
+
+def delete_file(path: str) -> str:
+    """Delete a file from the working directory.
+    
+    Args:
+        path: Path to the file to delete (relative to workdir)
+        
+    Returns:
+        Success message or error
+    """
+    target = _resolve_path(path, must_exist=True)
+    if isinstance(target, str):
+        return target
+    
+    try:
+        target.unlink()
+        return f"Success: Deleted {path}"
+    except Exception as e:
+        return f"Error deleting file: {e}"
+
+
+def edit_file(path: str, old_text: str, new_text: str) -> str:
+    """Edit a file by replacing old_text with new_text.
+    
+    Args:
+        path: Path to the file (relative to workdir)
+        old_text: Text to replace
+        new_text: Replacement text
+        
+    Returns:
+        Success message or error
+    """
+    target = _resolve_path(path, must_exist=True)
+    if isinstance(target, str):
+        return target
+    
+    try:
+        content = target.read_text(encoding="utf-8")
+        new_content = content.replace(old_text, new_text)
+        target.write_text(new_content, encoding="utf-8")
+        return f"Success: Edited {path} (replaced {len(old_text)} chars with {len(new_text)} chars)"
+    except Exception as e:
+        return f"Error editing file: {e}"
+
+
 def search_skill_library(query: str = "", text: str = "") -> str:
     """Search skill files by keyword. Returns matching skills with descriptions."""
     actual_query = text or query
@@ -520,4 +625,7 @@ TOOLS = {
     "save_memory": save_memory, "search_knowledge": search_knowledge,
     "write_knowledge": write_knowledge,
     "create_skill": create_skill, "search_skill_library": search_skill_library,
+    "delete_file": delete_file,
+    "edit_file": edit_file,
+    "list_skills": list_skills,
 }

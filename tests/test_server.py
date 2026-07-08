@@ -28,7 +28,7 @@ def client():
         provider="lmstudio",
         model="gemma-4-12b-it-qat",
         api_key="no_key",
-        base_url="http://192.168.1.162:1234/v1",
+        base_url="http://localhost:1234/v1",
     )
 
     srv.agent = create_agent(

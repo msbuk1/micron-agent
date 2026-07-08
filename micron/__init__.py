@@ -5,6 +5,7 @@ from micron.memory import Memory
 from micron.skills import SkillLoader
 from micron.llm import create_backend, LLMBackend
 from micron.tools.builtin import TOOLS
+from micron.config import Config, load_config
 
 __version__ = "0.1.0"
 __all__ = [
@@ -16,4 +17,6 @@ __all__ = [
     "create_backend",
     "LLMBackend",
     "TOOLS",
+    "Config",
+    "load_config",
 ]
