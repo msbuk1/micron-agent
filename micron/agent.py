@@ -214,7 +214,8 @@ class MicronAgent:
                     yield {"type": "text", "content": response.content}
                     text_buffer = ""  # Clear buffer after emitting
                 elif response.type == "reasoning":
-                    pass
+                    # YIELD THINKING STATES TO USER!
+                    yield {"type": "thinking", "content": response.content}
                 elif response.type == "tool_call":
                     pending_calls.append(ToolCall(
                         name=response.tool_name,

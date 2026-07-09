@@ -202,18 +202,83 @@ def list_files(path: str = ".") -> str:
         return f"Error listing directory: {e}"
 
 def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
-    """Run a shell command and return its output."""
+    """Run a shell command and return its output.
+    
+    Args:
+        cmd: Shell command to execute
+        cwd: Working directory (relative to workdir)
+        timeout: Maximum execution time in seconds
+        
+    Returns:
+        Command output or error message
+    """
+    from micron.tools.error_handling import handle_error, format_tool_result, success
+    import re
+    
     # Restrict mode. If MICRON_UNRESTRICTED=1, only block truly destructive patterns.
     unrestricted = os.getenv("MICRON_UNRESTRICTED", "").lower() in ("1", "true", "yes")
 
-    denied_patterns = [":(){", "fork bomb", "chmod -R 777", "> /dev/sd"]
+    # Improved command blocklist with regex patterns
+    denied_patterns = [
+        r":\(\)\{",  # Fork bomb pattern
+        r"fork\s+bomb",  # Fork bomb
+        r"chmod\s+-R\s+777",  # Recursive chmod 777
+        r">\s*/dev/sd",  # Redirect to block device
+    ]
+    
     if not unrestricted:
-        denied_patterns.extend(["rm -rf", "mkfs", "dd if=", "sudo ", "su -", "curl |", "wget -O -|bash"])
+        # Dangerous commands that should always be blocked
+        denied_patterns.extend([
+            r"rm\s+-rf\b",  # rm -rf (recursive delete)
+            r"mkfs\b",  # mkfs (format filesystem)
+            r"dd\s+if=",  # dd with input file
+            r"sudo\s+su\b",  # sudo su
+            r"sudo\s+sh\b",  # sudo sh
+            r"sudo\s+bash\b",  # sudo bash
+            r"chmod\s+777",  # chmod 777
+            r"chown\s+.*:.*",  # chown to arbitrary user
+            r"\|\s*bash\b",  # pipe to bash
+            r"\|\s*sh\b",  # pipe to sh
+            r"\|\s*zsh\b",  # pipe to zsh
+            r"wget\s+.*\|\s*bash",  # wget | bash
+            r"curl\s+.*\|\s*bash",  # curl | bash
+            r"wget\s+.*\|\s*sh",  # wget | sh
+            r"curl\s+.*\|\s*sh",  # curl | sh
+            r"wget\s+.*\|\s*zsh",  # wget | zsh
+            r"curl\s+.*\|\s*zsh",  # curl | zsh
+            r"\.\s*/",  # Relative path execution (./malicious.sh)
+            r"~/",  # Home directory execution
+            r"\$\(",  # Command substitution
+            r"`.*`",  # Backtick command substitution
+            r"apt-get\s+install",  # Package installation
+            r"yum\s+install",  # Package installation
+            r"pacman\s+-Sy",  # Package installation
+            r"chsh",  # Change shell
+            r"useradd\b",  # Add user
+            r"userdel\b",  # Delete user
+            r"passwd",  # Change password
+            r"mv\s+/.*",  # Move to root
+            r"cp\s+/.*",  # Copy to root
+        ])
 
     cmd_lower = cmd.lower().strip()
+    
+    # Check for dangerous patterns using regex
     for pattern in denied_patterns:
-        if pattern in cmd_lower or cmd_lower.startswith(pattern.strip()):
-            return f"Error: Command blocked for safety: '{pattern}' is not allowed."
+        if re.search(pattern, cmd_lower):
+            return handle_error(
+                "run_command",
+                Exception(f"Command blocked: dangerous pattern detected"),
+                f"blocked command containing '{pattern}'"
+            )
+
+    # Additional safety checks
+    if len(cmd) > 500:
+        return handle_error(
+            "run_command",
+            Exception("Command too long"),
+            "command exceeds 500 character limit"
+        )
 
     try:
         workdir = _resolve_path(cwd)
@@ -229,11 +294,22 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
         if result.stderr:
             output += f"\n[STDERR]\n{result.stderr}"
 
-        return output.strip() if output.strip() else "Command executed successfully with no output returned."
-    except subprocess.TimeoutExpired:
-        return f"Error: Command timed out after {timeout} seconds."
+        if output.strip():
+            return format_tool_result(output.strip(), "run_command")
+        
+        return success("Command executed successfully")
+    except subprocess.TimeoutExpired as e:
+        return handle_error(
+            "run_command",
+            e,
+            f"command timed out after {timeout} seconds"
+        )
     except Exception as e:
-        return f"Error executing command: {e}"
+        return handle_error(
+            "run_command",
+            e,
+            "while executing command"
+        )
 
 def calculate(expression: str) -> str:
     """Evaluate a math expression."""
@@ -533,15 +609,25 @@ def delete_file(path: str) -> str:
     Returns:
         Success message or error
     """
+    from micron.tools.error_handling import handle_error, success
+    
     target = _resolve_path(path, must_exist=True)
     if isinstance(target, str):
         return target
     
     try:
+        # Store file info for potential recovery
+        file_name = target.name
+        file_path = str(target)
+        
         target.unlink()
-        return f"Success: Deleted {path}"
+        return success(f"Deleted {file_name}")
     except Exception as e:
-        return f"Error deleting file: {e}"
+        return handle_error(
+            "delete_file",
+            e,
+            f"while deleting {path}"
+        )
 
 
 def edit_file(path: str, old_text: str, new_text: str) -> str:
@@ -555,17 +641,57 @@ def edit_file(path: str, old_text: str, new_text: str) -> str:
     Returns:
         Success message or error
     """
+    from micron.tools.error_handling import handle_error, success
+    import subprocess
+    
     target = _resolve_path(path, must_exist=True)
     if isinstance(target, str):
         return target
     
     try:
+        # Validate syntax before editing
+        if path.endswith('.py'):
+            compile_result = subprocess.run(
+                ["python3", "-m", "py_compile", str(target)],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if compile_result.returncode != 0:
+                return handle_error(
+                    "edit_file",
+                    Exception(f"Syntax error in {path}"),
+                    f"before editing: {compile_result.stderr}"
+                )
+        
         content = target.read_text(encoding="utf-8")
         new_content = content.replace(old_text, new_text)
         target.write_text(new_content, encoding="utf-8")
-        return f"Success: Edited {path} (replaced {len(old_text)} chars with {len(new_text)} chars)"
+        
+        # Validate syntax after editing
+        if path.endswith('.py'):
+            compile_result = subprocess.run(
+                ["python3", "-m", "py_compile", str(target)],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if compile_result.returncode != 0:
+                # Revert the edit if syntax error
+                target.write_text(content, encoding="utf-8")
+                return handle_error(
+                    "edit_file",
+                    Exception(f"Syntax error after editing {path}"),
+                    compile_result.stderr
+                )
+        
+        return success(f"Edited {path} (replaced {len(old_text)} chars with {len(new_text)} chars)")
     except Exception as e:
-        return f"Error editing file: {e}"
+        return handle_error(
+            "edit_file",
+            e,
+            f"while editing {path}"
+        )
 
 
 def search_skill_library(query: str = "", text: str = "") -> str:

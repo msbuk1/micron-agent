@@ -41,8 +41,8 @@ providers:
     base_url: http://lmserver:1234/v1
     # model: gemma-4-12b-it-qat
     # model: qwen3.5-9b-deepseek-v4-flash
-    # model: qwen/qwen3.5-9b
-    model: mistralai/ministral-3-3b
+    model: qwen/qwen3.5-9b
+    # model: mistralai/ministral-3-3b
     chat_format: gemmaml
 
   ollama:

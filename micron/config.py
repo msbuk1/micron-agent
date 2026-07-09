@@ -218,11 +218,28 @@ class Config:
         provider_name = provider_name or self.get("default_provider")
         return self.get("providers", {}).get(provider_name, {})
     
-    def to_dict(self) -> dict:
-        """Get full configuration as dictionary."""
-        return self._config.copy()
+    def get_rate_limits(self) -> dict:
+        """Get rate limiting configuration.
+        
+        Returns:
+            Dictionary with rate limit settings
+        """
+        return {
+            "chat_requests_per_minute": int(self._config.get("rate_limits", {}).get("chat_requests_per_minute", 60)),
+            "enabled": self._config.get("rate_limits", {}).get("enabled", False),
+        }
     
-    def __getitem__(self, key: str) -> Any:
+    def get_resource_limits(self) -> dict:
+        """Get resource limit configuration.
+        
+        Returns:
+            Dictionary with resource limit settings
+        """
+        return {
+            "cpu_time_limit": int(self._config.get("resource_limits", {}).get("cpu_time_limit", 30)),
+            "max_output_size": int(self._config.get("resource_limits", {}).get("max_output_size", 15000)),
+            "enabled": self._config.get("resource_limits", {}).get("enabled", False),
+        }
         """Allow dictionary-style access."""
         return self.get(key)
     

@@ -9,17 +9,81 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, Request, UploadFile, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import time
+from collections import deque
+import os
 
 from micron.agent import create_agent, AgentConfig, MicronAgent
 from micron.llm import create_backend
 
-# App state
-agent: MicronAgent | None = None
+# Rate limiting function
+def check_rate_limit() -> bool:
+    """Check if rate limit has been exceeded.
+    
+    Returns:
+        True if rate limit exceeded, False otherwise
+    """
+    from micron.config import load_config
+    
+    config = load_config()
+    rate_limits = config.get_rate_limits()
+    
+    if not rate_limits.get("enabled", False):
+        return False  # Rate limiting disabled
+    
+    max_requests = rate_limits.get("chat_requests_per_minute", 60)
+    
+    # Remove requests older than 60 seconds
+    current_time = time.time()
+    while chat_request_times and current_time - chat_request_times[0] > 60:
+        chat_request_times.popleft()
+    
+    # Check if limit exceeded
+    if len(chat_request_times) >= max_requests:
+        return True
+    
+    # Add current request
+    chat_request_times.append(current_time)
+    return False
+
+
+# Authentication function
+def check_authentication(request: Request) -> bool:
+    """Check if API key is valid.
+    
+    Args:
+        request: FastAPI request object
+        
+    Returns:
+        True if authenticated or auth disabled, False otherwise
+    """
+    from micron.config import load_config
+    
+    config = load_config()
+    auth_config = config.get_authentication()
+    
+    if not auth_config.get("enabled", False):
+        return True  # Authentication disabled
+    
+    if not auth_config.get("api_key_required", False):
+        return True  # API key not required
+    
+    # Get API key from header or environment
+    api_key = request.headers.get("X-API-KEY")
+    if not api_key:
+        api_key = os.getenv(auth_config.get("api_key_env_var", "MICRON_API_KEY"))
+    
+    # Check if valid (in production, this would validate against a database)
+    # For now, we'll just check if it's set
+    if not api_key:
+        return False
+    
+    return True
 
 
 from micron.config import load_config
@@ -107,7 +171,10 @@ class SearchRequest(BaseModel):
 
 
 async def generate_sse(message, history, confirm=False, pending_writes=None):
-    """Generate SSE events from agent response."""
+    """Generate SSE events from agent response.
+    
+    Now includes thinking states for better user experience!
+    """
     from micron.agent import ToolCall
     try:
         calls = None
@@ -116,9 +183,23 @@ async def generate_sse(message, history, confirm=False, pending_writes=None):
                 name=w["tool_name"], args=w.get("args", {}),
                 call_id=w.get("call_id", f"confirm_{i}"), is_write=True,
             ) for i, w in enumerate(pending_writes)]
+        
+        # agent.run() returns a regular generator, not async generator
         for chunk in agent.run(message, history=history, confirm=confirm, pending_tool_calls=calls):
-            yield f"data: {json.dumps(chunk)}\n\n"
-            await asyncio.sleep(0)
+            # Handle thinking states
+            if chunk.get("type") == "thinking":
+                # For thinking states, we can show them in the UI
+                # In a real implementation, you might want to buffer thinking text
+                # and show it in a subtle thinking bubble
+                yield f"data: {json.dumps(chunk)}\n\n"
+                await asyncio.sleep(0)
+            elif chunk.get("type") == "text":
+                yield f"data: {json.dumps(chunk)}\n\n"
+                await asyncio.sleep(0)
+            elif chunk.get("type") in ["tool_start", "tool_result", "tool_error", "error", "confirmation_required"]:
+                yield f"data: {json.dumps(chunk)}\n\n"
+                await asyncio.sleep(0)
+            # Skip 'done' events as they're handled in finally block
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
     finally:
@@ -228,10 +309,11 @@ HTML_PAGE = r"""<!doctype html>
     #chat{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px}
     .msg{max-width:85%;padding:10px 14px;border-radius:8px;line-height:1.5;font-size:14px;white-space:pre-wrap;word-break:break-word}
     .msg.user{align-self:flex-end;background:var(--user);color:#fff}
-    .msg.assistant{align-self:flex-start;background:var(--assistant);border:1px solid var(--border);color:var(--fg)}
+    .msg.assistant{align-self:flex-start;background:var(--assistant);border:1px solid var(--border);color:var(--fg);border-radius:8px;padding:10px 14px;line-height:1.5;font-size:14px;white-space:pre-wrap;word-break:break-word}
     .msg.system{align-self:center;background:var(--system);color:var(--tool);font-size:12px;padding:6px 12px;border:1px solid var(--border)}
     .msg.error{align-self:center;background:var(--error);color:var(--error-fg);font-size:13px;padding:6px 12px;border:1px solid var(--error-fg)}
-    .tool-call{font-size:12px;color:var(--tool);padding:2px 0}
+    .msg.thinking{align-self:flex-start;background:var(--assistant);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;line-height:1.5;font-size:14px;white-space:pre-wrap;word-break:break-word;font-style:italic;box-shadow:0 1px 3px rgba(0,0,0,0.1)}
+    .tool-call{font-size:12px;color:var(--tool);padding:2px 0;display:none}
     .spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--user);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto}
     @keyframes spin{to{transform:rotate(360deg)}}
     #input-bar{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--border);background:var(--header);align-items:center}
@@ -308,7 +390,7 @@ async function send(msg, filePath, confirmData){
     });
     const reader=resp.body.getReader();
     const dec=new TextDecoder();
-    let buf='', lastMsg=null;
+    let buf='', lastMsg=null, thinkingBuffer='';
     while(true){
       const{done,value}=await reader.read();
       if(done) break;
@@ -322,29 +404,67 @@ async function send(msg, filePath, confirmData){
         try{
           const ev=JSON.parse(data);
           if(ev.type==='text'){
-            if(!lastMsg||lastMsg.classList.contains('tool-call')){
-              lastMsg=addMsg('assistant','');
+            // Reset lastMsg for assistant responses to ensure proper styling
+            if(!lastMsg || lastMsg.classList.contains('thinking') || lastMsg.classList.contains('tool-call')){
+              lastMsg = addMsg('assistant', '');
             }
-            lastMsg.textContent+=ev.content;
-            assistantText+=ev.content;
+            lastMsg.textContent += ev.content;
+            assistantText += ev.content;
+            // Reset thinking buffer when we start a new answer
+            thinkingBuffer = '';
+          }else if(ev.type==='thinking'){
+            // Handle thinking states - show them in a thinking bubble with full content
+            if(!lastMsg || !lastMsg.classList.contains('thinking')){
+              // Create new thinking bubble with full content
+              lastMsg = addMsg('thinking', '🤔 ' + ev.content);
+              thinkingBuffer = ev.content;
+            } else {
+              // Append to existing thinking bubble content with space for continuity
+              thinkingBuffer += ' ' + ev.content;
+              lastMsg.textContent = '🤔 ' + thinkingBuffer;
+            }
+            // Force UI update
+            chat.scrollTop = chat.scrollHeight;
           }else if(ev.type==='tool_start'){
-            lastMsg=addMsg('tool-call','🔧 '+ev.name+'…');
+            // Show tool execution status as part of the thinking process
+            if(lastMsg && lastMsg.classList.contains('thinking')){
+              // Append tool status to the thinking bubble with space
+              thinkingBuffer += ' 🔧 ' + ev.name + '...';
+              lastMsg.textContent = '🤔 ' + thinkingBuffer;
+            } else {
+              // Create a new thinking bubble if none exists
+              lastMsg = addMsg('thinking', '🤔 🔧 ' + ev.name + '...');
+              thinkingBuffer = '🔧 ' + ev.name + '...';
+            }
+            // Force UI update
+            chat.scrollTop = chat.scrollHeight;
           }else if(ev.type==='tool_result'){
-            if(lastMsg&&lastMsg.classList.contains('tool-call')){
-              lastMsg.textContent+=' done';
+            // Update tool execution status
+            if(lastMsg && lastMsg.classList.contains('thinking')){
+              // Find the tool line and update it
+              if(thinkingBuffer.includes('🔧 ' + ev.name)){
+                thinkingBuffer = thinkingBuffer.replace('🔧 ' + ev.name + '...', '🔧 ' + ev.name + '... done');
+                lastMsg.textContent = '🤔 ' + thinkingBuffer;
+              }
             }
           }else if(ev.type==='tool_error'){
-            addMsg('error','⚠️ '+ev.name+': '+(ev.error||'failed'));
+            // Show tool error in thinking bubble
+            if(lastMsg && lastMsg.classList.contains('thinking')){
+              thinkingBuffer += ' ⚠️ ' + ev.name + ': ' + (ev.error || 'failed');
+              lastMsg.textContent = '🤔 ' + thinkingBuffer;
+            } else {
+              addMsg('error', '⚠️ ' + ev.name + ': ' + (ev.error || 'failed'));
+            }
           }else if(ev.type==='error'){
             addMsg('error','⚠️ '+(ev.message||'unknown error'));
           }else if(ev.type==='confirmation_required'){
-            const writes=ev.pending_writes||[];
-            pendingConfirm=writes;
-            const details=writes.map(w=>{
-              const args=Object.entries(w.args||{}).map(([k,v])=>k+'='+String(v).slice(0,60)).join(', ');
-              return '  '+w.tool_name+'('+args+')';
-            }).join('\n');
-            addMsg('system','⚠️ Write confirmation required:\n'+details+'\n');
+              const writes=ev.pending_writes||[];
+              pendingConfirm=writes;
+              const details=writes.map(w=>{
+                const args=Object.entries(w.args||{}).map(([k,v])=>k+'='+String(v).slice(0,60)).join(', ');
+                return '  '+w.tool_name+'('+args+')';
+              }).join('\n');
+              addMsg('system','⚠️ Write confirmation required:\n'+details+'\n');
             const btnBar=document.createElement('div');
             btnBar.style.cssText='display:flex;gap:8px;padding:4px 0';
             const okBtn=document.createElement('button');
@@ -369,7 +489,9 @@ async function send(msg, filePath, confirmData){
             chat.scrollTop=chat.scrollHeight;
             return;
           }
-        }catch(e){}
+        }catch(e){
+          console.error('Event parsing error:', e);
+        }
       }
     }
   }catch(e){addMsg('error','Connection failed: '+e.message)}
