@@ -318,7 +318,8 @@ class MicronAgent:
                 continue
 
             if write_calls:
-                # Execute write tools directly — workdir is a sandbox
+                # For write tools, emit confirmation_required event and pause
+                # This allows the caller (CLI or server) to handle confirmation
                 tools_used_this_turn = True
                 assistant_message: dict = {"role": "assistant", "content": full_text if full_text else None}
                 assistant_message["tool_calls"] = [
@@ -327,18 +328,20 @@ class MicronAgent:
                     for tc in write_calls
                 ]
                 messages.append(assistant_message)
+                
+                # Emit confirmation_required event with pending write calls
+                pending_writes = [
+                    {"tool_name": tc.name, "args": tc.args, "call_id": tc.call_id}
+                    for tc in write_calls
+                ]
+                yield {"type": "confirmation_required", "pending_writes": pending_writes}
+                
+                # Add tool_start events for consistency
                 for tc in write_calls:
-                    try:
-                        result = self.tools.call(tc.name, **tc.args)
-                        summary = self._summarize_result(result)
-                        messages.append({"role": "tool", "tool_call_id": tc.call_id, "name": tc.name, "content": summary})
-                        yield {"type": "tool_result", "name": tc.name, "call_id": tc.call_id, "summary": summary, "result": result}
-                    except Exception as e:
-                        friendly = self._friendly_error(tc.name, e)
-                        messages.append({"role": "tool", "tool_call_id": tc.call_id, "name": tc.name, "content": f"Error: {friendly}"})
-                        yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": friendly}
+                    yield {"type": "tool_start", "name": tc.name, "call_id": tc.call_id}
+                
                 tool_iterations += 1
-                continue
+                return
 
         yield {"type": "done"}
 
