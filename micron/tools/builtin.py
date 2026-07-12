@@ -11,6 +11,13 @@ from typing import Any
 import requests
 from bs4 import BeautifulSoup
 
+# Try to import resource module for Unix systems
+try:
+    import resource
+    _HAS_RESOURCE = True
+except ImportError:
+    _HAS_RESOURCE = False
+
 # Working directory (reads from env var, resolved lazily)
 _workdir_cache = None
 
@@ -35,6 +42,41 @@ def _resolve_path(path: str, *, must_exist: bool = False) -> Path | str:
 
 # Firecrawl config (reads from env var set by CLI/server)
 FIRECRAWL_URL = os.getenv("FIRECRAWL_URL", "http://localhost:3002")
+
+def _set_command_resource_limits():
+    """Set resource limits for command execution."""
+    if not _HAS_RESOURCE:
+        return
+    
+    try:
+        if hasattr(resource, 'RLIMIT_CPU'):
+            max_cpu_time = int(os.getenv("MICRON_CMD_MAX_CPU", "60"))
+            resource.setrlimit(resource.RLIMIT_CPU, (max_cpu_time, max_cpu_time))
+    except (ValueError, OSError):
+        pass
+    
+    try:
+        if hasattr(resource, 'RLIMIT_AS'):
+            max_memory_mb = int(os.getenv("MICRON_CMD_MAX_MEMORY_MB", "512"))
+            max_memory_bytes = max_memory_mb * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_AS, (max_memory_bytes, max_memory_bytes))
+    except (ValueError, OSError):
+        pass
+    
+    try:
+        if hasattr(resource, 'RLIMIT_NPROC'):
+            max_processes = int(os.getenv("MICRON_CMD_MAX_PROCESSES", "50"))
+            resource.setrlimit(resource.RLIMIT_NPROC, (max_processes, max_processes))
+    except (ValueError, OSError):
+        pass
+    
+    try:
+        if hasattr(resource, 'RLIMIT_NOFILE'):
+            max_files = int(os.getenv("MICRON_CMD_MAX_FILES", "100"))
+            resource.setrlimit(resource.RLIMIT_NOFILE, (max_files, max_files))
+    except (ValueError, OSError):
+        pass
+
 
 def web_search(query: str, max_results: int = 5) -> list[dict]:
     """Search the web using Firecrawl."""
@@ -273,6 +315,7 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
             )
 
     # Additional safety checks
+    _set_command_resource_limits()
     if len(cmd) > 500:
         return handle_error(
             "run_command",
