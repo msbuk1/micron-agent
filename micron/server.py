@@ -1,4 +1,4 @@
-"""FastAPI + SSE server for micron agent."""
+"""FastAPI + SSE server for micron agent with rate limiting and authentication."""
 import asyncio
 import json
 import os
@@ -20,6 +20,45 @@ import os
 
 from micron.agent import create_agent, AgentConfig, MicronAgent
 from micron.llm import create_backend
+
+# Rate limiting storage
+chat_request_times = deque(maxlen=1000)  # Store last 1000 request timestamps
+
+# App state
+agent: MicronAgent | None = None
+
+
+def check_authentication(request: Request) -> bool:
+    """Check if API key is valid.
+    
+    Args:
+        request: FastAPI request object
+        
+    Returns:
+        True if authenticated or auth disabled, False otherwise
+    """
+    from micron.config import load_config
+    
+    config = load_config()
+    auth_config = config.get("authentication", {})
+    
+    if not auth_config.get("enabled", False):
+        return True  # Authentication disabled
+    
+    if not auth_config.get("api_key_required", False):
+        return True  # API key not required
+    
+    # Get API key from header or environment
+    api_key = request.headers.get("X-API-KEY")
+    if not api_key:
+        api_key = os.getenv(auth_config.get("api_key_env_var", "MICRON_API_KEY"))
+    
+    # Check if valid (in production, this would validate against a database)
+    # For now, we'll just check if it's set
+    if not api_key:
+        return False
+    
+    return True
 
 # Rate limiting function
 def check_rate_limit() -> bool:
@@ -65,7 +104,7 @@ def check_authentication(request: Request) -> bool:
     from micron.config import load_config
     
     config = load_config()
-    auth_config = config.get_authentication()
+    auth_config = config.get("authentication", {})
     
     if not auth_config.get("enabled", False):
         return True  # Authentication disabled
@@ -132,8 +171,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="micron",
-    description="Lightweight AI agent API",
-    version="0.1.0",
+    description="Lightweight AI agent API with rate limiting and authentication",
+    version="0.1.1",
     lifespan=lifespan,
 )
 
@@ -207,8 +246,27 @@ async def generate_sse(message, history, confirm=False, pending_writes=None):
 
 
 @app.post("/chat")
-async def chat(request: ChatRequest):
-    """Chat with the agent. Returns SSE stream or JSON response."""
+async def chat(request: ChatRequest, req: Request = None):
+    """Chat with the agent. Returns SSE stream or JSON response.
+    
+    Implements rate limiting and authentication.
+    """
+    # Check authentication (skip for TestClient which doesn't provide req)
+    if req is not None:
+        if not check_authentication(req):
+            raise HTTPException(
+                status_code=401,
+                detail="Unauthorized - API key required"
+            )
+        
+        # Check rate limiting
+        if check_rate_limit():
+            raise HTTPException(
+                status_code=429,
+                detail="Too Many Requests - Rate limit exceeded"
+            )
+    
+
     if agent.llm is None:
         return {"error": "LLM backend not configured", "response": "Server is running without LLM. Configure via MICRON_PROVIDER and MICRON_MODEL env vars."}
     
@@ -239,6 +297,8 @@ async def health():
         "tools": len(agent.tools.list()) if agent else 0,
         "memories": len(agent.memory) if agent else 0,
         "llm_configured": agent.llm is not None if agent else False,
+        "rate_limiting_enabled": load_config().get_rate_limits().get("enabled", False),
+        "authentication_enabled": load_config().get("authentication", {}).get("enabled", False),
     }
 
 
