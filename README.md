@@ -9,17 +9,24 @@ A minimal, file-based AI agent with **Obsidian-style memory**, **Markdown skills
 - 🔌 **Python plugins** — Drop `.py` files in `context/plugins/` with `@tool` decorator
 - 📖 **Knowledge vault** — Store reference docs in `context/knowledge/`, auto-injected by query relevance
 - 🎭 **Composable personas** — Stack `.md` files in `context/persona/` for layered personality
-- 🛠️ **14 tools + plugins** — web search, files, shell, math, Python eval, memory, knowledge
+- 🛠️ **17 tools + plugins** — web search, files, shell, math, Python eval, memory, knowledge
 - 🔀 **Provider switching** — llamacpp, LM Studio, OpenRouter, OpenAI, Ollama, vLLM
 - 💾 **Session persistence** — Auto-logs conversations to `context/sessions/`
 - 🖥️ **Interactive CLI** — 15 slash commands, thinking indicator, history
 - 🌐 **Web UI** — Dark-themed chat at `GET /` + file upload at `POST /upload`
-- 🛡️ **Security** — Blocklists for dangerous commands, directory traversal guards
+- 🛡️ **Security** — Blocklists for dangerous commands (30+ patterns), directory traversal guards, resource limits
 - ⚡ **Local-first** — Runs on Gemma4 12B, Qwen3.5, MiniCPM 1B, or any OpenAI-compatible API
+- 🔒 **Human-in-the-loop** u2014 Write tools require explicit confirmation before execution
 
 ## Quick Start
 
 ```bash
+
+# Resource limits for run_command (environment variables)
+# MICRON_CMD_MAX_CPU: CPU time limit in seconds (default: 60)
+# MICRON_CMD_MAX_MEMORY_MB: Memory limit in MB (default: 512)
+# MICRON_CMD_MAX_PROCESSES: Max processes (default: 50)
+# MICRON_CMD_MAX_FILES: Max open files (default: 100)
 # 1. Clone and setup
 git clone https://github.com/msbuk1/micron-agent.git && cd micron-agent
 python3 -m venv .venv
@@ -118,6 +125,9 @@ python -m micron --server --port 8000
 | `write_knowledge` | Write document to knowledge vault | ✅ |
 | `create_skill` | Create a new skill file | No |
 | `search_skill_library` | Search skill files by keyword | No |
+| `delete_file` | Delete a file (with confirmation) | ✅ |
+| `edit_file` | Edit a file with syntax validation | ✅ |
+| `list_skills` | List available skills | No |
 | (plugins) | Custom tools via `@tool` decorator in `context/plugins/` | configurable |
 
 ## API Server
@@ -127,9 +137,9 @@ python -m micron --server
 
 # Endpoints
 GET  /                    # Web UI (dark-themed chat)
-GET  /health              # Health check
+GET  /health              # Health check (includes rate_limiting_enabled, authentication_enabled)
 GET  /tools               # List tools
-POST /chat                # Chat (SSE stream or JSON)
+POST /chat                # Chat (SSE stream or JSON) - supports rate limiting & authentication
 POST /upload              # Upload file (saves to context/uploads/)
 POST /memory              # Add memory
 GET  /memory              # List memories
@@ -184,7 +194,7 @@ micron/
 ## Testing
 
 ```bash
-python -m pytest tests/ -v        # 37 tests
+python -m pytest tests/ -v        # 77 tests
 ```
 
 ## License
