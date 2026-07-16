@@ -1,7 +1,7 @@
 # SLICE PLAN: Micron Agent - Small Achievable Chunks
 
-**Last Updated:** 2026-07-12  
-**Status:** All quick wins complete, focusing on remaining tasks  
+**Last Updated:** 2026-07-13  
+**Status:** Phase 4 complete, focusing on security and quality  
 **Approach:** Small, testable slices that can be completed in 1-2 hours each
 
 ---
@@ -10,9 +10,10 @@
 
 | Metric | Status |
 |--------|--------|
-| Tests | 37/37 passing ✅ |
-| Quick Wins | 3/3 complete ✅ |
+| Tests | 66/66 passing ✅ |
 | Core Features | 100% complete ✅ |
+| Server | Merged (rate limiting + auth) ✅ |
+| Security | Hardened (30+ patterns) ✅ |
 
 ---
 
@@ -26,252 +27,346 @@ Each slice should be:
 
 ---
 
-## Remaining Slices (Priority Order)
+## Completed Slices
 
-### Slice 1: Merge Server Files (MEDIUM - 2 hours)
+| Slice | Task | Status |
+|-------|------|--------|
+| 1 | Merge server files | ✅ Done |
+| 2 | Add tests for new tools | ✅ Done |
+| 3 | Add tests for resource limits | ✅ Done |
+| 4 | Add tests for confirmation flow | ✅ Done |
+| 5 | Update README with new features | ✅ Done |
+| 6 | Add API documentation | ✅ Done |
+| 7 | Expand test coverage | ✅ Done (66 tests) |
+| 8 | Code quality fixes | ✅ Done (cb6bfd1) |
 
-**Goal:** Eliminate code duplication between `server.py` and `server_new.py`
+---
+
+## New Slices (Priority Order)
+
+### Slice 9: Security - Replace `shell=True` (CRITICAL - 2 hours)
+
+**Goal:** Eliminate command injection risk in `run_command`
 
 **Tasks:**
-1. [ ] Compare both files line by line
-2. [ ] Identify unique features in each:
-   - `server.py`: Existing endpoints, SSE streaming
-   - `server_new.py`: Rate limiting, authentication
-3. [ ] Merge `server_new.py` features into `server.py`:
-   - Copy rate limiting logic
-   - Copy authentication logic
-   - Update imports
-4. [ ] Test all endpoints work:
-   - GET /health
-   - GET /tools
-   - POST /chat (streaming and non-streaming)
-   - POST /upload
-   - POST /memory
-   - GET /memory
-5. [ ] Remove `server_new.py`
-6. [ ] Update any references to `server_new.py`
+1. [ ] Import `shlex` module
+2. [ ] Replace `shell=True` with `shlex.split(cmd)` + `shell=False`
+3. [ ] Update blocklist to work with arg list (check each arg)
+4. [ ] Add test for injection attempts:
+   - `echo hello; rm -rf /`
+   - `echo $(whoami)`
+   - `echo \`whoami\``
+5. [ ] Verify all safe commands still work
+6. [ ] Verify blocked commands are still blocked
 
 **Files to Modify:**
-- `micron/server.py` (primary)
-- Remove `micron/server_new.py`
+- `micron/tools/builtin.py` (lines 330-350)
 
 **Verification:**
 ```bash
-# Start server
-python -m micron --server --port 8000 &
+# Test safe commands
+python -c "from micron.tools.builtin import run_command; print(run_command('echo hello'))"
+python -c "from micron.tools.builtin import run_command; print(run_command('ls -la'))"
 
-# Test endpoints
-curl http://localhost:8000/health
-curl -X POST http://localhost:8000/chat -H "Content-Type: application/json" -d '{"message": "test", "stream": false}'
+# Test injection attempts (should be blocked)
+python -c "from micron.tools.builtin import run_command; print(run_command('echo hello; rm -rf /'))"
+python -c "from micron.tools.builtin import run_command; print(run_command('\$(whoami)'))"
 
-# Run server tests
-python -m pytest tests/test_server.py -v
+# Run tests
+python -m pytest tests/test_resource_limits.py -v
 ```
 
 **Success Criteria:**
-- All server tests pass
-- All endpoints functional
-- Single server file
+- `shell=False` used in subprocess.run
+- All safe commands work
+- All injection attempts blocked
+- All existing tests pass
 
 ---
 
-### Slice 2: Add Tests for New Tools (SMALL - 1 hour)
+### Slice 10: Add .gitignore (SMALL - 30 minutes)
 
-**Goal:** Add tests for delete_file, edit_file, list_skills
-
-**Tasks:**
-1. [ ] Create `tests/test_tools.py`
-2. [ ] Add test for `delete_file`:
-   - Test deleting existing file
-   - Test deleting non-existing file
-   - Test path traversal protection
-3. [ ] Add test for `edit_file`:
-   - Test replacing text in file
-   - Test syntax validation for Python files
-   - Test auto-revert on syntax error
-4. [ ] Add test for `list_skills`:
-   - Test listing all skills
-   - Test filtering by query
-
-**Files to Create:**
-- `tests/test_tools.py`
-
-**Verification:**
-```bash
-python -m pytest tests/test_tools.py -v
-```
-
-**Success Criteria:**
-- 3+ new tests passing
-- All existing tests still pass
-
----
-
-### Slice 3: Add Tests for Resource Limits (SMALL - 1 hour)
-
-**Goal:** Test that resource limits work in run_command
+**Goal:** Prevent accidental commits of sensitive data
 
 **Tasks:**
-1. [ ] Add test for CPU limit:
-   - Set MICRON_CMD_MAX_CPU=1
-   - Run command that takes >1 second
-   - Verify it's killed
-2. [ ] Add test for memory limit:
-   - Set MICRON_CMD_MAX_MEMORY_MB=1
-   - Run command that allocates >1MB
-   - Verify it's killed
-3. [ ] Add test for command length limit:
-   - Try command >500 characters
-   - Verify it's rejected
-4. [ ] Add test for blocklist:
-   - Try `rm -rf /`
-   - Try `sudo rm`
-   - Verify all blocked
-
-**Files to Modify:**
-- `tests/test_tools.py` (add to Slice 2 file)
-
-**Verification:**
-```bash
-python -m pytest tests/test_tools.py::test_resource_limits -v
-python -m pytest tests/test_tools.py::test_command_blocklist -v
-```
-
-**Success Criteria:**
-- 4+ new tests passing
-- Resource limits working correctly
-
----
-
-### Slice 4: Add Tests for Confirmation Flow (SMALL - 1 hour)
-
-**Goal:** Test write tool confirmation flow
-
-**Tasks:**
-1. [ ] Add test for confirmation_required event:
-   - Call agent with write tool
-   - Verify confirmation_required event emitted
-   - Verify pending_writes list populated
-2. [ ] Add test for confirmed write:
-   - Call agent with confirm=True and pending_tool_calls
-   - Verify write executes
-3. [ ] Add test for cancelled write:
-   - Call agent with confirm=False
-   - Verify write doesn't execute
-
-**Files to Modify:**
-- `tests/test_agent.py` (add new tests)
-
-**Verification:**
-```bash
-python -m pytest tests/test_agent.py::test_confirmation_flow -v
-```
-
-**Success Criteria:**
-- 3+ new tests passing
-- Confirmation flow working correctly
-
----
-
-### Slice 5: Update README with New Features (SMALL - 1 hour)
-
-**Goal:** Document all completed features
-
-**Tasks:**
-1. [ ] Add new tools to README:
-   - delete_file
-   - edit_file
-   - list_skills
-2. [ ] Add resource limits section:
-   - Environment variables
-   - Default values
-   - Examples
-3. [ ] Add confirmation flow section:
-   - How it works
-   - CLI behavior
-   - Server behavior
-4. [ ] Update feature list
-5. [ ] Update configuration examples
-
-**Files to Modify:**
-- `README.md`
-
-**Verification:**
-- Manual review
-- All links work
-- Examples are correct
-
-**Success Criteria:**
-- README up to date
-- All features documented
-
----
-
-### Slice 6: Add API Documentation (SMALL - 1 hour)
-
-**Goal:** Document server API endpoints
-
-**Tasks:**
-1. [ ] Add API endpoints section to README:
-   - GET /health
-   - GET /tools
-   - POST /chat
-   - POST /upload
-   - POST /memory
-   - GET /memory
-   - POST /memory/search
-   - DELETE /memory/{id}
-   - POST /skills/reload
-2. [ ] Add example requests for each endpoint
-3. [ ] Add authentication examples
-4. [ ] Add rate limiting notes
-
-**Files to Modify:**
-- `README.md`
-
-**Verification:**
-- Manual review
-- Examples work when tested
-
-**Success Criteria:**
-- All endpoints documented
-- Examples are testable
-
----
-
-### Slice 7: Expand Test Coverage (MEDIUM - 2 hours)
-
-**Goal:** Add more comprehensive tests
-
-**Tasks:**
-1. [ ] Add tests for error handling:
-   - Test handle_error function
-   - Test success function
-   - Test format_tool_result function
-2. [ ] Add tests for security:
-   - Test path traversal protection
-   - Test all blocklist patterns
-3. [ ] Add integration tests:
-   - Test full agent workflow
-   - Test multi-tool sequence
-4. [ ] Add edge case tests:
-   - Empty inputs
-   - Invalid inputs
-   - Missing files
+1. [ ] Create/update `.gitignore` with:
+   - `context/uploads/`
+   - `*.pyc`
+   - `__pycache__/`
+   - `.env`
+   - `.pytest_cache/`
+   - `*.egg-info/`
+   - `dist/`
+   - `build/`
+2. [ ] Verify git status shows clean state
+3. [ ] Commit `.gitignore`
 
 **Files to Create/Modify:**
-- `tests/test_error_handling.py`
-- `tests/test_security.py`
-- `tests/test_integration.py`
+- `.gitignore`
 
 **Verification:**
 ```bash
-python -m pytest tests/ -v  # Should show 50+ tests
+git status  # Should show clean working tree
+git diff  # Should only show .gitignore changes
 ```
 
 **Success Criteria:**
-- 50+ total tests
-- All tests passing
+- `.gitignore` exists and covers all sensitive files
+- `git status` shows clean state
+
+---
+
+### Slice 11: Fix test_server.py threading (MEDIUM - 3 hours)
+
+**Goal:** Get all 77 tests passing (66 + 11 server)
+
+**Tasks:**
+1. [ ] Add `pytest-asyncio` to dependencies
+2. [ ] Rewrite `TestClient` usage with `httpx.AsyncClient`
+3. [ ] Add async fixtures for server tests
+4. [ ] Update all 11 server test methods
+5. [ ] Verify all 77 tests pass
+
+**Files to Modify:**
+- `tests/test_server.py`
+- `pyproject.toml` (add pytest-asyncio)
+
+**Verification:**
+```bash
+python -m pytest tests/ -v  # Should show 77 passed
+```
+
+**Success Criteria:**
+- All 77 tests pass
+- No threading errors
+- Server tests run in < 5 seconds
+
+---
+
+### Slice 12: Implement get_authentication() (SMALL - 1 hour)
+
+**Goal:** Clean up dead auth code
+
+**Tasks:**
+1. [ ] Add `get_authentication()` method to Config class
+2. [ ] Return default auth config if not set
+3. [ ] Remove duplicate `check_authentication` if exists
+4. [ ] Add tests for auth config
+5. [ ] Verify server auth works
+
+**Files to Modify:**
+- `micron/config.py`
+- `tests/test_config.py` (new)
+
+**Verification:**
+```bash
+python -c "from micron.config import load_config; c = load_config(); print(c.get_authentication())"
+python -m pytest tests/test_config.py -v
+```
+
+**Success Criteria:**
+- `get_authentication()` returns valid config
+- No duplicate functions
+- Auth tests pass
+
+---
+
+### Slice 13: Add delete_file undo (SMALL - 2 hours)
+
+**Goal:** Data recovery for accidental deletions
+
+**Tasks:**
+1. [ ] Create `.trash/` directory in workdir
+2. [ ] Modify `delete_file` to move files to `.trash/` instead of deleting
+3. [ ] Add timestamp to trashed files: `.trash/filename_20260713_153000`
+4. [ ] Add `/trash` slash command to list trashed files
+5. [ ] Add `/restore <filename>` slash command
+6. [ ] Add `/purge` slash command to empty trash
+7. [ ] Add tests for trash/restore flow
+
+**Files to Modify:**
+- `micron/tools/builtin.py` (delete_file function)
+- `micron/__main__.py` (new slash commands)
+- `tests/test_tools.py` (new tests)
+
+**Verification:**
+```bash
+# Test trash flow
+python -m micron -i
+> write_file test.txt "hello"
+> delete_file test.txt
+> /trash  # Should show test.txt
+> /restore test.txt
+> /trash  # Should be empty
+```
+
+**Success Criteria:**
+- Deleted files moved to `.trash/`
+- `/trash` lists trashed files
+- `/restore` recovers files
+- `/purge` empties trash
+- All tests pass
+
+---
+
+### Slice 14: Add edit_file undo (SMALL - 1 hour)
+
+**Goal:** Easy revert for bad edits
+
+**Tasks:**
+1. [ ] Write `.bak` files before edits: `test.py.bak`
+2. [ ] Only keep last backup (overwrite on each edit)
+3. [ ] Add `/undo` slash command to restore from `.bak`
+4. [ ] Auto-cleanup `.bak` files older than 7 days (optional)
+5. [ ] Add tests for undo flow
+
+**Files to Modify:**
+- `micron/tools/builtin.py` (edit_file function)
+- `micron/__main__.py` (new slash command)
+- `tests/test_tools.py` (new tests)
+
+**Verification:**
+```bash
+# Test undo flow
+python -m micron -i
+> write_file test.txt "original"
+> edit_file test.txt "original" "modified"
+> /undo test.txt  # Should restore "original"
+```
+
+**Success Criteria:**
+- `.bak` files created before edits
+- `/undo` restores from `.bak`
+- All tests pass
+
+---
+
+### Slice 15: Consolidate TF-IDF logic (MEDIUM - 2 hours)
+
+**Goal:** Remove code duplication between memory.py and search_knowledge
+
+**Tasks:**
+1. [ ] Create `micron/search.py` with shared TF-IDF logic
+2. [ ] Extract `tokenize()`, `build_idf()`, `score_document()` functions
+3. [ ] Refactor `Memory` class to use shared module
+4. [ ] Refactor `search_knowledge` to use shared module
+5. [ ] Verify all tests pass
+6. [ ] Add tests for shared search module
+
+**Files to Create/Modify:**
+- `micron/search.py` (new)
+- `micron/memory.py`
+- `micron/tools/builtin.py` (search_knowledge function)
+- `tests/test_search.py` (new)
+
+**Verification:**
+```bash
+python -m pytest tests/ -v  # All tests pass
+python -m pytest tests/test_search.py -v  # New tests pass
+```
+
+**Success Criteria:**
+- Shared `micron/search.py` module
+- No duplicated TF-IDF code
+- All tests pass
+- New search tests pass
+
+---
+
+### Slice 16: Add paste_file tool (SMALL - 1 hour)
+
+**Goal:** Quick content upload without web UI
+
+**Tasks:**
+1. [ ] Create `paste_file(content, filename=None)` function
+2. [ ] Auto-generate filename if not provided: `paste_<timestamp>.txt`
+3. [ ] Support multiline content
+4. [ ] Save to `context/uploads/`
+5. [ ] Add to TOOLS dict
+6. [ ] Add skill definition: `context/skills/paste_file.md`
+7. [ ] Add tests
+
+**Files to Modify:**
+- `micron/tools/builtin.py`
+- `context/skills/paste_file.md` (new)
+- `tests/test_tools.py` (new tests)
+
+**Verification:**
+```bash
+python -c "from micron.tools.builtin import paste_file; print(paste_file('hello world', 'test.txt'))"
+ls context/uploads/  # Should show test.txt
+```
+
+**Success Criteria:**
+- `paste_file` tool works
+- Files saved to `context/uploads/`
+- Skill definition exists
+- Tests pass
+
+---
+
+### Slice 17: Add patch_file tool (SMALL - 2 hours)
+
+**Goal:** Surgical file edits instead of full rewrites
+
+**Tasks:**
+1. [ ] Create `patch_file(path, patches)` function
+2. [ ] Support multiple patches: `patches = [{"old": "text1", "new": "text2"}, ...]`
+3. [ ] Apply patches sequentially
+4. [ ] Add syntax validation for Python files
+5. [ ] Add to TOOLS dict
+6. [ ] Add skill definition: `context/skills/patch_file.md`
+7. [ ] Add tests
+
+**Files to Modify:**
+- `micron/tools/builtin.py`
+- `context/skills/patch_file.md` (new)
+- `tests/test_tools.py` (new tests)
+
+**Verification:**
+```bash
+python -c "
+from micron.tools.builtin import patch_file
+result = patch_file('test.txt', [{'old': 'hello', 'new': 'world'}])
+print(result)
+"
+```
+
+**Success Criteria:**
+- `patch_file` tool works
+- Multiple patches applied correctly
+- Python syntax validated
+- Tests pass
+
+---
+
+### Slice 18: Add tree command (SMALL - 1 hour)
+
+**Goal:** Better directory visibility
+
+**Tasks:**
+1. [ ] Add `/tree` slash command to interactive mode
+2. [ ] Show directory structure with file sizes
+3. [ ] Support depth limit: `/tree --depth=2`
+4. [ ] Support filtering: `/tree --ext=py`
+5. [ ] Use unicode box-drawing characters for display
+
+**Files to Modify:**
+- `micron/__main__.py` (new slash command)
+
+**Verification:**
+```bash
+python -m micron -i
+> /tree
+> /tree --depth=2
+> /tree --ext=py
+```
+
+**Success Criteria:**
+- `/tree` shows directory structure
+- Depth limit works
+- Extension filter works
+- Display is clean and readable
 
 ---
 
@@ -279,36 +374,46 @@ python -m pytest tests/ -v  # Should show 50+ tests
 
 | Slice | Task | Effort | Priority | Status | Tests Added |
 |-------|------|--------|----------|--------|-------------|
-| 1 | Merge server files | 2h | Medium | ⏳ Pending | 0 |
-| 2 | Add tests for new tools | 1h | Medium | ⏳ Pending | 3+ |
-| 3 | Add tests for resource limits | 1h | Medium | ⏳ Pending | 4+ |
-| 4 | Add tests for confirmation flow | 1h | Medium | ⏳ Pending | 3+ |
-| 5 | Update README with new features | 1h | Low | ⏳ Pending | 0 |
-| 6 | Add API documentation | 1h | Low | ⏳ Pending | 0 |
-| 7 | Expand test coverage | 2h | Medium | ⏳ Pending | 10+ |
+| 9 | Security: Replace shell=True | 2h | Critical | ⏳ Pending | 3+ |
+| 10 | Add .gitignore | 30m | Critical | ⏳ Pending | 0 |
+| 11 | Fix test_server.py threading | 3h | High | ⏳ Pending | 11 |
+| 12 | Implement get_authentication() | 1h | High | ⏳ Pending | 2+ |
+| 13 | Add delete_file undo | 2h | High | ⏳ Pending | 3+ |
+| 14 | Add edit_file undo | 1h | High | ⏳ Pending | 2+ |
+| 15 | Consolidate TF-IDF logic | 2h | Medium | ⏳ Pending | 3+ |
+| 16 | Add paste_file tool | 1h | Medium | ⏳ Pending | 2+ |
+| 17 | Add patch_file tool | 2h | Medium | ⏳ Pending | 3+ |
+| 18 | Add tree command | 1h | Low | ⏳ Pending | 1+ |
 
-**Total Estimated Effort:** 9-10 hours
-**Total Tests to Add:** 20+
-**Target Test Count:** 50+
+**Total Estimated Effort:** 15.5 hours  
+**Total Tests to Add:** 30+  
+**Target Test Count:** 97+ (66 + 31 new)
 
 ---
 
 ## Implementation Order Recommendation
 
-### Week 1: Core Stability
-1. **Slice 1:** Merge server files (2h)
-2. **Slice 2:** Add tests for new tools (1h)
-3. **Slice 3:** Add tests for resource limits (1h)
-4. **Slice 4:** Add tests for confirmation flow (1h)
+### Week 1: Security & Stability
+1. **Slice 9:** Security: Replace shell=True (2h) — **CRITICAL**
+2. **Slice 10:** Add .gitignore (30m) — **CRITICAL**
+3. **Slice 12:** Implement get_authentication() (1h)
+4. **Slice 13:** Add delete_file undo (2h)
 
-**Week 1 Result:** Single server, 40+ tests, all features tested
+**Week 1 Result:** Secure shell execution, clean auth, file recovery
 
-### Week 2: Documentation
-5. **Slice 5:** Update README (1h)
-6. **Slice 6:** Add API documentation (1h)
-7. **Slice 7:** Expand test coverage (2h)
+### Week 2: Quality & Testing
+5. **Slice 11:** Fix test_server.py threading (3h) — 77 tests
+6. **Slice 14:** Add edit_file undo (1h)
+7. **Slice 15:** Consolidate TF-IDF logic (2h)
 
-**Week 2 Result:** 50+ tests, comprehensive documentation
+**Week 2 Result:** 77+ tests, no code duplication
+
+### Week 3: New Features
+8. **Slice 16:** Add paste_file tool (1h)
+9. **Slice 17:** Add patch_file tool (2h)
+10. **Slice 18:** Add tree command (1h)
+
+**Week 3 Result:** 3 new tools, better UX
 
 ---
 
@@ -316,7 +421,7 @@ python -m pytest tests/ -v  # Should show 50+ tests
 
 ### Before Starting
 ```bash
-cd /workspace/msbuk1__micron-agent
+cd ~/micron
 git checkout -b slice/<slice-number>-<description>
 ```
 
@@ -329,9 +434,9 @@ python -m pytest tests/ -v
 ruff check micron/
 
 # Commit
- git add .
- git commit -m "<slice description>"
- git push origin <branch-name>
+git add .
+git commit -m "<slice description>"
+git push origin <branch-name>
 ```
 
 ---
@@ -339,11 +444,12 @@ ruff check micron/
 ## Verification Checklist
 
 Before merging any slice:
-- [ ] All existing tests pass (37+)
+- [ ] All existing tests pass (66+)
 - [ ] New tests pass (if added)
 - [ ] Code compiles without errors
 - [ ] No breaking changes to existing functionality
 - [ ] Documentation updated (if applicable)
+- [ ] Security review (if touching tools/builtin.py)
 
 ---
 
@@ -351,9 +457,10 @@ Before merging any slice:
 
 - Each slice is designed to be completed in a single sitting
 - Slices can be worked on in parallel by different team members
-- Slice 1 (merge server files) should be done first to avoid merge conflicts
-- Test slices (2-4, 7) can be done in any order
-- Documentation slices (5-6) can be done in any order
+- Slice 9 (security) should be done first — it's critical
+- Slice 10 (gitignore) is quick and prevents future issues
+- Test slices (11-15) can be done in any order
+- Feature slices (16-18) can be done in any order
 
 ---
 
