@@ -240,6 +240,57 @@ class Config:
             "max_output_size": int(self._config.get("resource_limits", {}).get("max_output_size", 15000)),
             "enabled": self._config.get("resource_limits", {}).get("enabled", False),
         }
+    
+    def get_authentication(self) -> dict:
+        """Get authentication configuration.
+        
+        Returns:
+            Dictionary with authentication settings:
+            - enabled: Whether authentication is enabled
+            - api_key_required: Whether API key is required
+            - api_key_env_var: Environment variable name for API key
+        """
+        auth_config = self._config.get("authentication", {})
+        return {
+            "enabled": auth_config.get("enabled", False),
+            "api_key_required": auth_config.get("api_key_required", False),
+            "api_key_env_var": auth_config.get("api_key_env_var", "MICRON_API_KEY"),
+        }
+    
+    def check_api_key(self, provided_key: Optional[str] = None) -> bool:
+        """Check if provided API key is valid.
+        
+        Args:
+            provided_key: API key from request header/query
+            
+        Returns:
+            True if valid or auth disabled, False if invalid
+        """
+        auth = self.get_authentication()
+        
+        # Auth disabled — always valid
+        if not auth["enabled"]:
+            return True
+        
+        # API key not required — always valid
+        if not auth["api_key_required"]:
+            return True
+        
+        # No key provided — invalid
+        if not provided_key:
+            return False
+        
+        # Get expected key from environment
+        expected_key = os.getenv(auth["api_key_env_var"], "")
+        if not expected_key:
+            # No key configured — deny access
+            return False
+        
+        # Constant-time comparison to prevent timing attacks
+        import hmac
+        return hmac.compare_digest(provided_key, expected_key)
+    
+    def __getitem__(self, key: str) -> Any:
         """Allow dictionary-style access."""
         return self.get(key)
     
