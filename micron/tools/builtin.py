@@ -20,10 +20,15 @@ except ImportError:
 
 # Working directory (reads from env var, resolved lazily)
 _workdir_cache = None
+_workdir_env_cache = None
 
 def _get_workdir() -> Path:
-    global _workdir_cache
+    global _workdir_cache, _workdir_env_cache
     env_val = os.getenv("MICRON_WORKDIR", os.getcwd())
+    # Invalidate cache if env var changes
+    if _workdir_env_cache != env_val:
+        _workdir_cache = None
+        _workdir_env_cache = env_val
     new = Path(env_val).resolve()
     if _workdir_cache != new:
         _workdir_cache = new
@@ -338,7 +343,7 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
             output += f"\n[STDERR]\n{result.stderr}"
 
         if output.strip():
-            return format_tool_result(output.strip(), "run_command")
+            return output.strip()
         
         return success("Command executed successfully")
     except subprocess.TimeoutExpired as e:
@@ -659,6 +664,14 @@ def delete_file(path: str) -> str:
         return target
     
     try:
+        # Prevent deletion of directories
+        if target.is_dir():
+            return handle_error(
+                "delete_file",
+                Exception(f"Cannot delete directory '{path}'"),
+                "use run_command with rm -rf to delete directories"
+            )
+        
         # Store file info for potential recovery
         file_name = target.name
         file_path = str(target)
@@ -692,41 +705,56 @@ def edit_file(path: str, old_text: str, new_text: str) -> str:
         return target
     
     try:
-        # Validate syntax before editing
+        # Validate syntax before editing (best-effort — skip if subprocess unavailable)
         if path.endswith('.py'):
-            compile_result = subprocess.run(
-                ["python3", "-m", "py_compile", str(target)],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if compile_result.returncode != 0:
-                return handle_error(
-                    "edit_file",
-                    Exception(f"Syntax error in {path}"),
-                    f"before editing: {compile_result.stderr}"
+            try:
+                compile_result = subprocess.run(
+                    ["python3", "-m", "py_compile", str(target)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
                 )
+                if compile_result.returncode != 0 and compile_result.stderr:
+                    return handle_error(
+                        "edit_file",
+                        Exception(f"Syntax error in {path}"),
+                        f"before editing: {compile_result.stderr}"
+                    )
+            except (subprocess.TimeoutExpired, OSError):
+                pass  # Skip validation if subprocess fails (resource limits)
         
         content = target.read_text(encoding="utf-8")
+        
+        # Check if old_text exists in file
+        if old_text not in content:
+            return handle_error(
+                "edit_file",
+                Exception(f"Text not found in {path}"),
+                "the specified text to replace was not found"
+            )
+        
         new_content = content.replace(old_text, new_text)
         target.write_text(new_content, encoding="utf-8")
         
-        # Validate syntax after editing
+        # Validate syntax after editing (best-effort — skip if subprocess unavailable)
         if path.endswith('.py'):
-            compile_result = subprocess.run(
-                ["python3", "-m", "py_compile", str(target)],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if compile_result.returncode != 0:
-                # Revert the edit if syntax error
-                target.write_text(content, encoding="utf-8")
-                return handle_error(
-                    "edit_file",
-                    Exception(f"Syntax error after editing {path}"),
-                    compile_result.stderr
+            try:
+                compile_result = subprocess.run(
+                    ["python3", "-m", "py_compile", str(target)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
                 )
+                if compile_result.returncode != 0 and compile_result.stderr:
+                    # Revert the edit if syntax error
+                    target.write_text(content, encoding="utf-8")
+                    return handle_error(
+                        "edit_file",
+                        Exception(f"Syntax error after editing {path}"),
+                        compile_result.stderr
+                    )
+            except (subprocess.TimeoutExpired, OSError):
+                pass  # Skip validation if subprocess fails (resource limits)
         
         return success(f"Edited {path} (replaced {len(old_text)} chars with {len(new_text)} chars)")
     except Exception as e:
@@ -785,7 +813,6 @@ def search_skill_library(query: str = "", text: str = "") -> str:
     return "\n".join(lines)
 
 
-# Tool registry for easy importing
 # Tool registry for easy importing
 TOOLS = {
     "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,

@@ -11,12 +11,11 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI, File, Request, UploadFile, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import time
 from collections import deque
-import os
 
 from micron.agent import create_agent, AgentConfig, MicronAgent
 from micron.llm import create_backend
@@ -26,6 +25,13 @@ chat_request_times = deque(maxlen=1000)  # Store last 1000 request timestamps
 
 # App state
 agent: MicronAgent | None = None
+_config_cache = None
+
+def _get_cached_config():
+    global _config_cache
+    if _config_cache is None:
+        _config_cache = load_config()
+    return _config_cache
 
 
 def check_authentication(request: Request) -> bool:
@@ -89,40 +95,6 @@ def check_rate_limit() -> bool:
     # Add current request
     chat_request_times.append(current_time)
     return False
-
-
-# Authentication function
-def check_authentication(request: Request) -> bool:
-    """Check if API key is valid.
-    
-    Args:
-        request: FastAPI request object
-        
-    Returns:
-        True if authenticated or auth disabled, False otherwise
-    """
-    from micron.config import load_config
-    
-    config = load_config()
-    auth_config = config.get("authentication", {})
-    
-    if not auth_config.get("enabled", False):
-        return True  # Authentication disabled
-    
-    if not auth_config.get("api_key_required", False):
-        return True  # API key not required
-    
-    # Get API key from header or environment
-    api_key = request.headers.get("X-API-KEY")
-    if not api_key:
-        api_key = os.getenv(auth_config.get("api_key_env_var", "MICRON_API_KEY"))
-    
-    # Check if valid (in production, this would validate against a database)
-    # For now, we'll just check if it's set
-    if not api_key:
-        return False
-    
-    return True
 
 
 from micron.config import load_config
@@ -292,13 +264,14 @@ async def chat(request: ChatRequest, req: Request = None):
 @app.get("/health")
 async def health():
     """Health check endpoint."""
+    config = _get_cached_config()
     return {
         "status": "ok",
         "tools": len(agent.tools.list()) if agent else 0,
         "memories": len(agent.memory) if agent else 0,
         "llm_configured": agent.llm is not None if agent else False,
-        "rate_limiting_enabled": load_config().get_rate_limits().get("enabled", False),
-        "authentication_enabled": load_config().get("authentication", {}).get("enabled", False),
+        "rate_limiting_enabled": config.get_rate_limits().get("enabled", False),
+        "authentication_enabled": config.get("authentication", {}).get("enabled", False),
     }
 
 

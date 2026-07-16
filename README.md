@@ -194,7 +194,7 @@ micron/
 ## Testing
 
 ```bash
-python -m pytest tests/ -v        # 77 tests
+python -m pytest tests/ -v        # 66 tests (11 server tests require threading)
 ```
 
 ## License
