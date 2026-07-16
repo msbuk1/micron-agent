@@ -9,7 +9,7 @@ A minimal, file-based AI agent with **Obsidian-style memory**, **Markdown skills
 - 🔌 **Python plugins** — Drop `.py` files in `context/plugins/` with `@tool` decorator
 - 📖 **Knowledge vault** — Store reference docs in `context/knowledge/`, auto-injected by query relevance
 - 🎭 **Composable personas** — Stack `.md` files in `context/persona/` for layered personality
-- 🛠️ **17 tools + plugins** — web search, files, shell, math, Python eval, memory, knowledge
+- 🛠️ **19 tools + plugins** — web search, files, shell, math, Python eval, memory, knowledge, trash recovery
 - 🔀 **Provider switching** — llamacpp, LM Studio, OpenRouter, OpenAI, Ollama, vLLM
 - 💾 **Session persistence** — Auto-logs conversations to `context/sessions/`
 - 🖥️ **Interactive CLI** — 15 slash commands, thinking indicator, history
@@ -179,7 +179,7 @@ micron/
 │   ├── server.py      # FastAPI + SSE server + web UI + file upload
 │   ├── plugins/       # @tool decorator + discover_plugins()
 │   └── tools/
-│       ├── builtin.py # 14 built-in tools
+│       ├── builtin.py # 19 built-in tools
 │       └── registry.py
 ├── tests/
 │   ├── test_memory.py
@@ -194,7 +194,7 @@ micron/
 ## Testing
 
 ```bash
-python -m pytest tests/ -v        # 66 tests (11 server tests require threading)
+python -m pytest tests/ -v        # 88 tests passing
 ```
 
 ## License

@@ -9,13 +9,13 @@
 
 ## Executive Summary
 
-The micron agent is a **minimal, file-based AI agent** with Obsidian-style memory, Markdown skills, knowledge vault, and tool calling. The codebase is **production-ready** with 66 tests passing.
+The micron agent is a **minimal, file-based AI agent** with Obsidian-style memory, Markdown skills, knowledge vault, and tool calling. The codebase is **production-ready** with 88 tests passing.
 
 ### Current State
 
 | Metric | Status |
 |--------|--------|
-| **Test Coverage** | 66/66 passing (100%) ✅ |
+| **Test Coverage** | 88/88 passing (100%) ✅ |
 | **Core Features** | 100% complete ✅ |
 | **Security** | Hardened (30+ command patterns blocked) ✅ |
 | **Error Handling** | Standardized across all tools ✅ |
@@ -55,7 +55,7 @@ micron/
 │   ├── persona/             # Personality layers
 │   ├── plugins/             # Python plugin tools
 │   └── uploads/             # Uploaded files
-├── tests/                   # 66 tests
+├── tests/                   # 88 tests
 ├── docs/
 │   └── self-assembling-skills.md
 ├── micron.yaml              # Provider configuration
@@ -164,6 +164,11 @@ micron/
 | Fix run_command return type | cb6bfd1 | ✅ Done |
 | Add delete_file directory guard | cb6bfd1 | ✅ Done |
 | Cache config in health endpoint | cb6bfd1 | ✅ Done |
+| Security: Replace shell=True | e8639b6 | ✅ Done |
+| Add .gitignore cleanup | c1089dc | ✅ Done |
+| Fix server tests threading | 1a55bb0 | ✅ Done |
+| Implement get_authentication() | 5fddae0 | ✅ Done |
+| Add delete_file trash recovery | 826491e | ✅ Done |
 
 ---
 
@@ -455,27 +460,25 @@ for i in {1..70}; do curl -s http://localhost:8000/health; done
 
 | Metric | Current | Target |
 |--------|---------|--------|
-| Test Coverage | 66/66 (100%) | 77+ (include server tests) |
+| Test Coverage | 88/88 (100%) ✅ | 95+ (include server tests) |
 | Feature Completeness | 100% | 100% |
 | Production Readiness | ✅ Ready | ✅ Ready |
-| Security Score | Good | Excellent (shell=False) |
+| Security Score | ✅ Excellent (shell=False) | ✅ Excellent |
 
 ---
 
 ## Next Steps
 
 ### Immediate (This Week)
-1. Security: Replace `shell=True` in `run_command`
-2. Add `.gitignore` for uploads and secrets
+1. Add edit_file undo (Slice 14)
 
 ### Short-term (Next Week)
-1. Fix `test_server.py` threading errors (77 tests)
-2. Implement `get_authentication()` or remove dead code
-3. Add undo/backup for delete and edit operations
+1. Consolidate TF-IDF logic (Slice 15)
+2. Add paste_file tool (Slice 16)
 
 ### Long-term (Month 2+)
-1. Consolidate TF-IDF logic
-2. Add paste_file, patch_file, tree tools
+1. Add patch_file tool (Slice 17)
+2. Add tree command (Slice 18)
 3. Plugin hot-reload
 4. Multi-modal support
 5. Session export
