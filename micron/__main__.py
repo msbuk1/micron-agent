@@ -318,6 +318,9 @@ def run_interactive(agent, no_stream: bool = False):
             print("  /sessions    List recent sessions")
             print("  /resume ID   Resume a previous session")
             print("  /last        Show last assistant response")
+            print("  /trash       List deleted files (recoverable)")
+            print("  /restore F   Restore a file from trash")
+            print("  /purge       Empty trash permanently")
             print("")
             print("Just type your message to chat with the agent.")
 
@@ -401,13 +404,42 @@ def run_interactive(agent, no_stream: bool = False):
             else:
                 print("No messages yet.")
 
+        elif command == "trash":
+            from micron.tools.builtin import list_trash
+            result = list_trash()
+            print(result)
+
+        elif command == "restore":
+            if not args:
+                print("Usage: /restore <filename>")
+                print("Use /trash to see available files")
+                return True
+            from micron.tools.builtin import restore_file
+            result = restore_file(args[0])
+            print(result)
+
+        elif command == "purge":
+            from pathlib import Path
+            trash_dir = Path(agent.context_dir).parent / ".trash"
+            if trash_dir.exists():
+                count = len(list(trash_dir.iterdir()))
+                if count == 0:
+                    print("Trash is already empty.")
+                else:
+                    import shutil
+                    shutil.rmtree(trash_dir)
+                    print(f"Purged {count} file(s) from trash.")
+            else:
+                print("Trash is already empty.")
+
         else:
             print(f"Unknown command: {command}. Try /help")
 
         return True
 
     known_commands = {"help", "?", "exit", "quit", "q", "clear", "mem", "tools", "model",
-                      "h", "unload", "reload", "providers", "sessions", "resume", "last"}
+                      "h", "unload", "reload", "providers", "sessions", "resume", "last",
+                      "trash", "restore", "purge"}
 
     try:
         while True:

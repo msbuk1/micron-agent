@@ -694,7 +694,7 @@ def list_skills(query: str = "") -> str:
 
 
 def delete_file(path: str) -> str:
-    """Delete a file from the working directory.
+    """Delete a file from the working directory (moves to .trash/ for recovery).
     
     Args:
         path: Path to the file to delete (relative to workdir)
@@ -703,6 +703,8 @@ def delete_file(path: str) -> str:
         Success message or error
     """
     from micron.tools.error_handling import handle_error, success
+    import shutil
+    from datetime import datetime
     
     target = _resolve_path(path, must_exist=True)
     if isinstance(target, str):
@@ -717,18 +719,135 @@ def delete_file(path: str) -> str:
                 "use run_command with rm -rf to delete directories"
             )
         
-        # Store file info for potential recovery
-        file_name = target.name
-        file_path = str(target)
+        # Create .trash directory if it doesn't exist
+        workdir = _get_workdir()
+        trash_dir = workdir / ".trash"
+        trash_dir.mkdir(exist_ok=True)
         
-        target.unlink()
-        return success(f"Deleted {file_name}")
+        # Generate unique trash name with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_name = target.name
+        trash_name = f"{file_name}.{timestamp}"
+        trash_path = trash_dir / trash_name
+        
+        # Move file to trash
+        shutil.move(str(target), str(trash_path))
+        
+        return success(f"Deleted {file_name} (recoverable via /restore)")
     except Exception as e:
         return handle_error(
             "delete_file",
             e,
             f"while deleting {path}"
         )
+
+
+def restore_file(filename: str) -> str:
+    """Restore a file from .trash/ directory.
+    
+    Args:
+        filename: Name of the file in .trash/ (from /trash listing)
+        
+    Returns:
+        Success message or error
+    """
+    from micron.tools.error_handling import handle_error, success
+    import shutil
+    
+    workdir = _get_workdir()
+    trash_dir = workdir / ".trash"
+    
+    if not trash_dir.exists():
+        return handle_error(
+            "restore_file",
+            Exception("No trash directory found"),
+            "no files have been deleted yet"
+        )
+    
+    # Find the file in trash
+    trash_path = trash_dir / filename
+    if not trash_path.exists():
+        # Try to find by original name (partial match)
+        matches = list(trash_dir.glob(f"{filename}.*"))
+        if len(matches) == 1:
+            trash_path = matches[0]
+        elif len(matches) > 1:
+            # Multiple matches — list them
+            names = [m.name for m in matches]
+            return handle_error(
+                "restore_file",
+                Exception(f"Multiple files match '{filename}'"),
+                f"found: {', '.join(names[:5])} — specify full name"
+            )
+        else:
+            return handle_error(
+                "restore_file",
+                Exception(f"File '{filename}' not found in trash"),
+                "use /trash to see available files"
+            )
+    
+    # Determine restore location (original name without timestamp)
+    original_name = trash_path.stem  # Remove .timestamp suffix
+    restore_path = workdir / original_name
+    
+    # Handle name collision
+    if restore_path.exists():
+        # Add (1), (2), etc.
+        counter = 1
+        while restore_path.exists():
+            stem = trash_path.stem.rsplit(".", 1)[0] if "." in trash_path.stem else trash_path.stem
+            restore_path = workdir / f"{stem}({counter}){trash_path.suffix}"
+            counter += 1
+    
+    try:
+        shutil.move(str(trash_path), str(restore_path))
+        return success(f"Restored to {restore_path.name}")
+    except Exception as e:
+        return handle_error(
+            "restore_file",
+            e,
+            f"while restoring {filename}"
+        )
+
+
+def list_trash() -> str:
+    """List files in .trash/ directory.
+    
+    Returns:
+        List of trashed files with timestamps, or empty message
+    """
+    from micron.tools.error_handling import success
+    
+    workdir = _get_workdir()
+    trash_dir = workdir / ".trash"
+    
+    if not trash_dir.exists():
+        return success("Trash is empty (no files deleted yet)")
+    
+    files = sorted(trash_dir.iterdir())
+    if not files:
+        return success("Trash is empty")
+    
+    lines = ["🗑️ Trash:"]
+    for f in files:
+        if f.is_file():
+            # Extract timestamp from filename
+            parts = f.name.rsplit(".", 1)
+            if len(parts) == 2 and len(parts[1]) == 15:  # YYYYMMDD_HHMMSS
+                original_name = parts[0]
+                timestamp = parts[1]
+                # Format timestamp nicely
+                try:
+                    from datetime import datetime
+                    dt = datetime.strptime(timestamp, "%Y%m%d_%H%M%S")
+                    time_str = dt.strftime("%Y-%m-%d %H:%M")
+                except ValueError:
+                    time_str = timestamp
+                lines.append(f"  {f.name}  ({original_name}, deleted {time_str})")
+            else:
+                lines.append(f"  {f.name}")
+    
+    return "\n".join(lines)
 
 
 def edit_file(path: str, old_text: str, new_text: str) -> str:
@@ -867,6 +986,8 @@ TOOLS = {
     "write_knowledge": write_knowledge,
     "create_skill": create_skill, "search_skill_library": search_skill_library,
     "delete_file": delete_file,
+    "restore_file": restore_file,
+    "list_trash": list_trash,
     "edit_file": edit_file,
     "list_skills": list_skills,
 }

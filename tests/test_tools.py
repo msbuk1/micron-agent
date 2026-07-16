@@ -139,3 +139,108 @@ class TestListSkills:
         
         # Should return a string (either list of skills or error message)
         assert isinstance(result, str)
+
+
+class TestTrashRecovery:
+    """Tests for delete_file trash recovery, restore_file, and list_trash."""
+    
+    def test_delete_moves_to_trash(self, test_dir):
+        """Test that delete_file moves to .trash/ instead of deleting."""
+        from micron.tools.builtin import list_trash
+        
+        # Create a test file
+        test_file = test_dir / "trash_test.txt"
+        test_file.write_text("delete me")
+        
+        # Delete it
+        result = delete_file("trash_test.txt")
+        assert "Deleted" in result
+        assert "recoverable" in result
+        
+        # File should be gone from original location
+        assert not test_file.exists()
+        
+        # File should be in .trash/
+        trash_dir = test_dir / ".trash"
+        assert trash_dir.exists()
+        trash_files = list(trash_dir.glob("trash_test.txt.*"))
+        assert len(trash_files) == 1
+    
+    def test_list_trash(self, test_dir):
+        """Test listing trashed files."""
+        from micron.tools.builtin import list_trash
+        
+        # Create and delete a file
+        test_file = test_dir / "list_test.txt"
+        test_file.write_text("list me")
+        delete_file("list_test.txt")
+        
+        # List trash
+        result = list_trash()
+        assert "list_test.txt" in result
+        assert "Trash" in result
+    
+    def test_list_trash_empty(self, test_dir):
+        """Test listing empty trash."""
+        from micron.tools.builtin import list_trash
+        
+        result = list_trash()
+        assert "empty" in result.lower()
+    
+    def test_restore_file(self, test_dir):
+        """Test restoring a file from trash."""
+        from micron.tools.builtin import restore_file
+        
+        # Create and delete a file
+        test_file = test_dir / "restore_test.txt"
+        test_file.write_text("restore me")
+        delete_file("restore_test.txt")
+        
+        # Get the trash filename
+        trash_dir = test_dir / ".trash"
+        trash_files = list(trash_dir.glob("restore_test.txt.*"))
+        assert len(trash_files) == 1
+        trash_name = trash_files[0].name
+        
+        # Restore it
+        result = restore_file(trash_name)
+        assert "Restored" in result
+        
+        # File should be back
+        assert test_file.exists()
+        assert test_file.read_text() == "restore me"
+        
+        # Trash should be empty
+        assert not trash_files[0].exists()
+    
+    def test_restore_by_partial_name(self, test_dir):
+        """Test restoring by original name (partial match)."""
+        from micron.tools.builtin import restore_file
+        
+        # Create and delete a file
+        test_file = test_dir / "partial_test.txt"
+        test_file.write_text("partial restore")
+        delete_file("partial_test.txt")
+        
+        # Restore by original name
+        result = restore_file("partial_test.txt")
+        assert "Restored" in result
+        
+        # File should be back
+        assert test_file.exists()
+    
+    def test_restore_nonexistent(self, test_dir):
+        """Test restoring a file that doesn't exist in trash."""
+        from micron.tools.builtin import restore_file
+        
+        result = restore_file("nonexistent.txt")
+        assert "Error" in result or "not found" in result.lower()
+    
+    def test_delete_directory_blocked(self, test_dir):
+        """Test that deleting directories is still blocked."""
+        # Create a test directory
+        test_dir.mkdir(exist_ok=True)
+        
+        # Try to delete it
+        result = delete_file(str(test_dir.name))
+        assert "Error" in result or "Cannot delete directory" in result
