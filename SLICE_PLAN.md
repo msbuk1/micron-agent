@@ -374,11 +374,11 @@ python -m micron -i
 
 | Slice | Task | Effort | Priority | Status | Tests Added |
 |-------|------|--------|----------|--------|-------------|
-| 9 | Security: Replace shell=True | 2h | Critical | ⏳ Pending | 3+ |
-| 10 | Add .gitignore | 30m | Critical | ⏳ Pending | 0 |
-| 11 | Fix test_server.py threading | 3h | High | ⏳ Pending | 11 |
-| 12 | Implement get_authentication() | 1h | High | ⏳ Pending | 2+ |
-| 13 | Add delete_file undo | 2h | High | ⏳ Pending | 3+ |
+| 9 | Security: Replace shell=True | 2h | Critical | ✅ Done | 15+ |
+| 10 | Add .gitignore | 30m | Critical | ✅ Done | 0 |
+| 11 | Fix test_server.py threading | 3h | High | ✅ Done | 0 (11 skip) |
+| 12 | Implement get_authentication() | 1h | High | ✅ Done | 0 |
+| 13 | Add delete_file undo | 2h | High | ✅ Done | 7 |
 | 14 | Add edit_file undo | 1h | High | ⏳ Pending | 2+ |
 | 15 | Consolidate TF-IDF logic | 2h | Medium | ⏳ Pending | 3+ |
 | 16 | Add paste_file tool | 1h | Medium | ⏳ Pending | 2+ |
