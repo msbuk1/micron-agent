@@ -259,65 +259,12 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
     Returns:
         Command output or error message
     """
-    from micron.tools.error_handling import handle_error, format_tool_result, success
+    from micron.tools.error_handling import handle_error, success
     import re
+    import shlex
     
     # Restrict mode. If MICRON_UNRESTRICTED=1, only block truly destructive patterns.
     unrestricted = os.getenv("MICRON_UNRESTRICTED", "").lower() in ("1", "true", "yes")
-
-    # Improved command blocklist with regex patterns
-    denied_patterns = [
-        r":\(\)\{",  # Fork bomb pattern
-        r"fork\s+bomb",  # Fork bomb
-        r"chmod\s+-R\s+777",  # Recursive chmod 777
-        r">\s*/dev/sd",  # Redirect to block device
-    ]
-    
-    if not unrestricted:
-        # Dangerous commands that should always be blocked
-        denied_patterns.extend([
-            r"rm\s+-rf\b",  # rm -rf (recursive delete)
-            r"mkfs\b",  # mkfs (format filesystem)
-            r"dd\s+if=",  # dd with input file
-            r"sudo\s+su\b",  # sudo su
-            r"sudo\s+sh\b",  # sudo sh
-            r"sudo\s+bash\b",  # sudo bash
-            r"chmod\s+777",  # chmod 777
-            r"chown\s+.*:.*",  # chown to arbitrary user
-            r"\|\s*bash\b",  # pipe to bash
-            r"\|\s*sh\b",  # pipe to sh
-            r"\|\s*zsh\b",  # pipe to zsh
-            r"wget\s+.*\|\s*bash",  # wget | bash
-            r"curl\s+.*\|\s*bash",  # curl | bash
-            r"wget\s+.*\|\s*sh",  # wget | sh
-            r"curl\s+.*\|\s*sh",  # curl | sh
-            r"wget\s+.*\|\s*zsh",  # wget | zsh
-            r"curl\s+.*\|\s*zsh",  # curl | zsh
-            r"\.\s*/",  # Relative path execution (./malicious.sh)
-            r"~/",  # Home directory execution
-            r"\$\(",  # Command substitution
-            r"`.*`",  # Backtick command substitution
-            r"apt-get\s+install",  # Package installation
-            r"yum\s+install",  # Package installation
-            r"pacman\s+-Sy",  # Package installation
-            r"chsh",  # Change shell
-            r"useradd\b",  # Add user
-            r"userdel\b",  # Delete user
-            r"passwd",  # Change password
-            r"mv\s+/.*",  # Move to root
-            r"cp\s+/.*",  # Copy to root
-        ])
-
-    cmd_lower = cmd.lower().strip()
-    
-    # Check for dangerous patterns using regex
-    for pattern in denied_patterns:
-        if re.search(pattern, cmd_lower):
-            return handle_error(
-                "run_command",
-                Exception(f"Command blocked: dangerous pattern detected"),
-                f"blocked command containing '{pattern}'"
-            )
 
     # Additional safety checks
     _set_command_resource_limits()
@@ -328,13 +275,105 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
             "command exceeds 500 character limit"
         )
 
+    # Parse command into args (shell-safe)
+    try:
+        args = shlex.split(cmd)
+    except ValueError as e:
+        return handle_error(
+            "run_command",
+            Exception(f"Invalid command syntax: {e}"),
+            "could not parse command"
+        )
+    
+    if not args:
+        return handle_error(
+            "run_command",
+            Exception("Empty command"),
+            "no command provided"
+        )
+    
+    # Check first argument (command name) against blocklist
+    cmd_name = args[0].lower()
+    
+    # Blocked command names (always blocked)
+    blocked_commands = {
+        "rm", "mkfs", "dd", "sudo", "chown", "chmod",
+        "chsh", "useradd", "userdel", "passwd",
+        "wget", "curl", "apt-get", "yum", "pacman",
+    }
+    
+    # Check if command is blocked
+    if cmd_name in blocked_commands and not unrestricted:
+        # Special case: allow safe rm usage (rm file.txt, not rm -rf)
+        if cmd_name == "rm" and not any(a.startswith("-") and "r" in a for a in args[1:]):
+            pass  # Allow safe rm
+        else:
+            return handle_error(
+                "run_command",
+                Exception(f"Command '{cmd_name}' is blocked"),
+                f"blocked command for security reasons"
+            )
+    
+    # Check for dangerous flags and patterns in ALL args (including command name)
+    if not unrestricted:
+        for i, arg in enumerate(args):
+            arg_lower = arg.lower()
+            
+            # Block recursive delete flags
+            if cmd_name == "rm" and arg_lower.startswith("-") and "r" in arg_lower:
+                return handle_error(
+                    "run_command",
+                    Exception("Recursive delete is blocked"),
+                    "rm -r/-rf is not allowed"
+                )
+            
+            # Block pipe operator
+            if arg == "|":
+                return handle_error(
+                    "run_command",
+                    Exception("Pipe operator is blocked"),
+                    "shell pipes are not allowed"
+                )
+            
+            # Block shell execution via path (./ or ~/)
+            if arg.startswith("./") or arg.startswith("~/"):
+                return handle_error(
+                    "run_command",
+                    Exception("Executing scripts from path is blocked"),
+                    "cannot execute ./script or ~/script"
+                )
+            
+            # Block command substitution
+            if arg.startswith("$(") or arg.startswith("`"):
+                return handle_error(
+                    "run_command",
+                    Exception("Command substitution is blocked"),
+                    "cannot use $(...) or backticks"
+                )
+            
+            # Block redirection to block devices
+            if arg.startswith("/dev/sd") or arg.startswith("/dev/nvme"):
+                return handle_error(
+                    "run_command",
+                    Exception("Redirect to block device is blocked"),
+                    "cannot write to block devices"
+                )
+            
+            # Block shell names as arguments (bash, sh, zsh)
+            if arg_lower in ("bash", "sh", "zsh"):
+                return handle_error(
+                    "run_command",
+                    Exception("Shell execution is blocked"),
+                    "cannot execute bash/sh/zsh"
+                )
+    
     try:
         workdir = _resolve_path(cwd)
         if isinstance(workdir, str):
             return workdir
 
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
+            args, shell=False, capture_output=True, text=True,
             timeout=timeout, cwd=workdir,
         )
 
@@ -351,6 +390,12 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
             "run_command",
             e,
             f"command timed out after {timeout} seconds"
+        )
+    except FileNotFoundError as e:
+        return handle_error(
+            "run_command",
+            e,
+            f"command not found: {args[0]}"
         )
     except Exception as e:
         return handle_error(
