@@ -293,6 +293,58 @@ def paste_file(path: str, content: str, line: int = 0) -> str:
         )
 
 
+def patch_file(path: str, patches: list[dict]) -> str:
+    """Apply multiple patches to a file.
+    
+    Each patch is a dict with 'old' and 'new' keys (like sed/find-replace).
+    
+    Args:
+        path: Path to the file (relative to workdir)
+        patches: List of dicts with 'old' (text to find) and 'new' (replacement)
+        
+    Returns:
+        Success message or error
+    """
+    from micron.tools.error_handling import handle_error, success
+    
+    target = _resolve_path(path, must_exist=True)
+    if isinstance(target, str):
+        return target
+    
+    try:
+        content = target.read_text(encoding="utf-8")
+        original = content
+        applied = 0
+        
+        for patch in patches:
+            old_text = patch.get("old", "")
+            new_text = patch.get("new", "")
+            
+            if not old_text:
+                continue
+            
+            if old_text in content:
+                content = content.replace(old_text, new_text, 1)
+                applied += 1
+        
+        if applied == 0:
+            return handle_error(
+                "patch_file",
+                Exception("No patches applied"),
+                "none of the 'old' texts were found in the file"
+            )
+        
+        target.write_text(content, encoding="utf-8")
+        return success(f"Patched {path}: {applied}/{len(patches)} patches applied")
+    
+    except Exception as e:
+        return handle_error(
+            "patch_file",
+            e,
+            f"while patching {path}"
+        )
+
+
 def list_files(path: str = ".") -> str:
     """List files and directories in the specified path."""
     target_path = _resolve_path(path, must_exist=True)
@@ -1068,8 +1120,8 @@ def search_skill_library(query: str = "", text: str = "") -> str:
 # Tool registry for easy importing
 TOOLS = {
     "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
-    "write_file": write_file, "paste_file": paste_file, "list_files": list_files,
-    "run_command": run_command,
+    "write_file": write_file, "paste_file": paste_file, "patch_file": patch_file,
+    "list_files": list_files, "run_command": run_command,
     "calculate": calculate, "python_eval": python_eval, "current_time": current_time,
     "save_memory": save_memory, "search_knowledge": search_knowledge,
     "write_knowledge": write_knowledge,

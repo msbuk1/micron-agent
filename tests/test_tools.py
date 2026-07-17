@@ -390,3 +390,97 @@ class TestPasteFile:
         test_file = test_dir / "subdir" / "nested" / "file.txt"
         assert test_file.exists()
         assert test_file.read_text() == "content"
+
+
+class TestPatchFile:
+    """Tests for patch_file tool."""
+    
+    def test_single_patch(self, test_dir):
+        """Test applying a single patch."""
+        from micron.tools.builtin import patch_file
+        
+        # Create test file
+        test_file = test_dir / "patch_test.txt"
+        test_file.write_text("Hello World\n")
+        
+        # Apply patch
+        patches = [{"old": "World", "new": "Python"}]
+        result = patch_file("patch_test.txt", patches)
+        assert "Success" in result or "success" in result.lower()
+        assert "1/1" in result
+        
+        # Verify content
+        assert test_file.read_text() == "Hello Python\n"
+    
+    def test_multiple_patches(self, test_dir):
+        """Test applying multiple patches."""
+        from micron.tools.builtin import patch_file
+        
+        # Create test file
+        test_file = test_dir / "multi_patch.txt"
+        test_file.write_text("A B C\n")
+        
+        # Apply patches
+        patches = [
+            {"old": "A", "new": "X"},
+            {"old": "B", "new": "Y"},
+            {"old": "C", "new": "Z"}
+        ]
+        result = patch_file("multi_patch.txt", patches)
+        assert "Success" in result or "success" in result.lower()
+        assert "3/3" in result
+        
+        # Verify content
+        assert test_file.read_text() == "X Y Z\n"
+    
+    def test_partial_patches(self, test_dir):
+        """Test when some patches don't match."""
+        from micron.tools.builtin import patch_file
+        
+        # Create test file
+        test_file = test_dir / "partial_patch.txt"
+        test_file.write_text("Hello World\n")
+        
+        # Apply patches (one won't match)
+        patches = [
+            {"old": "World", "new": "Python"},
+            {"old": "NOTFOUND", "new": "X"}
+        ]
+        result = patch_file("partial_patch.txt", patches)
+        assert "Success" in result or "success" in result.lower()
+        assert "1/2" in result
+        
+        # Verify content (only first patch applied)
+        assert test_file.read_text() == "Hello Python\n"
+    
+    def test_no_patches_applied(self, test_dir):
+        """Test when no patches match."""
+        from micron.tools.builtin import patch_file
+        
+        # Create test file
+        test_file = test_dir / "no_patch.txt"
+        test_file.write_text("Hello World\n")
+        
+        # Apply patches (none match)
+        patches = [{"old": "NOTFOUND", "new": "X"}]
+        result = patch_file("no_patch.txt", patches)
+        assert "Error" in result or "error" in result.lower()
+        
+        # Verify content unchanged
+        assert test_file.read_text() == "Hello World\n"
+    
+    def test_multiline_patch(self, test_dir):
+        """Test patching multiline content."""
+        from micron.tools.builtin import patch_file
+        
+        # Create test file
+        test_file = test_dir / "multiline.txt"
+        test_file.write_text("line 1\nline 2\nline 3\n")
+        
+        # Apply patch
+        patches = [{"old": "line 2\nline 3", "new": "modified 2\nmodified 3"}]
+        result = patch_file("multiline.txt", patches)
+        assert "Success" in result or "success" in result.lower()
+        
+        # Verify content
+        assert test_file.read_text() == "line 1\nmodified 2\nmodified 3\n"
