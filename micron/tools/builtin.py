@@ -357,6 +357,56 @@ def list_files(path: str = ".") -> str:
     except Exception as e:
         return f"Error listing directory: {e}"
 
+
+def tree(path: str = ".", max_depth: int = 3, show_files: bool = True) -> str:
+    """Display directory structure as a tree.
+    
+    Args:
+        path: Path to display (relative to workdir)
+        max_depth: Maximum depth to display (default 3)
+        show_files: Show files (default True)
+        
+    Returns:
+        Tree representation of directory
+    """
+    from pathlib import Path
+    
+    target = _resolve_path(path, must_exist=True)
+    if isinstance(target, str):
+        return target
+    
+    def build_tree(dir_path: Path, prefix: str = "", depth: int = 0) -> list[str]:
+        if depth >= max_depth:
+            return []
+        
+        lines = []
+        try:
+            entries = sorted(dir_path.iterdir(), key=lambda x: (x.is_file(), x.name))
+        except PermissionError:
+            return [f"{prefix}[Permission Denied]"]
+        
+        # Filter entries
+        if not show_files:
+            entries = [e for e in entries if e.is_dir()]
+        
+        for i, entry in enumerate(entries):
+            is_last = i == len(entries) - 1
+            connector = "└── " if is_last else "├── "
+            
+            if entry.is_dir():
+                lines.append(f"{prefix}{connector}{entry.name}/")
+                extension = "    " if is_last else "│   "
+                lines.extend(build_tree(entry, prefix + extension, depth + 1))
+            else:
+                lines.append(f"{prefix}{connector}{entry.name}")
+        
+        return lines
+    
+    result = [target.name + "/"]
+    result.extend(build_tree(target))
+    return "\n".join(result)
+
+
 def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
     """Run a shell command and return its output.
     
@@ -1121,7 +1171,7 @@ def search_skill_library(query: str = "", text: str = "") -> str:
 TOOLS = {
     "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
     "write_file": write_file, "paste_file": paste_file, "patch_file": patch_file,
-    "list_files": list_files, "run_command": run_command,
+    "list_files": list_files, "tree": tree, "run_command": run_command,
     "calculate": calculate, "python_eval": python_eval, "current_time": current_time,
     "save_memory": save_memory, "search_knowledge": search_knowledge,
     "write_knowledge": write_knowledge,

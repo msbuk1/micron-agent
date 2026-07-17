@@ -484,3 +484,74 @@ class TestPatchFile:
         
         # Verify content
         assert test_file.read_text() == "line 1\nmodified 2\nmodified 3\n"
+
+
+class TestTree:
+    """Tests for tree function."""
+    
+    def test_simple_tree(self, test_dir):
+        """Test tree with simple structure."""
+        from micron.tools.builtin import tree
+        
+        # Create test structure
+        (test_dir / "file1.txt").write_text("content")
+        (test_dir / "file2.txt").write_text("content")
+        
+        result = tree(".")
+        assert "/" in result  # Root directory
+        assert "file1.txt" in result
+        assert "file2.txt" in result
+    
+    def test_nested_tree(self, test_dir):
+        """Test tree with nested directories."""
+        from micron.tools.builtin import tree
+        
+        # Create nested structure
+        subdir = test_dir / "subdir"
+        subdir.mkdir()
+        (subdir / "nested.txt").write_text("content")
+        (test_dir / "root.txt").write_text("content")
+        
+        result = tree(".")
+        assert "subdir/" in result
+        assert "nested.txt" in result
+        assert "root.txt" in result
+    
+    def test_max_depth(self, test_dir):
+        """Test tree with max_depth limit."""
+        from micron.tools.builtin import tree
+        
+        # Create deep structure
+        deep = test_dir / "a" / "b" / "c"
+        deep.mkdir(parents=True)
+        (deep / "deep.txt").write_text("content")
+        
+        # Limit depth to 2
+        result = tree(".", max_depth=2)
+        assert "a/" in result
+        assert "b/" in result
+        # c/ should not appear (depth 3)
+        assert "c/" not in result
+    
+    def test_dirs_only(self, test_dir):
+        """Test tree showing only directories."""
+        from micron.tools.builtin import tree
+        
+        # Create structure with files and dirs
+        (test_dir / "file.txt").write_text("content")
+        subdir = test_dir / "subdir"
+        subdir.mkdir()
+        (subdir / "file2.txt").write_text("content")
+        
+        result = tree(".", show_files=False)
+        assert "subdir/" in result
+        assert "file.txt" not in result
+        assert "file2.txt" not in result
+    
+    def test_empty_dir(self, test_dir):
+        """Test tree on empty directory."""
+        from micron.tools.builtin import tree
+        
+        result = tree(".")
+        # Should just show the root
+        assert "/" in result
