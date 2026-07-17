@@ -236,6 +236,63 @@ def write_file(path: str, content: str, mode: str = "w") -> str:
     except Exception as e:
         return f"Error writing file: {e}"
 
+
+def paste_file(path: str, content: str, line: int = 0) -> str:
+    """Paste content to a file at a specific line position.
+    
+    Args:
+        path: Path to the file (relative to workdir)
+        content: Text content to paste
+        line: Line number to insert at (0 = append to end, 1 = first line)
+        
+    Returns:
+        Success message or error
+    """
+    from micron.tools.error_handling import handle_error, success
+    
+    target = _resolve_path(path, must_exist=False)
+    if isinstance(target, str):
+        return target
+    
+    try:
+        # Create parent directories if needed
+        target.parent.mkdir(parents=True, exist_ok=True)
+        
+        if line <= 0:
+            # Append to end (default)
+            with open(target, "a", encoding="utf-8") as f:
+                f.write(content)
+            return success(f"Pasted {len(content)} chars to {path} (appended)")
+        
+        # Insert at specific line
+        if target.exists():
+            lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
+        else:
+            lines = []
+        
+        # Convert to 0-indexed
+        idx = line - 1
+        if idx < 0:
+            idx = 0
+        
+        # Ensure content ends with newline
+        if content and not content.endswith("\n"):
+            content += "\n"
+        
+        # Insert at position
+        lines.insert(idx, content)
+        
+        target.write_text("".join(lines), encoding="utf-8")
+        return success(f"Pasted {len(content)} chars to {path} at line {line}")
+    
+    except Exception as e:
+        return handle_error(
+            "paste_file",
+            e,
+            f"while pasting to {path}"
+        )
+
+
 def list_files(path: str = ".") -> str:
     """List files and directories in the specified path."""
     target_path = _resolve_path(path, must_exist=True)
@@ -1011,7 +1068,8 @@ def search_skill_library(query: str = "", text: str = "") -> str:
 # Tool registry for easy importing
 TOOLS = {
     "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
-    "write_file": write_file, "list_files": list_files, "run_command": run_command,
+    "write_file": write_file, "paste_file": paste_file, "list_files": list_files,
+    "run_command": run_command,
     "calculate": calculate, "python_eval": python_eval, "current_time": current_time,
     "save_memory": save_memory, "search_knowledge": search_knowledge,
     "write_knowledge": write_knowledge,
