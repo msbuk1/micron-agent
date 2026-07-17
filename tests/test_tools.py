@@ -244,3 +244,71 @@ class TestTrashRecovery:
         # Try to delete it
         result = delete_file(str(test_dir.name))
         assert "Error" in result or "Cannot delete directory" in result
+
+
+class TestEditUndo:
+    """Tests for edit_file backup and undo_file."""
+    
+    def test_edit_creates_backup(self, test_dir):
+        """Test that edit_file creates a .bak backup."""
+        # Create a test file
+        test_file = test_dir / "backup_test.txt"
+        test_file.write_text("original content")
+        
+        # Edit it
+        result = edit_file("backup_test.txt", "original", "modified")
+        assert "Success" in result or "success" in result.lower()
+        
+        # Check that .bak file was created
+        bak_file = test_dir / "backup_test.txt.bak"
+        assert bak_file.exists()
+        assert bak_file.read_text() == "original content"
+    
+    def test_undo_file_restores_backup(self, test_dir):
+        """Test that undo_file restores from .bak backup."""
+        # Create a test file
+        test_file = test_dir / "undo_test.txt"
+        test_file.write_text("original content")
+        
+        # Edit it
+        edit_file("undo_test.txt", "original", "modified")
+        assert test_file.read_text() == "modified content"
+        
+        # Undo the edit
+        from micron.tools.builtin import undo_file
+        result = undo_file("undo_test.txt")
+        assert "Restored" in result
+        
+        # Verify file is restored
+        assert test_file.read_text() == "original content"
+        
+        # Verify .bak file is removed
+        bak_file = test_dir / "undo_test.txt.bak"
+        assert not bak_file.exists()
+    
+    def test_undo_nonexistent_backup(self, test_dir):
+        """Test undo_file when no backup exists."""
+        from micron.tools.builtin import undo_file
+        
+        result = undo_file("no_backup.txt")
+        assert "Error" in result or "No backup" in result
+    
+    def test_multiple_edits_keep_latest_backup(self, test_dir):
+        """Test that multiple edits keep only the latest backup."""
+        # Create a test file
+        test_file = test_dir / "multi_edit.txt"
+        test_file.write_text("version 1")
+        
+        # Edit twice
+        edit_file("multi_edit.txt", "version 1", "version 2")
+        edit_file("multi_edit.txt", "version 2", "version 3")
+        
+        # Check that .bak has version 2 (the state before second edit)
+        bak_file = test_dir / "multi_edit.txt.bak"
+        assert bak_file.exists()
+        assert bak_file.read_text() == "version 2"
+        
+        # Undo should restore to version 2
+        from micron.tools.builtin import undo_file
+        undo_file("multi_edit.txt")
+        assert test_file.read_text() == "version 2"

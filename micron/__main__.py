@@ -321,6 +321,7 @@ def run_interactive(agent, no_stream: bool = False):
             print("  /trash       List deleted files (recoverable)")
             print("  /restore F   Restore a file from trash")
             print("  /purge       Empty trash permanently")
+            print("  /undo F      Restore file from .bak backup")
             print("")
             print("Just type your message to chat with the agent.")
 
@@ -432,6 +433,15 @@ def run_interactive(agent, no_stream: bool = False):
             else:
                 print("Trash is already empty.")
 
+        elif command == "undo":
+            if not args:
+                print("Usage: /undo <filename>")
+                print("Restores file from .bak backup created by edit_file")
+                return True
+            from micron.tools.builtin import undo_file
+            result = undo_file(args[0])
+            print(result)
+
         else:
             print(f"Unknown command: {command}. Try /help")
 
@@ -439,7 +449,7 @@ def run_interactive(agent, no_stream: bool = False):
 
     known_commands = {"help", "?", "exit", "quit", "q", "clear", "mem", "tools", "model",
                       "h", "unload", "reload", "providers", "sessions", "resume", "last",
-                      "trash", "restore", "purge"}
+                      "trash", "restore", "purge", "undo"}
 
     try:
         while True:

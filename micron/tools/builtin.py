@@ -853,6 +853,8 @@ def list_trash() -> str:
 def edit_file(path: str, old_text: str, new_text: str) -> str:
     """Edit a file by replacing old_text with new_text.
     
+    Creates a .bak backup before editing for undo support.
+    
     Args:
         path: Path to the file (relative to workdir)
         old_text: Text to replace
@@ -863,6 +865,7 @@ def edit_file(path: str, old_text: str, new_text: str) -> str:
     """
     from micron.tools.error_handling import handle_error, success
     import subprocess
+    import shutil
     
     target = _resolve_path(path, must_exist=True)
     if isinstance(target, str):
@@ -897,6 +900,10 @@ def edit_file(path: str, old_text: str, new_text: str) -> str:
                 "the specified text to replace was not found"
             )
         
+        # Create backup before editing
+        bak_path = target.with_suffix(target.suffix + ".bak")
+        shutil.copy2(str(target), str(bak_path))
+        
         new_content = content.replace(old_text, new_text)
         target.write_text(new_content, encoding="utf-8")
         
@@ -911,7 +918,7 @@ def edit_file(path: str, old_text: str, new_text: str) -> str:
                 )
                 if compile_result.returncode != 0 and compile_result.stderr:
                     # Revert the edit if syntax error
-                    target.write_text(content, encoding="utf-8")
+                    shutil.copy2(str(bak_path), str(target))
                     return handle_error(
                         "edit_file",
                         Exception(f"Syntax error after editing {path}"),
@@ -926,6 +933,45 @@ def edit_file(path: str, old_text: str, new_text: str) -> str:
             "edit_file",
             e,
             f"while editing {path}"
+        )
+
+
+def undo_file(path: str) -> str:
+    """Restore a file from its .bak backup.
+    
+    Args:
+        path: Path to the file to restore (relative to workdir)
+        
+    Returns:
+        Success message or error
+    """
+    from micron.tools.error_handling import handle_error, success
+    import shutil
+    
+    target = _resolve_path(path, must_exist=False)
+    if isinstance(target, str):
+        # File doesn't exist, try to find .bak
+        target = _get_workdir() / path
+    
+    bak_path = target.with_suffix(target.suffix + ".bak")
+    
+    if not bak_path.exists():
+        return handle_error(
+            "undo_file",
+            Exception(f"No backup found for {path}"),
+            "edit_file creates .bak backups automatically"
+        )
+    
+    try:
+        shutil.copy2(str(bak_path), str(target))
+        # Remove the backup after successful restore
+        bak_path.unlink()
+        return success(f"Restored {path} from backup")
+    except Exception as e:
+        return handle_error(
+            "undo_file",
+            e,
+            f"while restoring {path}"
         )
 
 
@@ -989,5 +1035,6 @@ TOOLS = {
     "restore_file": restore_file,
     "list_trash": list_trash,
     "edit_file": edit_file,
+    "undo_file": undo_file,
     "list_skills": list_skills,
 }
