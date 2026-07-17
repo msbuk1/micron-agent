@@ -478,12 +478,10 @@ def save_memory(text: str, tags: list[str] = None, importance: int = 3) -> str:
 
 
 def search_knowledge(query: str = "", k: int = 5) -> str:
-    """Search knowledge documents using TF‑IDF scoring. Returns ranked markdown snippets."""
-    import math
-    from collections import Counter
+    """Search knowledge documents using TF-IDF scoring. Returns ranked markdown snippets."""
     from pathlib import Path
     import os, re
-    from datetime import datetime
+    from micron.search import TFIDFIndex
 
     workdir = Path(os.getenv("MICRON_WORKDIR", os.getcwd()))
     knowledge_dir = workdir / "context" / "knowledge"
@@ -509,41 +507,28 @@ def search_knowledge(query: str = "", k: int = 5) -> str:
     if not texts:
         return "(no knowledge documents)"
 
-    def tokenize(t: str) -> list[str]:
-        return re.findall(r"\b\w+\b", t.lower())
-
-    # Build TF-IDF index directly from knowledge documents
-    tokens_per_doc = [Counter(tokenize(text)) for _, text in texts]
-    vocab = set(t for toks in tokens_per_doc for t in toks)
-    n_docs = len(texts)
-    
-    # Calculate IDF
-    idf = {}
-    for term in vocab:
-        df = sum(1 for toks in tokens_per_doc if term in toks)
-        idf[term] = math.log(n_docs / (df + 1)) + 1.0
-
-    query_tokens = Counter(tokenize(query))
-    if not query_tokens:
+    if not query.strip():
         return "(no search query)"
 
-    # Score documents
-    scored = []
-    for (slug, _), toks in zip(texts, tokens_per_doc):
-        score = sum(toks.get(t, 0) * idf.get(t, 0) for t in query_tokens) / (sum(toks.values()) + 1)
-        scored.append((score, slug))
+    # Build TF-IDF index using shared class
+    index = TFIDFIndex()
+    for slug, text in texts:
+        index.add(slug, text)
 
-    scored.sort(key=lambda x: x[0], reverse=True)
+    # Search
+    results = index.search(query, k=k)
+    if not results:
+        return "(no relevant knowledge)"
+
+    # Format output
     out = []
-    for score, slug in scored[:k]:
-        if score <= 0:
-            continue
+    for slug, score in results:
         # Find matching snippet from the original text
         _, full = next(((s, t) for (ss, t) in texts if ss == slug), ("", ""))
         snippet = full[:300].replace("\n", " ").strip()
         out.append(f"[{slug}] (score: {score:.2f}) {snippet}...")
 
-    return "\n".join(out) if out else "(no relevant knowledge)"
+    return "\n".join(out)
 
 def write_knowledge(title: str, content: str, tags: str = "") -> str:
     """Save a knowledge document (markdown) to the knowledge folder."""

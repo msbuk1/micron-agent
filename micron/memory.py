@@ -12,6 +12,8 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from micron.search import TFIDFIndex, tokenize
+
 
 @dataclass
 class MemoryEntry:
@@ -38,11 +40,9 @@ class Memory:
         self.time_decay_lambda = time_decay_lambda
         self.max_results = max_results
 
-        # TF-IDF index
+        # TF-IDF index (shared)
+        self._index = TFIDFIndex()
         self._docs: list[MemoryEntry] = []
-        self._vocab: set[str] = set()
-        self._tf: list[Counter] = []
-        self._idf: dict[str, float] = {}
         self._dirty = True
 
     def _load(self) -> list[MemoryEntry]:
@@ -66,39 +66,20 @@ class Memory:
 
     def _rebuild_index(self):
         self._docs = self._load()
-        self._tf = []
-        self._vocab = set()
-
+        self._index.clear()
         for doc in self._docs:
-            tokens = self._tokenize(doc.text)
-            self._tf.append(Counter(tokens))
-            self._vocab.update(tokens)
-
-        n_docs = len(self._docs)
-        self._idf = {}
-        for term in self._vocab:
-            df = sum(1 for tf in self._tf if term in tf)
-            self._idf[term] = (math.log(n_docs / df) + 1.0) if df > 0 else 0.0
-
+            self._index.add(doc.id, doc.text)
         self._dirty = False
 
-    @staticmethod
-    def _tokenize(text: str) -> list[str]:
-        return re.findall(r"\b\w+\b", text.lower())
-
     def _score(self, query: str, doc_idx: int) -> float:
-        query_tokens = self._tokenize(query)
-        if not query_tokens:
+        doc = self._docs[doc_idx]
+        
+        # Base TF-IDF score from shared index
+        score = self._index.score(query, doc.id)
+        if score == 0:
             return 0.0
 
-        tf = self._tf[doc_idx]
-        score = 0.0
-        for token in query_tokens:
-            if token in self._idf:
-                score += tf.get(token, 0) * self._idf[token]
-
         # Time decay
-        doc = self._docs[doc_idx]
         try:
             ts = time.mktime(time.strptime(doc.timestamp[:19], "%Y-%m-%dT%H:%M:%S"))
             days_old = (time.time() - ts) / 86400
@@ -216,9 +197,9 @@ class Memory:
             for d in self._docs:
                 tags = " ".join(f"#{t}" for t in d.tags)
                 lines.append(f"- **{d.id}** ({d.timestamp}) [{d.importance}/5] {tags}")
-                lines.append(f"  {d.text}")
-                lines.append("")
             return "\n".join(lines)
+        else:
+            return f"Unknown format: {format}"
         return ""
 
     def __len__(self) -> int:
