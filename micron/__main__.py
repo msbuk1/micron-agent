@@ -36,6 +36,14 @@ class ThinkingIndicator:
         sys.stderr.write("\r" + " " * 40 + "\r")
         sys.stderr.flush()
 
+    def update(self, text: str):
+        """Update the thinking display with actual reasoning text."""
+        # Replace the dots animation with a snippet of the thinking
+        if not self._stop.is_set():
+            snippet = text.strip()[-60:] if text.strip() else ""
+            sys.stderr.write(f"\rThinking: {snippet}...  ")
+            sys.stderr.flush()
+
     def _run(self):
         dots = 0
         while not self._stop.is_set():
