@@ -45,6 +45,17 @@ def _resolve_path(path: str, *, must_exist: bool = False) -> Path | str:
         return f"Error: Path '{path}' does not exist."
     return target
 
+# Timestamp format for trash file naming
+TIMESTAMP_FMT = "%Y%m%d_%H%M%S"
+
+
+def _get_trash_dir() -> Path:
+    """Get (and create) the .trash directory under the working directory."""
+    trash_dir = _get_workdir() / ".trash"
+    trash_dir.mkdir(exist_ok=True)
+    return trash_dir
+
+
 # Firecrawl config (reads from env var set by CLI/server)
 FIRECRAWL_URL = os.getenv("FIRECRAWL_URL", "http://localhost:3002")
 
@@ -864,12 +875,10 @@ def delete_file(path: str) -> str:
             )
         
         # Create .trash directory if it doesn't exist
-        workdir = _get_workdir()
-        trash_dir = workdir / ".trash"
-        trash_dir.mkdir(exist_ok=True)
+        trash_dir = _get_trash_dir()
         
         # Generate unique trash name with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime(TIMESTAMP_FMT)
         file_name = target.name
         trash_name = f"{file_name}.{timestamp}"
         trash_path = trash_dir / trash_name
@@ -898,8 +907,8 @@ def restore_file(filename: str) -> str:
     from micron.tools.error_handling import handle_error, success
     import shutil
     
-    workdir = _get_workdir()
-    trash_dir = workdir / ".trash"
+    trash_dir = _get_trash_dir()
+    workdir = trash_dir.parent
     
     if not trash_dir.exists():
         return handle_error(
@@ -961,9 +970,9 @@ def list_trash() -> str:
         List of trashed files with timestamps, or empty message
     """
     from micron.tools.error_handling import success
+    from datetime import datetime
     
-    workdir = _get_workdir()
-    trash_dir = workdir / ".trash"
+    trash_dir = _get_trash_dir()
     
     if not trash_dir.exists():
         return success("Trash is empty (no files deleted yet)")
@@ -975,15 +984,15 @@ def list_trash() -> str:
     lines = ["🗑️ Trash:"]
     for f in files:
         if f.is_file():
-            # Extract timestamp from filename
+            # Extract timestamp from filename (format: name.YYYYMMDD_HHMMSS)
             parts = f.name.rsplit(".", 1)
-            if len(parts) == 2 and len(parts[1]) == 15:  # YYYYMMDD_HHMMSS
+            ts_len = len(datetime.now().strftime(TIMESTAMP_FMT))
+            if len(parts) == 2 and len(parts[1]) == ts_len:
                 original_name = parts[0]
                 timestamp = parts[1]
                 # Format timestamp nicely
                 try:
-                    from datetime import datetime
-                    dt = datetime.strptime(timestamp, "%Y%m%d_%H%M%S")
+                    dt = datetime.strptime(timestamp, TIMESTAMP_FMT)
                     time_str = dt.strftime("%Y-%m-%d %H:%M")
                 except ValueError:
                     time_str = timestamp

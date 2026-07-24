@@ -555,3 +555,108 @@ class TestTree:
         result = tree(".")
         # Should just show the root
         assert "/" in result
+
+
+class TestGetTrashDir:
+    """Tests for the _get_trash_dir helper."""
+
+    def test_returns_path(self, test_dir):
+        """Test _get_trash_dir returns a Path object."""
+        from micron.tools.builtin import _get_trash_dir
+        result = _get_trash_dir()
+        assert isinstance(result, Path)
+
+    def test_ends_with_trash(self, test_dir):
+        """Test _get_trash_dir path ends with .trash."""
+        from micron.tools.builtin import _get_trash_dir
+        result = _get_trash_dir()
+        assert result.name == ".trash"
+
+    def test_under_workdir(self, test_dir):
+        """Test _get_trash_dir is under the working directory."""
+        from micron.tools.builtin import _get_trash_dir, _get_workdir
+        result = _get_trash_dir()
+        workdir = _get_workdir()
+        assert result.parent == workdir
+
+    def test_creates_if_missing(self, test_dir):
+        """Test _get_trash_dir creates the directory if it doesn't exist."""
+        from micron.tools.builtin import _get_trash_dir
+        result = _get_trash_dir()
+        assert result.exists()
+        assert result.is_dir()
+
+
+class TestTimestampFormat:
+    """Tests for the TIMESTAMP_FMT constant."""
+
+    def test_constant_exists(self):
+        """Test TIMESTAMP_FMT is defined in builtin."""
+        from micron.tools.builtin import TIMESTAMP_FMT
+        assert TIMESTAMP_FMT == "%Y%m%d_%H%M%S"
+
+    def test_used_in_delete_file(self, test_dir):
+        """Test that delete_file uses the standard timestamp format."""
+        from micron.tools.builtin import delete_file, _get_trash_dir
+        import re
+
+        # Create and delete a file
+        test_file = test_dir / "ts_test.txt"
+        test_file.write_text("timestamp test")
+        delete_file("ts_test.txt")
+
+        # Check trash file matches the format
+        trash_dir = _get_trash_dir()
+        trash_files = list(trash_dir.glob("ts_test.txt.*"))
+        assert len(trash_files) == 1
+        # Extract timestamp part (after the last dot)
+        parts = trash_files[0].name.rsplit(".", 1)
+        assert len(parts) == 2
+        assert re.match(r"^\d{8}_\d{6}$", parts[1])  # YYYYMMDD_HHMMSS
+
+
+class TestAuthConfig:
+    """Tests for the AuthConfig dataclass."""
+
+    def test_returns_dataclass(self):
+        """Test get_authentication returns AuthConfig, not dict."""
+        from micron.config import Config, AuthConfig
+        config = Config.__new__(Config)
+        config._config = {"authentication": {}}
+        result = config.get_authentication()
+        assert isinstance(result, AuthConfig)
+
+    def test_default_values(self):
+        """Test AuthConfig defaults when no config set."""
+        from micron.config import Config, AuthConfig
+        config = Config.__new__(Config)
+        config._config = {}
+        result = config.get_authentication()
+        assert result.enabled is False
+        assert result.api_key_required is False
+        assert result.api_key_env_var == "MICRON_API_KEY"
+
+    def test_custom_values(self):
+        """Test AuthConfig reads custom values."""
+        from micron.config import Config, AuthConfig
+        config = Config.__new__(Config)
+        config._config = {
+            "authentication": {
+                "enabled": True,
+                "api_key_required": True,
+                "api_key_env_var": "MY_API_KEY",
+            }
+        }
+        result = config.get_authentication()
+        assert result.enabled is True
+        assert result.api_key_required is True
+        assert result.api_key_env_var == "MY_API_KEY"
+
+    def test_attribute_access(self):
+        """Test AuthConfig supports attribute access (not dict access)."""
+        from micron.config import Config, AuthConfig
+        config = Config.__new__(Config)
+        config._config = {"authentication": {"enabled": True}}
+        result = config.get_authentication()
+        # Should use .enabled, not ["enabled"]
+        assert result.enabled is True

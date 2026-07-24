@@ -9,9 +9,18 @@ Handles loading and merging configuration from multiple sources:
 Provides a unified Config class that validates and merges all sources.
 """
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Any
 import yaml
+
+
+@dataclass
+class AuthConfig:
+    """Authentication configuration."""
+    enabled: bool = False
+    api_key_required: bool = False
+    api_key_env_var: str = "MICRON_API_KEY"
 
 
 class Config:
@@ -241,21 +250,18 @@ class Config:
             "enabled": self._config.get("resource_limits", {}).get("enabled", False),
         }
     
-    def get_authentication(self) -> dict:
+    def get_authentication(self) -> AuthConfig:
         """Get authentication configuration.
         
         Returns:
-            Dictionary with authentication settings:
-            - enabled: Whether authentication is enabled
-            - api_key_required: Whether API key is required
-            - api_key_env_var: Environment variable name for API key
+            AuthConfig dataclass with authentication settings
         """
         auth_config = self._config.get("authentication", {})
-        return {
-            "enabled": auth_config.get("enabled", False),
-            "api_key_required": auth_config.get("api_key_required", False),
-            "api_key_env_var": auth_config.get("api_key_env_var", "MICRON_API_KEY"),
-        }
+        return AuthConfig(
+            enabled=auth_config.get("enabled", False),
+            api_key_required=auth_config.get("api_key_required", False),
+            api_key_env_var=auth_config.get("api_key_env_var", "MICRON_API_KEY"),
+        )
     
     def check_api_key(self, provided_key: Optional[str] = None) -> bool:
         """Check if provided API key is valid.
@@ -269,11 +275,11 @@ class Config:
         auth = self.get_authentication()
         
         # Auth disabled — always valid
-        if not auth["enabled"]:
+        if not auth.enabled:
             return True
         
         # API key not required — always valid
-        if not auth["api_key_required"]:
+        if not auth.api_key_required:
             return True
         
         # No key provided — invalid
@@ -281,7 +287,7 @@ class Config:
             return False
         
         # Get expected key from environment
-        expected_key = os.getenv(auth["api_key_env_var"], "")
+        expected_key = os.getenv(auth.api_key_env_var, "")
         if not expected_key:
             # No key configured — deny access
             return False
