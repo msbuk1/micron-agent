@@ -171,11 +171,9 @@ class SearchRequest(BaseModel):
 
 
 async def generate_sse(message, history, confirm=False, pending_writes=None):
-    """Generate SSE events from agent response.
-    
-    Now includes thinking states for better user experience!
-    """
+    """Generate SSE events from agent response."""
     from micron.agent import ToolCall
+    from micron.events import EventType
     try:
         calls = None
         if confirm and pending_writes:
@@ -183,23 +181,14 @@ async def generate_sse(message, history, confirm=False, pending_writes=None):
                 name=w["tool_name"], args=w.get("args", {}),
                 call_id=w.get("call_id", f"confirm_{i}"), is_write=True,
             ) for i, w in enumerate(pending_writes)]
-        
-        # agent.run() returns a regular generator, not async generator
+
+        # Forward every agent event as SSE — single loop, no type filtering
         for chunk in agent.run(message, history=history, confirm=confirm, pending_tool_calls=calls):
-            # Handle thinking states
-            if chunk.get("type") == "thinking":
-                # For thinking states, we can show them in the UI
-                # In a real implementation, you might want to buffer thinking text
-                # and show it in a subtle thinking bubble
-                yield f"data: {json.dumps(chunk)}\n\n"
-                await asyncio.sleep(0)
-            elif chunk.get("type") == "text":
-                yield f"data: {json.dumps(chunk)}\n\n"
-                await asyncio.sleep(0)
-            elif chunk.get("type") in ["tool_start", "tool_result", "tool_error", "error", "confirmation_required"]:
-                yield f"data: {json.dumps(chunk)}\n\n"
-                await asyncio.sleep(0)
-            # Skip 'done' events as they're handled in finally block
+            event_type = chunk.get("type")
+            if event_type == EventType.DONE:
+                continue  # handled in finally block
+            yield f"data: {json.dumps(chunk)}\n\n"
+            await asyncio.sleep(0)
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
     finally:
@@ -239,13 +228,12 @@ async def chat(request: ChatRequest, req: Request = None):
     else:
         # Non-streaming: collect full response
         try:
-            response_text = ""
-            events = []
-            for chunk in agent.run(request.message, history=request.history, confirm=request.confirm, pending_tool_calls=request.pending_writes):
-                if chunk["type"] == "text":
-                    response_text += chunk["content"]
-                events.append(chunk)
-            return {"response": response_text, "events": events}
+            from micron.events import process_events
+            result = process_events(
+                agent.run(request.message, history=request.history,
+                          confirm=request.confirm, pending_tool_calls=request.pending_writes),
+            )
+            return {"response": result.text, "events": []}
         except Exception as e:
             return {"error": str(e), "response": ""}
 
