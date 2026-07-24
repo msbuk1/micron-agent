@@ -248,59 +248,33 @@ def write_file(path: str, content: str, mode: str = "w") -> str:
         return f"Error writing file: {e}"
 
 
-def paste_file(path: str, content: str, line: int = 0) -> str:
-    """Paste content to a file at a specific line position.
-    
+def paste_file(content: str, filename: str = None) -> str:
+    """Save content to a file in context/uploads/.
+
     Args:
-        path: Path to the file (relative to workdir)
-        content: Text content to paste
-        line: Line number to insert at (0 = append to end, 1 = first line)
-        
+        content: The content to save
+        filename: Custom filename. Auto-generates paste_<timestamp>.txt if omitted.
+
     Returns:
-        Success message or error
+        Success message with the filename
     """
     from micron.tools.error_handling import handle_error, success
-    
-    target = _resolve_path(path, must_exist=False)
-    if isinstance(target, str):
-        return target
-    
+
     try:
-        # Create parent directories if needed
+        if filename is None:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"paste_{ts}.txt"
+
+        target = _get_workdir() / "context" / "uploads" / filename
         target.parent.mkdir(parents=True, exist_ok=True)
-        
-        if line <= 0:
-            # Append to end (default)
-            with open(target, "a", encoding="utf-8") as f:
-                f.write(content)
-            return success(f"Pasted {len(content)} chars to {path} (appended)")
-        
-        # Insert at specific line
-        if target.exists():
-            lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
-        else:
-            lines = []
-        
-        # Convert to 0-indexed
-        idx = line - 1
-        if idx < 0:
-            idx = 0
-        
-        # Ensure content ends with newline
-        if content and not content.endswith("\n"):
-            content += "\n"
-        
-        # Insert at position
-        lines.insert(idx, content)
-        
-        target.write_text("".join(lines), encoding="utf-8")
-        return success(f"Pasted {len(content)} chars to {path} at line {line}")
-    
+
+        target.write_text(content, encoding="utf-8")
+        return success(f"Pasted {len(content)} chars to {filename}")
     except Exception as e:
         return handle_error(
             "paste_file",
             e,
-            f"while pasting to {path}"
+            "while saving pasted content"
         )
 
 
@@ -369,13 +343,14 @@ def list_files(path: str = ".") -> str:
         return f"Error listing directory: {e}"
 
 
-def tree(path: str = ".", max_depth: int = 3, show_files: bool = True) -> str:
+def tree(path: str = ".", max_depth: int = 3, show_files: bool = True, ext: str = None) -> str:
     """Display directory structure as a tree.
     
     Args:
         path: Path to display (relative to workdir)
         max_depth: Maximum depth to display (default 3)
         show_files: Show files (default True)
+        ext: Only show files with this extension (e.g. 'py' for .py files)
         
     Returns:
         Tree representation of directory
@@ -399,6 +374,9 @@ def tree(path: str = ".", max_depth: int = 3, show_files: bool = True) -> str:
         # Filter entries
         if not show_files:
             entries = [e for e in entries if e.is_dir()]
+        if ext is not None:
+            ext_dot = ext if ext.startswith('.') else f'.{ext}'
+            entries = [e for e in entries if e.is_dir() or e.suffix == ext_dot]
         
         for i, entry in enumerate(entries):
             is_last = i == len(entries) - 1
@@ -1053,6 +1031,13 @@ def edit_file(path: str, old_text: str, new_text: str) -> str:
                 "the specified text to replace was not found"
             )
         
+        # Auto-cleanup old .bak files (>7 days) before creating new backup
+        import time
+        bak_dir = target.parent
+        for old_bak in bak_dir.glob(f"{target.name}.bak"):
+            if old_bak.exists() and (time.time() - old_bak.stat().st_mtime) > 7 * 86400:
+                old_bak.unlink()
+
         # Create backup before editing
         bak_path = target.with_suffix(target.suffix + ".bak")
         shutil.copy2(str(target), str(bak_path))
@@ -1176,6 +1161,19 @@ def search_skill_library(query: str = "", text: str = "") -> str:
     return "\n".join(lines)
 
 
+def purge_trash() -> str:
+    """Permanently delete all files in .trash/."""
+    from micron.tools.error_handling import success
+    import shutil
+    trash_dir = _get_trash_dir()
+    files = list(trash_dir.iterdir())
+    if not files:
+        return success("Trash is already empty.")
+    count = len(files)
+    shutil.rmtree(str(trash_dir))
+    return success(f"Purged {count} file(s) from trash.")
+
+
 # Tool registry for easy importing
 TOOLS = {
     "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
@@ -1191,4 +1189,5 @@ TOOLS = {
     "edit_file": edit_file,
     "undo_file": undo_file,
     "list_skills": list_skills,
+    "purge_trash": purge_trash,
 }

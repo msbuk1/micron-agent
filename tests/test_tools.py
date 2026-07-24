@@ -317,79 +317,69 @@ class TestEditUndo:
 class TestPasteFile:
     """Tests for paste_file tool."""
     
-    def test_paste_append(self, test_dir):
-        """Test pasting content to end of file."""
-        from micron.tools.builtin import paste_file
-        
-        # Create initial file
-        test_file = test_dir / "paste_test.txt"
-        test_file.write_text("line 1\nline 2\n")
-        
-        # Paste content (append)
-        result = paste_file("paste_test.txt", "line 3")
-        assert "Success" in result or "success" in result.lower()
-        
-        # Verify content
-        content = test_file.read_text()
-        assert "line 3" in content
-        assert content.index("line 1") < content.index("line 3")
-    
     def test_paste_new_file(self, test_dir):
-        """Test pasting to a new file."""
+        """Test pasting content to a new file in context/uploads/."""
         from micron.tools.builtin import paste_file
         
-        result = paste_file("new_file.txt", "new content")
+        result = paste_file("hello world")
         assert "Success" in result or "success" in result.lower()
         
-        test_file = test_dir / "new_file.txt"
-        assert test_file.exists()
-        assert test_file.read_text() == "new content"
+        # File should be in context/uploads/
+        uploads_dir = test_dir / "context" / "uploads"
+        assert uploads_dir.exists()
+        
+        # Should find a paste_*.txt file
+        paste_files = list(uploads_dir.glob("paste_*.txt"))
+        assert len(paste_files) == 1
+        assert paste_files[0].read_text() == "hello world"
     
-    def test_paste_at_line(self, test_dir):
-        """Test pasting at specific line number."""
+    def test_paste_with_filename(self, test_dir):
+        """Test pasting with a custom filename."""
         from micron.tools.builtin import paste_file
         
-        # Create initial file
-        test_file = test_dir / "line_test.txt"
-        test_file.write_text("line 1\nline 3\n")
-        
-        # Paste at line 2
-        result = paste_file("line_test.txt", "line 2", line=2)
+        result = paste_file("content", "custom.txt")
         assert "Success" in result or "success" in result.lower()
         
-        # Verify content
-        lines = test_file.read_text().splitlines()
-        assert lines[0] == "line 1"
-        assert lines[1] == "line 2"
-        assert lines[2] == "line 3"
+        target = test_dir / "context" / "uploads" / "custom.txt"
+        assert target.exists()
+        assert target.read_text() == "content"
     
-    def test_paste_at_beginning(self, test_dir):
-        """Test pasting at beginning of file."""
+    def test_paste_auto_filename(self, test_dir):
+        """Test that auto-generated filename matches paste_*.txt pattern."""
         from micron.tools.builtin import paste_file
         
-        # Create initial file
-        test_file = test_dir / "begin_test.txt"
-        test_file.write_text("existing content\n")
-        
-        # Paste at line 1
-        result = paste_file("begin_test.txt", "new first line", line=1)
+        result = paste_file("content")
         assert "Success" in result or "success" in result.lower()
         
-        # Verify content
-        lines = test_file.read_text().splitlines()
-        assert lines[0] == "new first line"
-        assert lines[1] == "existing content"
+        uploads_dir = test_dir / "context" / "uploads"
+        paste_files = list(uploads_dir.glob("paste_*.txt"))
+        assert len(paste_files) == 1
+        # Check filename format: paste_YYYYMMDD_HHMMSS.txt
+        import re
+        assert re.match(r"paste_\d{8}_\d{6}\.txt", paste_files[0].name)
     
     def test_paste_creates_directories(self, test_dir):
-        """Test that paste_file creates parent directories."""
+        """Test that paste_file creates parent directories for subdirs."""
         from micron.tools.builtin import paste_file
         
-        result = paste_file("subdir/nested/file.txt", "content")
+        result = paste_file("content", "subdir/file.txt")
         assert "Success" in result or "success" in result.lower()
         
-        test_file = test_dir / "subdir" / "nested" / "file.txt"
-        assert test_file.exists()
-        assert test_file.read_text() == "content"
+        target = test_dir / "context" / "uploads" / "subdir" / "file.txt"
+        assert target.exists()
+        assert target.read_text() == "content"
+    
+    def test_paste_overwrites_existing(self, test_dir):
+        """Test that paste_file overwrites existing file."""
+        from micron.tools.builtin import paste_file
+        
+        # Create first
+        paste_file("first", "overwrite.txt")
+        # Overwrite
+        paste_file("second", "overwrite.txt")
+        
+        target = test_dir / "context" / "uploads" / "overwrite.txt"
+        assert target.read_text() == "second"
 
 
 class TestPatchFile:
@@ -555,6 +545,15 @@ class TestTree:
         result = tree(".")
         # Should just show the root
         assert "/" in result
+
+    def test_ext_filter(self, test_dir):
+        """Test tree with extension filter."""
+        from micron.tools.builtin import tree
+        (test_dir / "a.py").write_text("py")
+        (test_dir / "b.txt").write_text("txt")
+        result = tree(".", ext="py")
+        assert "a.py" in result
+        assert "b.txt" not in result
 
 
 class TestGetTrashDir:

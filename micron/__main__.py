@@ -322,6 +322,7 @@ def run_interactive(agent, no_stream: bool = False):
             print("  /restore F   Restore a file from trash")
             print("  /purge       Empty trash permanently")
             print("  /undo F      Restore file from .bak backup")
+            print("  /tree        Show directory tree (--depth=N --ext=EXT)")
             print("")
             print("Just type your message to chat with the agent.")
 
@@ -420,18 +421,9 @@ def run_interactive(agent, no_stream: bool = False):
             print(result)
 
         elif command == "purge":
-            from pathlib import Path
-            trash_dir = Path(agent.context_dir).parent / ".trash"
-            if trash_dir.exists():
-                count = len(list(trash_dir.iterdir()))
-                if count == 0:
-                    print("Trash is already empty.")
-                else:
-                    import shutil
-                    shutil.rmtree(trash_dir)
-                    print(f"Purged {count} file(s) from trash.")
-            else:
-                print("Trash is already empty.")
+            from micron.tools.builtin import purge_trash
+            result = purge_trash()
+            print(result)
 
         elif command == "undo":
             if not args:
@@ -442,6 +434,23 @@ def run_interactive(agent, no_stream: bool = False):
             result = undo_file(args[0])
             print(result)
 
+
+        elif command == "tree":
+            from micron.tools.builtin import tree
+            # Parse --depth and --ext from args
+            max_depth = 3
+            ext = None
+            tree_path = '.'
+            for arg in args:
+                if arg.startswith('--depth='):
+                    max_depth = int(arg.split('=')[1])
+                elif arg.startswith('--ext='):
+                    ext = arg.split('=')[1]
+                else:
+                    tree_path = arg
+            result = tree(tree_path, max_depth=max_depth, ext=ext)
+            print(result)
+
         else:
             print(f"Unknown command: {command}. Try /help")
 
@@ -449,7 +458,7 @@ def run_interactive(agent, no_stream: bool = False):
 
     known_commands = {"help", "?", "exit", "quit", "q", "clear", "mem", "tools", "model",
                       "h", "unload", "reload", "providers", "sessions", "resume", "last",
-                      "trash", "restore", "purge", "undo"}
+                      "trash", "restore", "purge", "undo", "tree"}
 
     try:
         while True:

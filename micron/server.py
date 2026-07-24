@@ -52,8 +52,8 @@ def check_authentication(request: Request) -> bool:
     if not api_key:
         api_key = request.query_params.get("api_key")
     
-    # Use Config's check_api_key method (constant-time comparison)
-    return config.check_api_key(api_key)
+    # Use Config's is_valid_api_key method (constant-time comparison)
+    return config.is_valid_api_key(api_key)
 
 # Rate limiting function
 def check_rate_limit() -> bool:
@@ -260,7 +260,7 @@ async def health():
         "memories": len(agent.memory) if agent else 0,
         "llm_configured": agent.llm is not None if agent else False,
         "rate_limiting_enabled": config.get_rate_limits().get("enabled", False),
-        "authentication_enabled": config.get_authentication().get("enabled", False),
+        "authentication_enabled": config.get_authentication().enabled,
     }
 
 

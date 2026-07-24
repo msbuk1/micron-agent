@@ -263,7 +263,7 @@ class Config:
             api_key_env_var=auth_config.get("api_key_env_var", "MICRON_API_KEY"),
         )
     
-    def check_api_key(self, provided_key: Optional[str] = None) -> bool:
+    def is_valid_api_key(self, provided_key: Optional[str] = None) -> bool:
         """Check if provided API key is valid.
         
         Args:

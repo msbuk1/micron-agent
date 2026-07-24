@@ -1,49 +1,27 @@
 """Integration tests for the FastAPI server endpoints.
 
-These tests require threading support (for FastAPI TestClient).
-They are skipped in sandbox environments with limited threading.
+Uses httpx.AsyncClient with ASGITransport for async testing.
 """
 import json
 import os
-import threading
 from pathlib import Path
 from contextlib import asynccontextmanager
 
 import pytest
+from httpx import AsyncClient, ASGITransport
 
 os.environ["MICRON_WORKDIR"] = str(Path(__file__).parent.parent)
 os.environ["MICRON_CONTEXT_DIR"] = str(Path(__file__).parent.parent / "context")
 
-
-def _can_start_thread():
-    """Check if we can start a new thread (may fail in sandbox)."""
-    try:
-        t = threading.Thread(target=lambda: None)
-        t.start()
-        t.join(timeout=1)
-        return True
-    except RuntimeError:
-        return False
-
-
-# Import server modules only if threading is available
-_threading_ok = _can_start_thread()
-
-if _threading_ok:
-    from fastapi.testclient import TestClient
-    import micron.server as srv
-    from micron.server import app
-    from micron.agent import create_agent
-    from micron.llm import create_backend
+import micron.server as srv
+from micron.server import app
+from micron.agent import create_agent
+from micron.llm import create_backend
 
 
 @pytest.fixture(scope="module")
-def client():
-    """Create a test client with a real agent, bypassing lifespan."""
-    # Check threading at runtime (may be exhausted by other tests)
-    if not _can_start_thread():
-        pytest.skip("Threading unavailable (sandbox environment)")
-
+async def client():
+    """Create an AsyncClient for testing, with a real agent, bypassing lifespan."""
     context_dir = Path(__file__).parent.parent / "context"
     (context_dir / "memory").mkdir(exist_ok=True)
     (context_dir / "sessions").mkdir(exist_ok=True)
@@ -71,25 +49,26 @@ def client():
 
     app.router.lifespan_context = noop_lifespan
 
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
+    ac = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    yield ac
+    await ac.aclose()
 
 
 class TestHealthEndpoint:
-    def test_health_returns_ok(self, client):
-        resp = client.get("/health")
+    async def test_health_returns_ok(self, client):
+        resp = await client.get("/health")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
         assert resp.json()["tools"] > 0
 
-    def test_health_llm_configured(self, client):
-        resp = client.get("/health")
+    async def test_health_llm_configured(self, client):
+        resp = await client.get("/health")
         assert resp.json()["llm_configured"] is True
 
 
 class TestToolsEndpoint:
-    def test_list_tools(self, client):
-        resp = client.get("/tools")
+    async def test_list_tools(self, client):
+        resp = await client.get("/tools")
         assert resp.status_code == 200
         tools = resp.json()["tools"]
         names = [t["name"] for t in tools]
@@ -99,48 +78,52 @@ class TestToolsEndpoint:
         assert "run_command" in names
         assert "search_knowledge" in names
 
-    def test_tools_have_required_fields(self, client):
-        tools = client.get("/tools").json()["tools"]
+    async def test_tools_have_required_fields(self, client):
+        resp = await client.get("/tools")
+        tools = resp.json()["tools"]
         for tool in tools:
             assert "name" in tool
             assert "description" in tool
 
 
 class TestMemoryEndpoints:
-    def test_add_memory(self, client):
-        resp = client.post("/memory", json={"text": "test memory", "tags": ["test"], "importance": 3})
+    async def test_add_memory(self, client):
+        resp = await client.post("/memory", json={"text": "test memory", "tags": ["test"], "importance": 3})
         assert resp.status_code == 200
         assert "id" in resp.json()
 
-    def test_list_memories(self, client):
-        resp = client.get("/memory?n=5")
+    async def test_list_memories(self, client):
+        resp = await client.get("/memory?n=5")
         assert resp.status_code == 200
         assert isinstance(resp.json()["memories"], list)
 
-    def test_search_memory(self, client):
-        resp = client.post("/memory/search", json={"query": "test", "k": 5})
+    async def test_search_memory(self, client):
+        resp = await client.post("/memory/search", json={"query": "test", "k": 5})
         assert resp.status_code == 200
         assert "results" in resp.json()
 
 
 class TestChatEndpoint:
-    def test_chat_no_llm(self, client):
+    async def test_chat_no_llm(self, client):
         original = srv.agent.llm
         srv.agent.llm = None
-        resp = client.post("/chat", json={"message": "hello"})
+        resp = await client.post("/chat", json={"message": "hello"})
         srv.agent.llm = original
         assert "error" in resp.json()
 
-    def test_chat_non_streaming(self, client):
-        resp = client.post("/chat", json={"message": "What is 2+2?", "stream": False})
+    async def test_chat_non_streaming(self, client):
+        resp = await client.post("/chat", json={"message": "What is 2+2?", "stream": False})
         assert resp.status_code == 200
         data = resp.json()
         # LLM might fail to load — that's OK, we're testing endpoint plumbing
         assert "response" in data or "error" in data
 
-    def test_chat_streaming(self, client):
-        resp = client.post("/chat", json={"message": "What is 2+2?", "stream": True},
-                           headers={"Accept": "text/event-stream"})
+    async def test_chat_streaming(self, client):
+        resp = await client.post(
+            "/chat",
+            json={"message": "What is 2+2?", "stream": True},
+            headers={"Accept": "text/event-stream"},
+        )
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]
         events = []
@@ -154,7 +137,7 @@ class TestChatEndpoint:
 
 
 class TestSkillsEndpoint:
-    def test_reload_skills(self, client):
-        resp = client.post("/skills/reload")
+    async def test_reload_skills(self, client):
+        resp = await client.post("/skills/reload")
         assert resp.status_code == 200
         assert len(resp.json()["tools"]) > 0
