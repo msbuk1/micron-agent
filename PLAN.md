@@ -9,13 +9,13 @@
 
 ## Executive Summary
 
-The micron agent is a **minimal, file-based AI agent** with Obsidian-style memory, Markdown skills, knowledge vault, and tool calling. The codebase is **production-ready** with 88 tests passing.
+The micron agent is a **minimal, file-based AI agent** with Obsidian-style memory, Markdown skills, knowledge vault, and tool calling. The codebase is **production-ready** with 143 tests passing.
 
 ### Current State
 
 | Metric | Status |
 |--------|--------|
-| **Test Coverage** | 88/88 passing (100%) ✅ |
+| **Test Coverage** | 143/143 passing (100%) ✅ |
 | **Core Features** | 100% complete ✅ |
 | **Security** | Hardened (30+ command patterns blocked) ✅ |
 | **Error Handling** | Standardized across all tools ✅ |
@@ -460,7 +460,7 @@ for i in {1..70}; do curl -s http://localhost:8000/health; done
 
 | Metric | Current | Target |
 |--------|---------|--------|
-| Test Coverage | 88/88 (100%) ✅ | 95+ (include server tests) |
+| Test Coverage | 143/143 (100%) ✅ | 143+ ✅ |
 | Feature Completeness | 100% | 100% |
 | Production Readiness | ✅ Ready | ✅ Ready |
 | Security Score | ✅ Excellent (shell=False) | ✅ Excellent |
@@ -505,7 +505,7 @@ for i in {1..70}; do curl -s http://localhost:8000/health; done
 | 18 | Add tree command | bc67e5c | 5 |
 
 ### Final Statistics
-- **Total Tests:** 121 passing (up from 66)
+- **Total Tests:** 143 passing (up from 66)
 - **Tools:** 21 built-in tools
 - **Security:** shell=False, injection prevention
 - **Features:** Trash recovery, edit undo, tree visualization

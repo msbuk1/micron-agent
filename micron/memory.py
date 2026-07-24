@@ -71,9 +71,7 @@ class Memory:
             self._index.add(doc.id, doc.text)
         self._dirty = False
 
-    def _score(self, query: str, doc_idx: int) -> float:
-        doc = self._docs[doc_idx]
-        
+    def _score(self, query: str, doc: MemoryEntry) -> float:
         # Base TF-IDF score from shared index
         score = self._index.score(query, doc.id)
         if score == 0:
@@ -133,12 +131,12 @@ class Memory:
 
         k = k or self.max_results
         scored = []
-        for i, doc in enumerate(self._docs):
+        for doc in self._docs:
             if doc.importance < min_importance:
                 continue
             if tags and not any(t in doc.tags for t in tags):
                 continue
-            score = self._score(query, i)
+            score = self._score(query, doc)
             if score > 0:
                 scored.append((score, doc))
 
