@@ -72,7 +72,7 @@ Tool results will be provided in the next message."""
         memory = self._load_memory(query)
         knowledge = self._load_knowledge(query)
         tools = self._load_tools()
-        skill_instructions = self._load_skill_instructions()
+        skill_instructions = self._load_skill_instructions(query)
         text_tool_format = self.TEXT_TOOL_FORMAT if self.use_text_tool_format else ""
 
         if skill_instructions:
@@ -114,10 +114,11 @@ Tool results will be provided in the next message."""
 
     def _load_tools(self) -> str:
         """Generate tool description list dynamically from loaded skills."""
-        if not self.skills.all():
+        tool_skills = [s for s in self.skills.all() if s.module]
+        if not tool_skills:
             return "(no tools available)"
         lines = []
-        for skill in self.skills.all():
+        for skill in tool_skills:
             marker = " [WRITE]" if skill.write else ""
             params = skill.parameters.get("properties", {})
             if params:
@@ -178,13 +179,21 @@ Tool results will be provided in the next message."""
 
         return "\n\n---\n\n".join(parts) if parts else "(no knowledge files loaded)"
 
-    def _load_skill_instructions(self) -> str:
-        """Load body content from skills that have detailed instructions (no module=)."""
+    def _load_skill_instructions(self, query: str = "") -> str:
+        """Load body content from knowledge skills (no module, no procedure).
+
+        Procedure skills are loaded on-demand via the /skill command.
+        """
         parts = []
+        total_chars = 0
+        max_chars = 8000
+
         for skill in self.skills.all():
-            if skill.module:  # Regular tools don't need instruction injection
+            if skill.module or skill.procedure or not skill.content:
                 continue
-            if not skill.content:
-                continue
+            if total_chars + len(skill.content) > max_chars:
+                break
             parts.append(f"## {skill.name}\n{skill.description}\n\n{skill.content}")
+            total_chars += len(skill.content)
+
         return "\n\n---\n\n".join(parts) if parts else ""

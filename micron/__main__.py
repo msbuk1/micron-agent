@@ -296,6 +296,7 @@ def run_interactive(agent, no_stream: bool = False):
     logger = SessionLogger(sessions_dir)
     session_id = logger.start_session()
     print(f"Session: {session_id}")
+    _active_skill = None  # Set by /skill command, consumed on next query
 
     def handle_command(cmd: str) -> bool:
         parts = cmd[1:].strip().split()
@@ -324,6 +325,8 @@ def run_interactive(agent, no_stream: bool = False):
             print("  /purge       Empty trash permanently")
             print("  /undo F      Restore file from .bak backup")
             print("  /tree        Show directory tree (--depth=N --ext=EXT)")
+            print("  /skill NAME  Load a procedure skill into context")
+            print("  /skills      List available procedure skills")
             print("")
             print("Just type your message to chat with the agent.")
 
@@ -452,6 +455,34 @@ def run_interactive(agent, no_stream: bool = False):
             result = tree(tree_path, max_depth=max_depth, ext=ext)
             print(result)
 
+        elif command == "skill":
+            if not args:
+                print("Usage: /skill <name>")
+                print("Use /skills to list available procedure skills")
+                return True
+            skill_name = args[0]
+            found = agent.skills.get(skill_name)
+            if not found:
+                print(f"Skill '{skill_name}' not found.")
+                return True
+            if not found.procedure:
+                print(f"'{skill_name}' is a tool skill, not a procedure skill.")
+                return True
+            _active_skill = found
+            print(f"Loaded: {found.name}")
+            print(f"Description: {found.description}")
+            print(f"Content: {len(found.content)} chars")
+            print("(Skill will be included in your next message)")
+
+        elif command == "skills":
+            procedures = [s for s in agent.skills.all() if s.procedure]
+            if not procedures:
+                print("No procedure skills loaded.")
+            else:
+                print(f"Procedure skills ({len(procedures)}):")
+                for s in procedures:
+                    print(f"  {s.name:30s} {s.description[:60]}")
+
         else:
             print(f"Unknown command: {command}. Try /help")
 
@@ -459,7 +490,7 @@ def run_interactive(agent, no_stream: bool = False):
 
     known_commands = {"help", "?", "exit", "quit", "q", "clear", "mem", "tools", "model",
                       "h", "unload", "reload", "providers", "sessions", "resume", "last",
-                      "trash", "restore", "purge", "undo", "tree"}
+                      "trash", "restore", "purge", "undo", "tree", "skill", "skills"}
 
     try:
         while True:
@@ -482,6 +513,11 @@ def run_interactive(agent, no_stream: bool = False):
 
             # Log user turn
             logger.log_turn("user", query)
+
+            # Inject active skill content if loaded via /skill
+            if _active_skill:
+                query = f"[Active skill: {_active_skill.name}]\n\n{_active_skill.content}\n\n---\n\nUser request: {query}"
+                _active_skill = None  # One-shot injection
 
             # Normal query
             thinking = ThinkingIndicator()
