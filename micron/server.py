@@ -551,9 +551,9 @@ async def web_ui():
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
-    """Upload a file to uploads/ in workdir and return its path."""
+    """Upload a file to context/uploads/ in workdir and return its path."""
     workdir = Path(os.getenv("MICRON_WORKDIR", os.getcwd()))
-    upload_dir = workdir / "uploads"
+    upload_dir = workdir / "context" / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     # Sanitize filename — keep extension but replace other unsafe chars
@@ -568,10 +568,11 @@ async def upload_file(file: UploadFile = File(...)):
 
     dest.write_bytes(content)
 
-    print(f"[DEBUG] Upload received: filename={file.filename}, safe={safe_name}, path={dest}, size={len(content)}")
+    # Return a workdir-relative path so read_file() and other tools can resolve it
+    rel_path = dest.relative_to(workdir)
 
     return {
-        "path": str(dest),
+        "path": rel_path.as_posix(),
         "filename": safe_name,
         "size": len(content),
         "mimetype": file.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream",

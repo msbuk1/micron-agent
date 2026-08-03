@@ -40,7 +40,7 @@ INSTRUCTIONS:
 - Do not call a tool again if the result has already been returned to you.
 - Keep responses concise unless asked for detail.
 - The `read_file` tool supports text files AND PDFs (extracts text via pymupdf).
-- For uploaded files, use the path returned by the upload (e.g., `uploads/filename.pdf`).
+- For uploaded files, use the path returned by the upload (e.g., `context/uploads/filename.pdf`).
 - To create directories/folders: use `run_command` with `mkdir -p folder_name`.
 - To create files: use `write_file` (not `mkdir`).
 - To delete files/folders: use `run_command` with `rm -rf path`.
