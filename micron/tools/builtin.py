@@ -254,6 +254,14 @@ def read_file(path: str, start_line: int = 0, end_line: int = 0) -> str:
     except Exception as e:
         return f"Error reading file: {e}"
 
+@tool(
+    name="write_file",
+    description="Write or append content to a text file",
+    write=True,
+    path="Path to the file (relative to working directory)",
+    content="Content to write",
+    mode="Write mode: 'w' to overwrite, 'a' to append (default 'w')",
+)
 def write_file(path: str, content: str, mode: str = "w") -> str:
     """Write or append content to a text file."""
     target_path = _resolve_path(path)
@@ -271,6 +279,13 @@ def write_file(path: str, content: str, mode: str = "w") -> str:
         return f"Error writing file: {e}"
 
 
+@tool(
+    name="paste_file",
+    description="Save content to a file in context/uploads/. Auto-generates filename if not provided.",
+    write=True,
+    content="The content to save",
+    filename="Custom filename. Auto-generates paste_<timestamp>.txt if omitted.",
+)
 def paste_file(content: str, filename: str = None) -> str:
     """Save content to a file in context/uploads/.
 
@@ -301,6 +316,13 @@ def paste_file(content: str, filename: str = None) -> str:
         )
 
 
+@tool(
+    name="patch_file",
+    description="Apply multiple find-and-replace patches to a file sequentially.",
+    write=True,
+    path="Path to the file (relative to workdir)",
+    patches="List of dicts with 'old' (text to find) and 'new' (replacement)",
+)
 def patch_file(path: str, patches: list[dict]) -> str:
     """Apply multiple patches to a file.
     
@@ -371,6 +393,14 @@ def list_files(path: str = ".") -> str:
         return f"Error listing directory: {e}"
 
 
+@tool(
+    name="tree",
+    description="Display directory structure as a tree with depth and extension filtering.",
+    path="Path to display (relative to workdir)",
+    max_depth="Maximum depth to display (default 3)",
+    show_files="Show files (default True)",
+    ext="Only show files with this extension (e.g. 'py' for .py files)",
+)
 def tree(path: str = ".", max_depth: int = 3, show_files: bool = True, ext: str = None) -> str:
     """Display directory structure as a tree.
     
@@ -424,6 +454,14 @@ def tree(path: str = ".", max_depth: int = 3, show_files: bool = True, ext: str 
     return "\n".join(result)
 
 
+@tool(
+    name="run_command",
+    description="Run a shell command in the working directory (30s timeout, blocklist enforced)",
+    write=True,
+    cmd="Shell command to execute",
+    cwd="Working directory (relative to workdir)",
+    timeout="Maximum execution time in seconds (default 30)",
+)
 def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
     """Run a shell command and return its output.
     
@@ -593,6 +631,12 @@ def calculate(expression: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+@tool(
+    name="python_eval",
+    description="Execute a restricted subset of Python code (sandboxed: no imports, no filesystem access) and return the result.",
+    write=True,
+    code="Python code to execute (pure expressions and print statements only, max 5000 chars)",
+)
 def python_eval(code: str) -> str:
     """Execute a restricted subset of Python code and return the result.
 
@@ -729,6 +773,14 @@ def search_knowledge(query: str = "", k: int = 5) -> str:
 
     return "\n".join(out)
 
+@tool(
+    name="write_knowledge",
+    description="Save a markdown document to the knowledge folder (context/knowledge/).",
+    write=True,
+    title="Document title (used to generate the filename)",
+    content="Markdown content of the knowledge document",
+    tags="Optional comma-separated tags for organization",
+)
 def write_knowledge(title: str, content: str, tags: str = "") -> str:
     """Save a knowledge document (markdown) to the knowledge folder."""
     workdir = Path(os.getenv("MICRON_WORKDIR", os.getcwd()))
@@ -754,6 +806,18 @@ def write_knowledge(title: str, content: str, tags: str = "") -> str:
     return f"Saved: {path}"
 
 
+@tool(
+    name="create_skill",
+    description="Create a new skill file in context/skills/. The skill is loaded after /reload.",
+    write=True,
+    param_descs={
+        "name": "Skill name (lowercase, no spaces)",
+        "description": "Description of what the skill does",
+        "parameters": "JSON schema string for the tool parameters (optional)",
+        "module": "Python module path for the tool function (optional)",
+        "write": "Whether the skill is a write tool (optional)",
+    },
+)
 def create_skill(name: str, description: str, parameters: str = "", module: str = "", write: bool = False) -> str:
     """Create a new skill file in context/skills/. The skill is loaded after /reload."""
     workdir = _get_workdir()
@@ -819,6 +883,11 @@ CORE_SKILLS = {"web_search", "fetch_url", "read_file", "write_file", "list_files
                "create_skill", "search_skill_library"}
 
 
+@tool(
+    name="list_skills",
+    description="List all available skills with descriptions.",
+    query="Optional filter keyword to match against skill names/descriptions",
+)
 def list_skills(query: str = "") -> str:
     """List all available skills with descriptions."""
     workdir = _get_workdir()
@@ -877,6 +946,12 @@ def list_skills(query: str = "") -> str:
     return "\n".join(lines)
 
 
+@tool(
+    name="delete_file",
+    description="Delete a file from the working directory (moves to .trash/ for recovery)",
+    write=True,
+    path="Path to the file to delete (relative to workdir)",
+)
 def delete_file(path: str) -> str:
     """Delete a file from the working directory (moves to .trash/ for recovery).
     
@@ -924,6 +999,12 @@ def delete_file(path: str) -> str:
         )
 
 
+@tool(
+    name="restore_file",
+    description="Restore a file from the .trash/ directory.",
+    write=True,  # mutates filesystem (moves from trash back to workdir)
+    filename="Name of the file in .trash/ (from the /trash listing)",
+)
 def restore_file(filename: str) -> str:
     """Restore a file from .trash/ directory.
     
@@ -992,6 +1073,10 @@ def restore_file(filename: str) -> str:
         )
 
 
+@tool(
+    name="list_trash",
+    description="List files in the .trash/ directory (recoverable deleted files).",
+)
 def list_trash() -> str:
     """List files in .trash/ directory.
     
@@ -1032,6 +1117,14 @@ def list_trash() -> str:
     return "\n".join(lines)
 
 
+@tool(
+    name="edit_file",
+    description="Edit a file by replacing old_text with new_text. Creates a .bak backup for undo.",
+    write=True,
+    path="Path to the file (relative to workdir)",
+    old_text="Text to replace",
+    new_text="Replacement text",
+)
 def edit_file(path: str, old_text: str, new_text: str) -> str:
     """Edit a file by replacing old_text with new_text.
     
@@ -1125,6 +1218,12 @@ def edit_file(path: str, old_text: str, new_text: str) -> str:
         )
 
 
+@tool(
+    name="undo_file",
+    description="Restore a file from its .bak backup created by edit_file.",
+    write=True,  # mutates filesystem (restores from backup)
+    path="Path to the file to restore (relative to workdir)",
+)
 def undo_file(path: str) -> str:
     """Restore a file from its .bak backup.
     
@@ -1218,6 +1317,11 @@ def search_skill_library(query: str = "", text: str = "") -> str:
     return "\n".join(lines)
 
 
+@tool(
+    name="purge_trash",
+    description="Empty the .trash/ directory permanently (files cannot be recovered).",
+    write=True,
+)
 def purge_trash() -> str:
     """Permanently delete all files in .trash/."""
     from micron.tools.error_handling import success

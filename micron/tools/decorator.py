@@ -38,25 +38,35 @@ class ToolDescriptor:
 _registry: list[ToolDescriptor] = []
 
 
-def tool(*, name: str, description: str, write: bool = False, **param_descs):
+def tool(*, name: str, description: str, write: bool = False, param_descs: dict | None = None, **kwargs):
     """Register a function as a tool.
 
     Auto-derives the JSON parameter schema from the function signature.
-    ``param_descs`` maps parameter name -> human-readable description, which
-    is merged into the schema's ``properties[<name>]["description"]``.
+    Parameter descriptions come from ``param_descs`` (a dict of
+    param_name -> description) AND/OR the kwargs-style ``**<param>=<desc>``.
+    The explicit ``param_descs`` dict is merged first, then kwargs, and is the
+    way to describe params whose names collide with the decorator's own
+    keywords (``name``, ``description``, ``write``) — e.g.
+    ``@tool(name=..., description=..., param_descs={"name": "...", "description": "..."})``.
 
     Args:
         name: Tool name (used by the LLM to call it).
         description: Description shown in the system prompt.
         write: If True, tool requires user confirmation before execution.
-        **param_descs: Optional per-parameter descriptions.
+        param_descs: Optional mapping of param name -> description.
+        **kwargs: Shorthand param_descs as keyword args (param=desc).
 
     The decorator returns the original callable unchanged (no wrapping).
     """
+    merged_descs: dict = {}
+    if param_descs:
+        merged_descs.update(param_descs)
+    merged_descs.update(kwargs)
+
     def decorator(func: Callable) -> Callable:
         schema = _infer_parameters(func)
         props = schema["properties"]
-        for pname, desc in param_descs.items():
+        for pname, desc in merged_descs.items():
             if pname in props:
                 props[pname]["description"] = desc
         td = ToolDescriptor(
