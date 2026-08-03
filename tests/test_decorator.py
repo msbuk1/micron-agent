@@ -111,3 +111,26 @@ def test_registry_can_hold_multiple_tools():
 
     assert len(_registry) == 2
     assert {t.name for t in _registry} == {"a", "b"}
+
+
+def test_plugin_decorator_is_shared_descriptor():
+    """Plugins must produce the SAME ToolDescriptor type as built-ins.
+
+    This is the Slice 20 unification guard: `from micron.plugins import tool`
+    resolves to the shared decorator, so a plugin-registered descriptor has
+    type `micron.tools.decorator.ToolDescriptor` — not a local plugins copy.
+    """
+    from micron.plugins import tool as plugin_tool
+    from micron.tools.decorator import ToolDescriptor as SharedTD
+
+    # The re-exported decorator is literally the same object as the shared one.
+    assert plugin_tool is tool
+
+    @plugin_tool(name="p", description="plugin tool")
+    def p(x: str) -> str:
+        return x
+
+    td = _registry[0]
+    # Descriptor class identity (not just name) proves one shared type.
+    assert type(td) is SharedTD
+    assert td.__class__.__module__ == "micron.tools.decorator"
