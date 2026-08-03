@@ -137,14 +137,47 @@ class TestTFIDFIndex:
         """Test updating a document (same ID)."""
         index = TFIDFIndex()
         index.add("doc1", "python programming")
-        
+
         # Update with new content
         index.add("doc1", "java programming")
-        
+
         # Should find java, not python
         results = index.search("java")
         assert len(results) == 1
         assert results[0][0] == "doc1"
-        
+
         results = index.search("python")
         assert len(results) == 0
+
+    def test_get_doc_falls_back_to_text(self):
+        """Without a doc object, get_doc returns the text."""
+        index = TFIDFIndex()
+        index.add("d1", "hello world")
+        assert index.get_doc("d1") == "hello world"
+        assert index.get_doc("missing") is None
+
+    def test_get_doc_returns_stored_object(self):
+        """With a doc object, get_doc returns it and docs() maps id->object."""
+        index = TFIDFIndex()
+        obj = {"id": "d1", "importance": 5}
+        index.add("d1", "hello world", doc=obj)
+        assert index.get_doc("d1") is obj
+        assert index.docs()["d1"] is obj
+
+    def test_docs_defaults_to_text_when_no_object(self):
+        index = TFIDFIndex()
+        index.add("d1", "hi there")
+        assert index.docs() == {"d1": "hi there"}
+
+    def test_remove_clears_object(self):
+        index = TFIDFIndex()
+        index.add("d1", "text", doc={"id": "d1"})
+        index.remove("d1")
+        assert index.get_doc("d1") is None
+        assert index.docs() == {}
+
+    def test_clear_clears_objects(self):
+        index = TFIDFIndex()
+        index.add("d1", "text", doc={"id": "d1"})
+        index.clear()
+        assert index.docs() == {}

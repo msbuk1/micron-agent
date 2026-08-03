@@ -40,9 +40,9 @@ class Memory:
         self.time_decay_lambda = time_decay_lambda
         self.max_results = max_results
 
-        # TF-IDF index (shared)
+        # TF-IDF index (shared) — acts as the sole document store now: each
+        # entry is added alongside its text via `add(id, text, doc=entry)`.
         self._index = TFIDFIndex()
-        self._docs: list[MemoryEntry] = []
         self._dirty = True
 
     def _load(self) -> list[MemoryEntry]:
@@ -65,11 +65,16 @@ class Memory:
         )
 
     def _rebuild_index(self):
-        self._docs = self._load()
         self._index.clear()
-        for doc in self._docs:
-            self._index.add(doc.id, doc.text)
+        for entry in self._load():
+            self._index.add(entry.id, entry.text, doc=entry)
         self._dirty = False
+
+    def _all(self) -> dict[str, MemoryEntry]:
+        """Return all entries keyed by id (the index is the sole store)."""
+        if self._dirty:
+            self._rebuild_index()
+        return self._index.docs()
 
     def _score(self, query: str, doc: MemoryEntry) -> float:
         # Base TF-IDF score from shared index
@@ -123,15 +128,13 @@ class Memory:
         min_importance: int = 1,
     ) -> list[MemoryEntry]:
         """Search memories by keyword relevance."""
-        if self._dirty:
-            self._rebuild_index()
-
-        if not self._docs:
+        entries = self._all()
+        if not entries:
             return []
 
         k = k or self.max_results
         scored = []
-        for doc in self._docs:
+        for doc in entries.values():
             if doc.importance < min_importance:
                 continue
             if tags and not any(t in doc.tags for t in tags):
@@ -144,55 +147,46 @@ class Memory:
         return [doc for _, doc in scored[:k]]
 
     def get(self, memory_id: str) -> MemoryEntry | None:
-        if self._dirty:
-            self._rebuild_index()
-        for doc in self._docs:
-            if doc.id == memory_id:
-                return doc
-        return None
+        entries = self._all()
+        return entries.get(memory_id)
 
     def delete(self, memory_id: str) -> bool:
-        if self._dirty:
-            self._rebuild_index()
-        before = len(self._docs)
-        self._docs = [d for d in self._docs if d.id != memory_id]
-        if len(self._docs) < before:
-            self._save_all(self._docs)
-            self._dirty = True
-            return True
-        return False
+        entries = self._all()
+        if memory_id not in entries:
+            return False
+        del entries[memory_id]
+        self._save_all(list(entries.values()))
+        self._dirty = True
+        return True
 
     def tag(self, memory_id: str, add: list[str] | None = None, remove: list[str] | None = None):
-        if self._dirty:
-            self._rebuild_index()
-        for doc in self._docs:
-            if doc.id == memory_id:
-                if add:
-                    doc.tags = list(set(doc.tags) | set(add))
-                if remove:
-                    doc.tags = [t for t in doc.tags if t not in remove]
-                self._save_all(self._docs)
-                self._dirty = True
-                return True
-        return False
+        entries = self._all()
+        if memory_id not in entries:
+            return False
+        doc = entries[memory_id]
+        if add:
+            doc.tags = list(set(doc.tags) | set(add))
+        if remove:
+            doc.tags = [t for t in doc.tags if t not in remove]
+        self._save_all(list(entries.values()))
+        self._dirty = True
+        return True
 
     def list(self, n: int = 20) -> list[MemoryEntry]:
-        if self._dirty:
-            self._rebuild_index()
-        return list(reversed(self._docs[-n:]))
+        entries = list(self._all().values())
+        return list(reversed(entries[-n:]))
 
     def clear(self):
         self.memories_file.write_text("")
         self._dirty = True
 
     def export(self, format: str = "json") -> str:
-        if self._dirty:
-            self._rebuild_index()
+        entries = list(self._all().values())
         if format == "json":
-            return json.dumps([d.__dict__ for d in self._docs], indent=2)
+            return json.dumps([d.__dict__ for d in entries], indent=2)
         elif format == "md":
             lines = ["# Memories\n"]
-            for d in self._docs:
+            for d in entries:
                 tags = " ".join(f"#{t}" for t in d.tags)
                 lines.append(f"- **{d.id}** ({d.timestamp}) [{d.importance}/5] {tags}")
             return "\n".join(lines)
@@ -201,6 +195,4 @@ class Memory:
         return ""
 
     def __len__(self) -> int:
-        if self._dirty:
-            self._rebuild_index()
-        return len(self._docs)
+        return len(self._all())

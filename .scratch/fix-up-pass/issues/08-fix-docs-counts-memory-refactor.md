@@ -4,10 +4,10 @@
 
 **Blocked by:** 02 (server test rewrite) and 03 (paste_file fix) — counts depend on final test state.
 
-**Status:** ⚠️ partial — doc counts done; `Memory._docs` redundancy remains (2026-08-03)
+**Status:** ✅ done — verified in code (2026-08-03)
 
-- [x] PLAN.md test count matches `pytest --co -q` output
-- [x] SLICE_PLAN.md test count matches `pytest --co -q` output
+- [x] PLAN.md test count matches `pytest --co -q` output (168)
+- [x] SLICE_PLAN.md test count matches `pytest --co -q` output (168)
 - [x] `Memory._score()` uses `self._index.score()` (shared TFIDFIndex)
-- [ ] `Memory._docs` list still maintained in parallel with the index — not yet made the sole document store; `_docs` still assigned in `_rebuild_index()` and used in list/get/delete. Remaining cleanup (small, independent of tool refactor).
+- [x] `Memory._docs` removed — `TFIDFIndex` is now the sole document store (`add(id, text, doc=entry)`, `get_doc`/`docs` accessors); all Memory methods derive entries from the index. Added tests for `get_doc`/`docs`.
 - [x] All memory tests pass
