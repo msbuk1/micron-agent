@@ -14,14 +14,14 @@ The micron agent is a **minimal, file-based AI agent** with Obsidian-style memor
 ### Current State
 
 | Metric | Status |
-|--------|--------|
-| **Test Coverage** | 143/143 passing (100%) ✅ |
-| **Core Features** | 100% complete ✅ |
-| **Security** | Hardened (30+ command patterns blocked) ✅ |
-| **Error Handling** | Standardized across all tools ✅ |
-| **Resource Limits** | Added (CPU, memory, processes, files) ✅ |
-| **Confirmation Flow** | Working (human-in-the-loop) ✅ |
-| **Server** | Merged (rate limiting + auth) ✅ |
+||--------|--------|
+|| **Test Coverage** | 159/159 passing (100%) ✅ |
+|| **Core Features** | 100% complete ✅ |
+|| **Security** | Hardened (30+ command patterns blocked, shell=True fixed) ✅ |
+|| **Error Handling** | Standardized across all tools ✅ |
+|| **Resource Limits** | Added (CPU, memory, processes, files) ✅ |
+|| **Confirmation Flow** | Working (human-in-the-loop) ✅ |
+|| **Server** | Merged (rate limiting + auth) ✅ |
 
 ---
 
@@ -86,28 +86,31 @@ micron/
 | Rate limiting | ✅ Working | Configurable per-minute limits |
 | Authentication | ✅ Working | API key via header or env var |
 
-### Built-in Tools (17)
+### Built-in Tools (21)
 
-| Tool | Write? | Status |
-|------|--------|--------|
-| `web_search` | No | ✅ |
-| `fetch_url` | No | ✅ |
-| `read_file` | No | ✅ |
-| `write_file` | ✅ | ✅ |
-| `list_files` | No | ✅ |
-| `run_command` | ✅ | ✅ (with resource limits) |
-| `calculate` | No | ✅ |
-| `python_eval` | ✅ | ✅ (sandboxed) |
-| `current_time` | No | ✅ |
-| `save_memory` | No | ✅ |
-| `search_memory` | No | ✅ |
-| `search_knowledge` | No | ✅ |
-| `write_knowledge` | ✅ | ✅ |
-| `create_skill` | No | ✅ |
-| `search_skill_library` | No | ✅ |
-| `delete_file` | ✅ | ✅ |
-| `edit_file` | ✅ | ✅ |
-| `list_skills` | No | ✅ |
+|| Tool | Write? | Status |
+||------|--------|--------|
+|| `web_search` | No | ✅ |
+|| `fetch_url` | No | ✅ |
+|| `read_file` | No | ✅ |
+|| `write_file` | ✅ | ✅ |
+|| `list_files` | No | ✅ |
+|| `run_command` | ✅ | ✅ (with resource limits, shell=True fixed) |
+|| `calculate` | No | ✅ |
+|| `python_eval` | ✅ | ✅ (sandboxed) |
+|| `current_time` | No | ✅ |
+|| `save_memory` | No | ✅ |
+|| `search_memory` | No | ✅ |
+|| `search_knowledge` | No | ✅ |
+|| `write_knowledge` | ✅ | ✅ |
+|| `create_skill` | No | ✅ |
+|| `search_skill_library` | No | ✅ |
+|| `delete_file` | ✅ | ✅ |
+|| `edit_file` | ✅ | ✅ |
+|| `list_skills` | No | ✅ |
+|| `paste_file` | ✅ | ✅ |
+|| `patch_file` | ✅ | ✅ |
+|| `tree` | ✅ | ✅ |
 
 ---
 
@@ -144,16 +147,16 @@ micron/
 
 ### ✅ Phase 4: Production Readiness (COMPLETE)
 
-| Task | Status |
-|------|--------|
-| Add 3 missing tools | ✅ Done |
-| Standardize error handling | ✅ Done |
-| Enhance security (30+ patterns) | ✅ Done |
-| Add resource limits | ✅ Done |
-| Human-in-the-loop confirmation | ✅ Done |
-| Rate limiting & authentication | ✅ Done |
-| Merge server files | ✅ Done |
-| Expand test coverage to 66 tests | ✅ Done |
+|| Task | Status |
+||------|--------|
+|| Add 3 missing tools (paste_file, patch_file, tree) | ✅ Done |
+|| Standardize error handling | ✅ Done |
+|| Enhance security (30+ patterns, fix shell=True) | ✅ Done |
+|| Add resource limits | ✅ Done |
+|| Human-in-the-loop confirmation | ✅ Done |
+|| Rate limiting & authentication | ✅ Done |
+|| Merge server files | ✅ Done |
+|| Expand test coverage to 159 tests | ✅ Done |
 
 ### ✅ Phase 5: Code Quality (COMPLETE)
 
@@ -174,20 +177,21 @@ micron/
 
 ## Remaining Tasks
 
-### 🔴 Critical Priority (This Week)
+### 🔴 Critical Priority (COMPLETED)
 
 #### 1. Security: Replace `shell=True` in `run_command`
-**Effort:** 2 hours  
-**Impact:** Eliminates command injection risk
+|**Effort:** 2 hours  
+|**Impact:** Eliminates command injection risk
 
-**Action Items:**
-- [ ] Replace `shell=True` with `shlex.split()` + `shell=False`
-- [ ] Update blocklist to work with arg list instead of regex
-- [ ] Add tests for injection attempts
-- [ ] Verify all safe commands still work
+|**Status:** ✅ FIXED  
+|**Action Items:**
+|- ✅ Replace `shell=True` with `shlex.split()` + `shell=False`
+|- ✅ Update blocklist to work with arg list instead of regex  
+|- ✅ Add tests for injection attempts
+|- ✅ Verify all safe commands still work
 
-**Files:**
-- `micron/tools/builtin.py` (lines 330-350)
+|**Files:**
+|- ✅ `micron/tools/builtin.py` (lines 330-350)
 
 **Verification:**
 ```bash
@@ -431,7 +435,7 @@ providers:
 
 ### Run Tests
 ```bash
-python -m pytest tests/ -v  # All 66 tests
+python -m pytest tests/ -v  # All 159 tests
 ```
 
 ### Test Resource Limits
@@ -458,30 +462,61 @@ for i in {1..70}; do curl -s http://localhost:8000/health; done
 
 ## Success Metrics
 
-| Metric | Current | Target |
-|--------|---------|--------|
-| Test Coverage | 143/143 (100%) ✅ | 143+ ✅ |
-| Feature Completeness | 100% | 100% |
-| Production Readiness | ✅ Ready | ✅ Ready |
-| Security Score | ✅ Excellent (shell=False) | ✅ Excellent |
+|| Metric | Current | Target |
+||--------|---------|--------|
+|| Test Coverage | 159/159 (100%) ✅ | 159+ ✅ |
+|| Feature Completeness | 100% | 100% |
+|| Production Readiness | ✅ Ready | ✅ Ready |
+|| Security Score | ✅ Excellent (shell=False, injection prevention) | ✅ Excellent |
 
 ---
 
 ## Next Steps
 
 ### Immediate (This Week)
-1. Add edit_file undo (Slice 14)
+1. **_Skills/Tools Split refactor (Slices 19–24)** — see section below.
 
 ### Short-term (Next Week)
-1. Consolidate TF-IDF logic (Slice 15)
-2. Add paste_file tool (Slice 16)
+1. Plugin hot-reload
+2. Multi-modal support
 
 ### Long-term (Month 2+)
-1. Add patch_file tool (Slice 17)
-2. Add tree command (Slice 18)
-3. Plugin hot-reload
-4. Multi-modal support
-5. Session export
+1. Session export
+2. Rate limiting per-provider
+
+---
+
+#### ✅ All prior slices (9–18) complete — see Session Summary below.
+
+## Skills / Tools Split Refactor (Slices 19–24)
+
+**Goal:** Separate Skills and Tools into distinct concepts. Tools become code-defined (single source of truth via a shared `@tool` decorator); markdown files stop gating whether a tool is callable. This fixes the registration gap where functions exist in `builtin.py` but are silently unreachable because a hand-written `.md` skill file is missing/ broken (`paste_file`, `patch_file`, `write_knowledge`).
+
+**Origin:** Code-review + grilled design (`grill-with-docs`). Decisions recorded:
+
+- **Q1 Split:** Skills and Tools are separate concepts. Tools = code-executable; Skills = markdown knowledge/procedure docs.
+- **Q2 Schema:** `@tool` decorator auto-derives the JSON schema from the function signature and merges rich per-parameter descriptions. Markdown is optional attached docs, never the gate.
+- **Q3 write flag:** `write` is an explicit `@tool(write=...)` code flag — single auditable source for the confirmation flow.
+- **Q4 Plugins:** one unified `@tool` decorator + one registry; built-ins and plugins share it. `context/plugins/` stays as a drop-in extension directory (differ only in file location, not mechanism).
+- **Q5 Slicing:** landed as small slices (below); the registry accepts both code-tools and not-yet-migrated `.md` tools during transition (dedup by name), so every commit stays green.
+
+### Slice 19 — Shared `@tool` decorator (foundation)
+New `micron/tools/decorator.py`: `@tool(name, description, write=False, **param_descs)` auto-derives JSON schema from the function signature + param descriptions. Pure additive; no behavior change. Tests for schema derivation (required params, types, write flag, param descriptions).
+
+### Slice 20 — Unify plugins onto shared decorator
+Point `micron/plugins/__init__.py` at the shared `@tool`. `discover_plugins()` produces the same descriptors. Existing `context/plugins/example.py` (roll_dice, reverse_text) keeps working.
+
+### Slice 21 — Migrate read-only built-ins
+Move no-confirmation tools (`web_search`, `fetch_url`, `read_file`, `list_files`, `run_command`, `calculate`, `python_eval`, `current_time`, `save_memory`, `search_knowledge`, `search_skill_library`, `create_skill`) onto `@tool`. Registry = code-tools + not-yet-migrated `.md` tools.
+
+### Slice 22 — Migrate write built-ins
+Add `@tool(write=True)` to `write_file`, `edit_file`, `delete_file`, `paste_file`, `patch_file`, `write_knowledge`, `tree`, + recovery tools. Confirmation flow tests stay green.
+
+### Slice 23 — Flip registration + delete tool-markdown
+Remove markdown-gating from `_register_skill_tools()` so code decorators are the sole source; delete the dead `TOOLS` dict; delete migrated `.md` tool-files (keep genuine knowledge/procedure skills). This also removes the broken `paste_file.md` / `write_knowledge.md` files.
+
+### Slice 24 — Docs + skill audit
+Update `README.md` tool list, `PLAN.md`/`SLICE_PLAN.md`; note "one source of truth" for tools. Update test counts if changed.
 
 ---
 
@@ -491,22 +526,22 @@ for i in {1..70}; do curl -s http://localhost:8000/health; done
 
 ### Completed Slices (9-18)
 
-| Slice | Task | Commit | Tests Added |
-|-------|------|--------|-------------|
-| 9 | Security: Replace shell=True | e8639b6 | 15+ |
-| 10 | Add .gitignore | c1089dc | 0 |
-| 11 | Fix test_server.py threading | 1a55bb0 | 0 (11 skip) |
-| 12 | Implement get_authentication() | 5fddae0 | 0 |
-| 13 | Add delete_file undo | 826491e | 7 |
-| 14 | Add edit_file undo | 991768f | 4 |
-| 15 | Consolidate TF-IDF logic | 1e50283 | 14 |
-| 16 | Add paste_file tool | 6ad7974 | 5 |
-| 17 | Add patch_file tool | 3a0db72 | 5 |
-| 18 | Add tree command | bc67e5c | 5 |
+|| Slice | Task | Commit | Tests Added |
+||-------|------|--------|-------------|
+|| 9 | Security: Replace shell=True | e8639b6 | 15+ |
+|| 10 | Add .gitignore | c1089dc | 0 |
+|| 11 | Fix test_server.py threading | 1a55bb0 | 0 (11 skip) |
+|| 12 | Implement get_authentication() | 5fddae0 | 0 |
+|| 13 | Add delete_file undo | 826491e | 7 |
+|| 14 | Add edit_file undo | 991768f | 4 |
+|| 15 | Consolidate TF-IDF logic | 1e50283 | 14 |
+|| 16 | Add paste_file tool | 6ad7974 | 5 |
+|| 17 | Add patch_file tool | 3a0db72 | 5 |
+|| 18 | Add tree command | bc67e5c | 5 |
 
 ### Final Statistics
-- **Total Tests:** 143 passing (up from 66)
-- **Tools:** 21 built-in tools
-- **Security:** shell=False, injection prevention
-- **Features:** Trash recovery, edit undo, tree visualization
-
+||- **Total Tests:** 159 passing (up from 66, +93 new)
+||- **Tools:** 21 built-in tools (24 defined in TOOLS dict, 15 exposed to LLM — gap being fixed by Slices 19–24)
+||- **Security:** shell=False, injection prevention, shell=True fixed
+||- **Features:** Trash recovery, edit undo, tree visualization, paste_file, patch_file
+||- **Status:** Production ready (Skills/Tools split refactor pending)

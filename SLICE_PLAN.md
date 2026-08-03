@@ -444,7 +444,7 @@ git push origin <branch-name>
 ## Verification Checklist
 
 Before merging any slice:
-- [ ] All existing tests pass (66+)
+- [ ] All existing tests pass (159+)
 - [ ] New tests pass (if added)
 - [ ] Code compiles without errors
 - [ ] No breaking changes to existing functionality
@@ -461,6 +461,153 @@ Before merging any slice:
 - Slice 10 (gitignore) is quick and prevents future issues
 - Test slices (11-15) can be done in any order
 - Feature slices (16-18) can be done in any order
+- Slices 19-24 (Skills/Tools split) must be done IN ORDER — each builds on the previous
+- Registry accepts both code-tools and remaining `.md` tools during the transition (dedup by name), so every commit stays green
+
+---
+
+## Skills / Tools Split Refactor — Slices 19–24
+
+**Goal:** Separate Skills and Tools. Tools become code-defined via a shared `@tool` decorator (single source of truth); markdown never gates whether a tool is callable. Fixes the registration gap caused by broken `.md` tool-def files (`paste_file`, `patch_file`, `write_knowledge`).
+
+### Slice 19: Shared `@tool` decorator (FOUNDATION — 2h)
+
+**Goal:** Introduce the shared tool-definition decorator.
+
+**Tasks:**
+1. [ ] Create `micron/tools/decorator.py`
+2. [ ] Implement `@tool(name, description, write=False, **param_descs)` decorator
+3. [ ] Auto-derive JSON schema from function signature (required params, types, defaults)
+4. [ ] Merge per-parameter descriptions from `param_descs`
+5. [ ] Preserve `write` flag on the descriptor
+6. [ ] Add tests: schema derivation, required params, param types, write flag, param descriptions
+
+**Files:**
+- `micron/tools/decorator.py` (new)
+- `tests/test_tools.py` (new tests) or `tests/test_decorator.py` (new)
+
+**Success Criteria:**
+- `@tool` decorator produces a `ToolDescriptor` with correct auto-derived schema
+- All existing tests still pass (pure additive)
+
+---
+
+### Slice 20: Unify plugins onto shared decorator (1h)
+
+**Goal:** Make plugins use the same `@tool` as built-ins.
+
+**Tasks:**
+1. [ ] Point `micron/plugins/__init__.py` at the shared `@tool`
+2. [ ] `discover_plugins()` produces the same descriptor type
+3. [ ] Existing `context/plugins/example.py` (roll_dice, reverse_text) keeps working
+4. [ ] `/tools` shows the same tool set as before
+5. [ ] Add test: plugin discovery still registers correctly
+
+**Files:**
+- `micron/plugins/__init__.py`
+- `tests/test_agent.py` (plugin tests)
+
+**Success Criteria:**
+- Plugins and built-ins share one decorator
+- `roll_dice` / `reverse_text` still register and work
+- All tests pass
+
+---
+
+### Slice 21: Migrate read-only built-ins (2h)
+
+**Goal:** Move no-confirmation tools onto `@tool`.
+
+**Tasks:**
+1. [ ] Decorate read-only tools: `web_search`, `fetch_url`, `read_file`, `list_files`, `run_command`, `calculate`, `python_eval`, `current_time`, `save_memory`, `search_knowledge`, `search_skill_library`, `create_skill`
+2. [ ] Migrate rich per-parameter descriptions from their `.md` files into `@tool(param=...)`
+3. [ ] Registry = code-tools + not-yet-migrated `.md` tools (dedup by name)
+4. [ ] All tools still callable and schemas correct
+
+**Files:**
+- `micron/tools/builtin.py`
+- `micron/agent.py` (registration accepts both during transition)
+
+**Success Criteria:**
+- Read-only tools registered from code
+- No tool lost during transition (union constant)
+- All tests pass
+
+---
+
+### Slice 22: Migrate write built-ins (2h)
+
+**Goal:** Move write/confirmation tools onto `@tool(write=True)`.
+
+**Tasks:**
+1. [ ] Decorate: `write_file`, `edit_file`, `delete_file`, `paste_file`, `patch_file`, `write_knowledge`, `tree`, + recovery tools (`restore_file`, `list_trash`, `purge_trash`, `undo_file`)
+2. [ ] Use `@tool(write=True)` for confirmation-required tools
+3. [ ] Migrate rich descriptions from `.md` files
+4. [ ] Confirmation flow tests (`test_confirmation.py`) stay green
+
+**Files:**
+- `micron/tools/builtin.py`
+
+**Success Criteria:**
+- Write tools registered with `write=True` from code
+- Human-in-the-loop confirmation still works
+- All tests pass
+
+---
+
+### Slice 23: Flip registration + delete tool-markdown (2h)
+
+**Goal:** Make code the sole source of truth; remove markdown gating and dead code.
+
+**Tasks:**
+1. [ ] Remove markdown-gating from `_register_skill_tools()` in `agent.py`
+2. [ ] All tools register exclusively from `@tool` decorators
+3. [ ] Delete the dead `TOOLS` dict from `builtin.py`
+4. [ ] Delete migrated `.md` tool-files (incl. broken `paste_file.md`, `write_knowledge.md`); keep genuine knowledge/procedure skills
+5. [ ] Verify all 24 tools now callable by the LLM
+
+**Files:**
+- `micron/agent.py`
+- `micron/tools/builtin.py`
+- `micron/__init__.py` (remove `TOOLS` export)
+- `context/skills/*.md` (delete tool-defs only)
+
+**Success Criteria:**
+- All 24 tools exposed to the LLM (gap closed)
+- Markdown no longer gates tool existence
+- All tests pass (updated)
+
+---
+
+### Slice 24: Docs + skill audit (1h)
+
+**Goal:** Update documentation and confirm the tool surface.
+
+**Tasks:**
+1. [ ] Update `README.md` tool list to reflect code-defined tools
+2. [ ] Update `PLAN.md` / `SLICE_PLAN.md` — mark slices 19-24 done, update test counts
+3. [ ] Add "one source of truth" note for tools
+4. [ ] Confirm `pytest --co -q` count matches docs
+
+**Files:**
+- `README.md`, `PLAN.md`, `SLICE_PLAN.md`
+
+**Success Criteria:**
+- Docs match the actual registered tool set
+- Test counts in docs match reality
+
+---
+
+### Slice Summary Table (19-24)
+
+| Slice | Task | Effort | Priority | Status |
+|-------|------|--------|----------|--------|
+| 19 | Shared `@tool` decorator | 2h | Critical | ⏳ Pending |
+| 20 | Unify plugins onto decorator | 1h | Critical | ⏳ Pending |
+| 21 | Migrate read-only built-ins | 2h | High | ⏳ Pending |
+| 22 | Migrate write built-ins | 2h | High | ⏳ Pending |
+| 23 | Flip registration + delete tool-markdown | 2h | High | ⏳ Pending |
+| 24 | Docs + skill audit | 1h | Medium | ⏳ Pending |
 
 ---
 
