@@ -15,7 +15,7 @@ The micron agent is a **minimal, file-based AI agent** with Obsidian-style memor
 
 | Metric | Status |
 ||--------|--------|
-|| **Test Coverage** | 159/159 passing (100%) ✅ |
+|| **Test Coverage** | 168/168 passing (100%) ✅ |
 || **Core Features** | 100% complete ✅ |
 || **Security** | Hardened (30+ command patterns blocked, shell=True fixed) ✅ |
 || **Error Handling** | Standardized across all tools ✅ |
@@ -464,7 +464,7 @@ for i in {1..70}; do curl -s http://localhost:8000/health; done
 
 || Metric | Current | Target |
 ||--------|---------|--------|
-|| Test Coverage | 159/159 (100%) ✅ | 159+ ✅ |
+|| Test Coverage | 168/168 (100%) ✅ | 168+ ✅ |
 || Feature Completeness | 100% | 100% |
 || Production Readiness | ✅ Ready | ✅ Ready |
 || Security Score | ✅ Excellent (shell=False, injection prevention) | ✅ Excellent |
@@ -500,22 +500,22 @@ for i in {1..70}; do curl -s http://localhost:8000/health; done
 - **Q4 Plugins:** one unified `@tool` decorator + one registry; built-ins and plugins share it. `context/plugins/` stays as a drop-in extension directory (differ only in file location, not mechanism).
 - **Q5 Slicing:** landed as small slices (below); the registry accepts both code-tools and not-yet-migrated `.md` tools during transition (dedup by name), so every commit stays green.
 
-### Slice 19 — Shared `@tool` decorator (foundation)
-New `micron/tools/decorator.py`: `@tool(name, description, write=False, **param_descs)` auto-derives JSON schema from the function signature + param descriptions. Pure additive; no behavior change. Tests for schema derivation (required params, types, write flag, param descriptions).
+### Slice 19 — ✅ CONTRACT COMPLETE — Shared `@tool` decorator (foundation)
+New `micron/tools/decorator.py`: `@tool(name, description, write=False, **param_descs)` auto-derives JSON schema from the function signature + param descriptions. Pure additive; no behavior change. Tests for schema derivation (required params, types, write flag, param descriptions). *Done — extracted from `plugins/__init__.py`, plugins re-export the shared decorator.*
 
-### Slice 20 — Unify plugins onto shared decorator
-Point `micron/plugins/__init__.py` at the shared `@tool`. `discover_plugins()` produces the same descriptors. Existing `context/plugins/example.py` (roll_dice, reverse_text) keeps working.
+### Slice 20 — ✅ COMPLETE — Unify plugins onto shared decorator
+Point `micron/plugins/__init__.py` at the shared `@tool`. `discover_plugins()` produces the same descriptors. Existing `context/plugins/example.py` (roll_dice, reverse_text) keeps working. *Done — verified single ToolDescriptor type across both.*
 
-### Slice 21 — Migrate read-only built-ins
-Move no-confirmation tools (`web_search`, `fetch_url`, `read_file`, `list_files`, `run_command`, `calculate`, `python_eval`, `current_time`, `save_memory`, `search_knowledge`, `search_skill_library`, `create_skill`) onto `@tool`. Registry = code-tools + not-yet-migrated `.md` tools.
+### Slice 21 — ✅ COMPLETE — Migrate read-only built-ins
+Move no-confirmation tools (`web_search`, `fetch_url`, `read_file`, `list_files`, `calculate`, `current_time`, `save_memory`, `search_knowledge`, `search_skill_library`) onto `@tool`. Registry = code-tools + not-yet-migrated `.md` tools. *Done — 9 read-only migrated; added `param_descs` arg; code-wins dedup.*
 
-### Slice 22 — Migrate write built-ins
-Add `@tool(write=True)` to `write_file`, `edit_file`, `delete_file`, `paste_file`, `patch_file`, `write_knowledge`, `tree`, + recovery tools. Confirmation flow tests stay green.
+### Slice 22 — ✅ COMPLETE — Migrate write built-ins
+Add `@tool(write=True)` to `write_file`, `edit_file`, `delete_file`, `paste_file`, `patch_file`, `write_knowledge`, `tree`, + recovery tools. Confirmation flow tests stay green. *Done — all 24 tools now LLM-exposed; write gates verified.*
 
-### Slice 23 — Flip registration + delete tool-markdown
-Remove markdown-gating from `_register_skill_tools()` so code decorators are the sole source; delete the dead `TOOLS` dict; delete migrated `.md` tool-files (keep genuine knowledge/procedure skills). This also removes the broken `paste_file.md` / `write_knowledge.md` files.
+### Slice 23 — ✅ COMPLETE — Flip registration + delete tool-markdown
+Remove markdown-gating from `_register_skill_tools()` so code decorators are the sole source; delete the dead `TOOLS` dict; delete migrated `.md` tool-files (keep genuine knowledge/procedure skills). *Done — LLM schema + prompt now read from registry; `micron/tools/__init__.py` imports builtin; 16 tool-`.md` files deleted.*
 
-### Slice 24 — Docs + skill audit
+### Slice 24 — 🔄 In progress — Docs + skill audit
 Update `README.md` tool list, `PLAN.md`/`SLICE_PLAN.md`; note "one source of truth" for tools. Update test counts if changed.
 
 ---
@@ -573,8 +573,8 @@ Update `README.md` tool list, `PLAN.md`/`SLICE_PLAN.md`; note "one source of tru
 || 18 | Add tree command | bc67e5c | 5 |
 
 ### Final Statistics
-||- **Total Tests:** 159 passing (up from 66, +93 new)
-||- **Tools:** 21 built-in tools (24 defined in TOOLS dict, 15 exposed to LLM — gap being fixed by Slices 19–24)
+||- **Total Tests:** 168 passing (up from 66, +102 new)
+||- **Tools:** 24 built-in tools + plugins, all exposed to the LLM from code (`@tool` decorator)
 ||- **Security:** shell=False, injection prevention, shell=True fixed
 ||- **Features:** Trash recovery, edit undo, tree visualization, paste_file, patch_file
-||- **Status:** Production ready (Skills/Tools split refactor pending)
+||- **Status:** Production ready (Skills/Tools split Slices 19–24 done)

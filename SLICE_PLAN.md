@@ -10,7 +10,7 @@
 
 | Metric | Status |
 |--------|--------|
-| Tests | 66/66 passing ✅ |
+| Tests | 168/168 passing ✅ |
 | Core Features | 100% complete ✅ |
 | Server | Merged (rate limiting + auth) ✅ |
 | Security | Hardened (30+ patterns) ✅ |
@@ -536,7 +536,7 @@ from micron.tools.decorator import tool, ToolDescriptor, _registry, clear
 **Success Criteria:**
 - `from micron.plugins import tool` still works; `from micron.tools.decorator import tool` works.
 - Existing `context/plugins/example.py` (roll_dice, reverse_text) and all plugin discovery tests pass.
-- All 159 tests still pass.
+- All 168 tests still pass.
 
 ---
 
@@ -604,7 +604,7 @@ for td in _registry:
 **Success Criteria:**
 - 9 read-only tools now come from code decorators.
 - Union of registry = previous tool set (nothing lost) — the transition rule keeps `.md`-only tools registered.
-- All 159 tests still pass.
+- All 168 tests still pass.
 
 ---
 
@@ -624,7 +624,7 @@ for td in _registry:
 **Success Criteria:**
 - All 14 tools defined via `@tool`; write-gated ones carry `write=True`.
 - `tests/test_confirmation.py` still passes (confirmation required for writes).
-- All 159 tests pass.
+- All 168 tests pass.
 
 ---
 
@@ -690,12 +690,12 @@ def _load_tools(self, registry=None) -> str:
 
 | Slice | Task | Effort | Priority | Status |
 |-------|------|--------|----------|--------|
-| 19 | Extract shared `@tool` + per-param descs to `tools/decorator.py` | 2h | Critical | ⏳ Pending |
-| 20 | Verify plugins unified on shared decorator | 1h | Critical | ⏳ Pending |
-| 21 | Migrate read-only built-ins (9) | 2h | High | ⏳ Pending |
-| 22 | Migrate write built-ins (14) | 2h | High | ⏳ Pending |
-| 23 | Flip registration + delete tool-markdown | 2h | High | ⏳ Pending |
-| 24 | Docs + skill audit | 1h | Medium | ⏳ Pending |
+| 19 | Extract shared `@tool` + per-param descs to `tools/decorator.py` | 2h | Critical | ✅ Done |
+| 20 | Verify plugins unified on shared decorator | 1h | Critical | ✅ Done |
+| 21 | Migrate read-only built-ins (9) | 2h | High | ✅ Done |
+| 22 | Migrate write built-ins (14) | 2h | High | ✅ Done |
+| 23 | Flip registration + delete tool-markdown | 2h | High | ✅ Done |
+| 24 | Docs + skill audit | 1h | Medium | 🔄 In progress |
 
 ---
 
@@ -746,5 +746,5 @@ def _load_tools(self, registry=None) -> str:
 | 17 | Add patch_file tool | ✅ Done | 5 |
 | 18 | Add tree command | ✅ Done | 5 |
 
-**Total:** 10 slices completed, 143 tests passing
+**Total:** 10 slices (9–18) completed + Slices 19–23 (Skills/Tools split) completed, 168 tests passing
 

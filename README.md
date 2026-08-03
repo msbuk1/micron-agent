@@ -9,7 +9,7 @@ A minimal, file-based AI agent with **Obsidian-style memory**, **Markdown skills
 - 🔌 **Python plugins** — Drop `.py` files in `context/plugins/` with `@tool` decorator
 - 📖 **Knowledge vault** — Store reference docs in `context/knowledge/`, auto-injected by query relevance
 - 🎭 **Composable personas** — Stack `.md` files in `context/persona/` for layered personality
-- 🛠️ **19 tools + plugins** — web search, files, shell, math, Python eval, memory, knowledge, trash recovery
+- 🛠️ **24 built-in tools + plugins** — web search, files, shell, math, Python eval, memory, knowledge, trash recovery (defined via a shared `@tool` decorator)
 - 🔀 **Provider switching** — llamacpp, LM Studio, OpenRouter, OpenAI, Ollama, vLLM
 - 💾 **Session persistence** — Auto-logs conversations to `context/sessions/`
 - 🖥️ **Interactive CLI** — 15 slash commands, thinking indicator, history
@@ -107,28 +107,37 @@ python -m micron --server --port 8000
 | `/resume ID` | Resume a previous session |
 | `/last` | Show last assistant response |
 
-## Tools (14 + plugins)
+## Tools (24 built-in + plugins)
+
+Tools are defined **in code** via the shared `@tool` decorator (`micron/tools/decorator.py`) — that's the single source of truth for the tool surface. `context/plugins/*.py` is a drop-in extension directory: any file there reusing `@tool` auto-registers on scan. Skills (markdown knowledge/procedure docs) are a separate concept and no longer gate whether a tool is callable.
 
 | Tool | Description | Write? |
 |------|-------------|--------|
 | `web_search` | Search web (Firecrawl + DuckDuckGo fallback) | No |
 | `fetch_url` | Fetch and extract URL content | No |
-| `read_file` | Read file (supports line ranges) | No |
+| `read_file` | Read file (supports line ranges, PDFs) | No |
 | `write_file` | Write/append file (security guardrails) | ✅ |
+| `paste_file` | Save content to `context/uploads/` (auto filename) | ✅ |
+| `patch_file` | Apply find-and-replace patches to a file | ✅ |
 | `list_files` | List directory contents | No |
+| `tree` | Display directory tree (depth/extension filter) | No |
 | `run_command` | Run shell command (30s timeout, blocklist) | ✅ |
 | `calculate` | Evaluate math expression | No |
-| `python_eval` | Execute Python code (sandboxed) | ✅ |
+| `python_eval` | Execute Python code (sandboxed via asteval) | ✅ |
 | `current_time` | Get current date/time | No |
 | `save_memory` | Save fact to long-term memory | No |
-| `search_knowledge` | Search knowledge documents | No |
+| `search_knowledge` | Search knowledge documents (TF-IDF) | No |
 | `write_knowledge` | Write document to knowledge vault | ✅ |
-| `create_skill` | Create a new skill file | No |
+| `create_skill` | Create a new skill file | ✅ |
 | `search_skill_library` | Search skill files by keyword | No |
-| `delete_file` | Delete a file (with confirmation) | ✅ |
-| `edit_file` | Edit a file with syntax validation | ✅ |
 | `list_skills` | List available skills | No |
-| (plugins) | Custom tools via `@tool` decorator in `context/plugins/` | configurable |
+| `delete_file` | Delete a file (moves to `.trash/`, confirmation) | ✅ |
+| `restore_file` | Restore a file from `.trash/` | ✅ |
+| `list_trash` | List recoverable deleted files | No |
+| `purge_trash` | Permanently empty `.trash/` | ✅ |
+| `edit_file` | Edit a file (`.bak` backup + syntax validation) | ✅ |
+| `undo_file` | Restore a file from its `.bak` backup | ✅ |
+| (plugins) | Custom tools via `@tool` in `context/plugins/` | configurable |
 
 ## API Server
 
@@ -177,9 +186,12 @@ micron/
 │   ├── sessions.py    # Session persistence
 │   ├── skills.py      # Skill loader + plugin integration
 │   ├── server.py      # FastAPI + SSE server + web UI + file upload
-│   ├── plugins/       # @tool decorator + discover_plugins()
+│   ├── plugins/       # Drop-in tool extension directory (reuses @tool)
 │   └── tools/
-│       ├── builtin.py # 19 built-in tools
+│       ├── __init__.py  # Imports builtin (triggers @tool registration)
+│       ├── decorator.py # Shared @tool decorator + ToolDescriptor
+│       ├── builtin.py  # 24 built-in tools (@tool-decorated)
+│       ├── error_handling.py
 │       └── registry.py
 ├── tests/
 │   ├── test_memory.py
@@ -194,7 +206,7 @@ micron/
 ## Testing
 
 ```bash
-python -m pytest tests/ -v        # 88 tests passing
+python -m pytest tests/ -v        # 168 tests passing
 ```
 
 ## License
