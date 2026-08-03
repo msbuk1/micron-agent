@@ -520,6 +520,39 @@ Update `README.md` tool list, `PLAN.md`/`SLICE_PLAN.md`; note "one source of tru
 
 ---
 
+## CLI / Web App Alignment (Slices 25–27) — DOCUMENTED ONLY, NOT STARTED
+
+**Goal:** Bring the two access modes (CLI and FastAPI web app) to feature parity in capabilities and operation. Currently the CLI is the richer path; the web app lags on operational features, and each has capabilities the other lacks.
+
+**Origin:** Feature-parity audit (2026-08-03). No code changes yet — recorded for planning.
+
+**Current gaps identified:**
+
+### CLI-only (not in web/server)
+- `/clear` (clear history), `/model` (model/provider info), `/providers`, `/unload`
+- `/sessions`, `/resume ID`, `/last` — session management
+- `/trash`, `/restore F`, `/purge`, `/undo F` — file-recovery operations
+- `/tree` — directory tree
+- `/skill NAME`, `/skills` — procedure-skill loading
+
+### Web/server-only (not in CLI)
+- File upload (`POST /upload`) — CLI relies on `paste_file` tool
+- Delete individual memory (`DELETE /memory/{id}`)
+- Interactive write-confirmation UI (Confirm/Cancel buttons)
+- **Web chat is not session-persistent** — history lives in JS only, not logged to `context/sessions/` (CLI logs via `SessionLogger.log_turn`)
+
+### Aligned (both)
+- SSE streaming chat, thinking/tool-status display, tool listing, memory search/list, skill reload
+
+### Planned slices (deferred)
+- **Slice 25 — Server session endpoints:** add `/sessions`, `/session/{id}`, `/session/{id}/resume`; make web chat persist to `context/sessions/`.
+- **Slice 26 — Server operational endpoints:** add `POST /clear`, `GET /model`, `GET /providers`, `POST /unload`, and file-recovery `/trash` `/restore` `/purge` `/undo`; wire into web UI.
+- **Slice 27 — CLI missing features + docs:** add `--upload` flag and per-memory delete to CLI; update README/PLAN.
+
+> **Note:** Alignment touches `server.py`, `__main__.py`, and tool registration — consider sequencing AFTER the Skills/Tools split (Slices 19–24) to avoid re-touching the same files.
+
+---
+
 *This plan consolidates completed work and new priorities from codebase review.*
 
 ## Session Summary (July 16-17, 2026)

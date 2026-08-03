@@ -611,6 +611,34 @@ Before merging any slice:
 
 ---
 
+## CLI / Web App Alignment — Slices 25–27 (DOCUMENTED ONLY, NOT STARTED)
+
+**Goal:** Feature parity between the CLI and the FastAPI web app. Recorded from a feature-parity audit (2026-08-03); no code changes yet.
+
+**Gaps to close:**
+
+| Capability | CLI | Web/Server |
+|---|---|---|
+| Clear history | `/clear` | ❌ |
+| Model / provider info | `/model`, `/providers` | ❌ (only bool in `/health`) |
+| Unload model | `/unload` | ❌ |
+| Sessions list / resume | `/sessions`, `/resume` | ❌ |
+| Last response | `/last` | ❌ |
+| File recovery | `/trash` `/restore` `/purge` `/undo` | ❌ |
+| Directory tree | `/tree` | ❌ |
+| Procedure skills | `/skill`, `/skills` | ❌ |
+| File upload | ❌ (uses `paste_file`) | `POST /upload` ✅ |
+| Delete individual memory | ❌ | `DELETE /memory/{id}` ✅ |
+| Write-confirmation UI | inline | Confirm/Cancel buttons ✅ |
+| Session persistence | ✅ logged | ❌ (JS-only history) |
+
+**Planned (deferred — sequence AFTER Skills/Tools split to avoid re-touching shared files):**
+- **Slice 25 — Server session endpoints:** `/sessions`, `/session/{id}`, `/session/{id}/resume`; persist web chat to `context/sessions/`.
+- **Slice 26 — Server operational endpoints:** `/clear`, `/model`, `/providers`, `/unload`, `/trash` `/restore` `/purge` `/undo`; wire into web UI.
+- **Slice 27 — CLI missing features + docs:** `--upload` flag, per-memory delete, README/PLAN updates.
+
+---
+
 *This plan focuses on small, achievable chunks that can be coded and tested independently.*
 
 ## Session Summary (July 16-17, 2026)
