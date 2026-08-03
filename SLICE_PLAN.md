@@ -470,131 +470,219 @@ Before merging any slice:
 
 **Goal:** Separate Skills and Tools. Tools become code-defined via a shared `@tool` decorator (single source of truth); markdown never gates whether a tool is callable. Fixes the registration gap caused by broken `.md` tool-def files (`paste_file`, `patch_file`, `write_knowledge`).
 
-### Slice 19: Shared `@tool` decorator (FOUNDATION — 2h)
+## IMPORTANT — Current State (read first, verified 2026-08-03)
 
-**Goal:** Introduce the shared tool-definition decorator.
+Before starting, understand the pieces that already exist:
 
-**Tasks:**
-1. [ ] Create `micron/tools/decorator.py`
-2. [ ] Implement `@tool(name, description, write=False, **param_descs)` decorator
-3. [ ] Auto-derive JSON schema from function signature (required params, types, defaults)
-4. [ ] Merge per-parameter descriptions from `param_descs`
-5. [ ] Preserve `write` flag on the descriptor
-6. [ ] Add tests: schema derivation, required params, param types, write flag, param descriptions
-
-**Files:**
-- `micron/tools/decorator.py` (new)
-- `tests/test_tools.py` (new tests) or `tests/test_decorator.py` (new)
-
-**Success Criteria:**
-- `@tool` decorator produces a `ToolDescriptor` with correct auto-derived schema
-- All existing tests still pass (pure additive)
+1. **A working `@tool` decorator ALREADY exists** in `micron/plugins/__init__.py` (lines 15–84): `ToolDescriptor` dataclass + `@tool(*, name, description, write=False)` + `_infer_parameters(func)` which auto-derives the JSON schema from the signature. **Do NOT create a fresh decorator from scratch — reuse/extract this one.** It already handles required params, types, and the `write` flag.
+2. **`micron/tools/` has NO `__init__.py`** (the PLAN's repo tree claims one — that's a stale doc; don't rely on the tree diagram for file existence).
+3. **The `TOOLS` dict in `micron/tools/builtin.py` (line 1178) is DEAD CODE** — defined and exported from `micron/__init__.py` but never iterated to register anything. It will be deleted in Slice 23.
+4. **Tools are exposed to the LLM via TWO separate paths**, both currently fed from skills — the plan MUST switch BOTH, not just the execution path:
+   - **LLM schema list:** `agent.py` `_run_with_messages()` calls `tools=self.skills.schemas()` (~line 198). ← must change to read from the ToolRegistry.
+   - **Prompt text:** `prompt.py::_load_tools()` does `tool_skills = [s for s in self.skills.all() if s.module]` (line 117) and returns `"(no tools available)"` when empty. ← must change to read from the ToolRegistry, or it will tell the LLM there are no tools after Slice 23 deletes the `.md` files.
+5. **Transition safety rule:** during Slices 21–22 the registry is seeded from `@tool` decorators AND `_register_skill_tools()` still runs for unmigrated `.md` tools. **On name collision the CODE-decorated tool wins** (it's the migrated, authoritative definition).
 
 ---
 
-### Slice 20: Unify plugins onto shared decorator (1h)
+### Slice 19: Extract shared `@tool` decorator to `micron/tools/decorator.py` (FOUNDATION — 2h)
 
-**Goal:** Make plugins use the same `@tool` as built-ins.
+**Goal:** Move the (already working) decorator out of `micron/plugins/` into a shared home under `tools/`, adding per-parameter description support (the one capability plugins' `_infer_parameters` lacks).
+
+**What exists vs what to build:**
+
+The current `micron/plugins/__init__.py` builds schemas from signatures but with **no descriptions**:
+```python
+# current _infer_parameters() — no param descriptions
+properties[pname] = {"type": json_type}   # ← no "description" key
+```
 
 **Tasks:**
-1. [ ] Point `micron/plugins/__init__.py` at the shared `@tool`
-2. [ ] `discover_plugins()` produces the same descriptor type
-3. [ ] Existing `context/plugins/example.py` (roll_dice, reverse_text) keeps working
-4. [ ] `/tools` shows the same tool set as before
-5. [ ] Add test: plugin discovery still registers correctly
+1. [ ] Create `micron/tools/__init__.py` and `micron/tools/decorator.py`.
+2. [ ] Move `ToolDescriptor` and the decorator into `micron/tools/decorator.py` (keep `_registry` list pattern).
+3. [ ] Extend the decorator to accept per-param descriptions and merge them into the schema:
+```python
+# microns/tools/decorator.py
+@dataclass
+class ToolDescriptor:
+    name: str
+    description: str
+    func: Callable
+    parameters: dict = field(default_factory=lambda: {"type": "object", "properties": {}})
+    write: bool = False
 
-**Files:**
-- `micron/plugins/__init__.py`
-- `tests/test_agent.py` (plugin tests)
+def tool(*, name: str, description: str, write: bool = False, **param_descs):
+    """Register a tool. param_descs maps param name -> human description."""
+    def decorator(func):
+        schema = _infer_parameters(func)          # signature -> types + required
+        props = schema["properties"]
+        for pname, desc in param_descs.items():   # merge descriptions
+            if pname in props:
+                props[pname]["description"] = desc
+        td = ToolDescriptor(name=name, description=description,
+                            func=func, parameters=schema, write=write)
+        _registry.append(td)
+        return func
+    return decorator
+```
+4. [ ] Re-export from `micron/plugins/__init__.py` so existing plugin imports (`from micron.plugins import tool`) keep working:
+```python
+# micron/plugins/__init__.py — re-export shared decorator (no code duplication)
+from micron.tools.decorator import tool, ToolDescriptor, _registry, clear
+# keep clear() and _registry aligned with the shared module
+```
+5. [ ] Update `discover_plugins()` in `micron/plugins/loader.py` to import the shared `_registry` (it currently does `from . import ToolDescriptor, _registry` — now `from micron.tools.decorator import ToolDescriptor, _registry`).
+6. [ ] Add tests in `tests/test_decorator.py`: signature→schema types, required params, defaults, `write` flag, and per-param descriptions merge (`"description"` key present & correct).
 
 **Success Criteria:**
-- Plugins and built-ins share one decorator
-- `roll_dice` / `reverse_text` still register and work
-- All tests pass
+- `from micron.plugins import tool` still works; `from micron.tools.decorator import tool` works.
+- Existing `context/plugins/example.py` (roll_dice, reverse_text) and all plugin discovery tests pass.
+- All 159 tests still pass.
 
 ---
 
-### Slice 21: Migrate read-only built-ins (2h)
+### Slice 20: Verify plugins unified on shared decorator (1h)
 
-**Goal:** Move no-confirmation tools onto `@tool`.
+**Goal:** Confirm plugins and built-ins now share one decorator+registry (largely done by Slice 19's re-export; this slice closes the loop and hardens it).
 
 **Tasks:**
-1. [ ] Decorate read-only tools: `web_search`, `fetch_url`, `read_file`, `list_files`, `run_command`, `calculate`, `python_eval`, `current_time`, `save_memory`, `search_knowledge`, `search_skill_library`, `create_skill`
-2. [ ] Migrate rich per-parameter descriptions from their `.md` files into `@tool(param=...)`
-3. [ ] Registry = code-tools + not-yet-migrated `.md` tools (dedup by name)
-4. [ ] All tools still callable and schemas correct
-
-**Files:**
-- `micron/tools/builtin.py`
-- `micron/agent.py` (registration accepts both during transition)
+1. [ ] Confirm `discover_plugins()` returns `ToolDescriptor`s from the shared module (no type mismatch).
+2. [ ] CLI `/tools` and `/health` show the same tool set as before (add plugins log check).
+3. [ ] Add/update a test asserting a plugin tool and a built-in tool both register into the same `_registry`/ToolRegistry with matching descriptor types.
+4. [ ] Remove any now-dead local copy of `_infer_parameters`/`ToolDescriptor` in plugins if it isn't the re-export (ensure single definition).
 
 **Success Criteria:**
-- Read-only tools registered from code
-- No tool lost during transition (union constant)
-- All tests pass
+- Single `ToolDescriptor` type across built-ins and plugins.
+- `roll_dice` / `reverse_text` register and remain callable.
+- All tests pass.
 
 ---
 
-### Slice 22: Migrate write built-ins (2h)
+### Slice 21: Migrate READ-ONLY built-ins to `@tool` (2h)
 
-**Goal:** Move write/confirmation tools onto `@tool(write=True)`.
+**Important correction vs older draft:** `create_skill`, `python_eval`, and `run_command` are **`write: true`** in the current source of truth — do NOT put them in this (read-only) slice. They belong in Slice 22. See the write inventory below.
+
+**Read-only tools to migrate here (from `micron/tools/builtin.py`):**
+`web_search`, `fetch_url`, `read_file`, `list_files`, `calculate`, `current_time`, `save_memory`, `search_knowledge`, `search_skill_library` (9 total).
 
 **Tasks:**
-1. [ ] Decorate: `write_file`, `edit_file`, `delete_file`, `paste_file`, `patch_file`, `write_knowledge`, `tree`, + recovery tools (`restore_file`, `list_trash`, `purge_trash`, `undo_file`)
-2. [ ] Use `@tool(write=True)` for confirmation-required tools
-3. [ ] Migrate rich descriptions from `.md` files
-4. [ ] Confirmation flow tests (`test_confirmation.py`) stay green
-
-**Files:**
-- `micron/tools/builtin.py`
+1. [ ] Annotate each read-only function with `@tool(name=..., description=..., param=...)`, migrating the rich per-param descriptions from its `.md` file. Example from `web_search.md`:
+```python
+@tool(
+    name="web_search",
+    description="Search the web for current information, documentation, or news",
+    query="Search query - use keywords, not a question. "
+          "Good: 'python pandas drop duplicates keep last'. "
+          "Bad: 'how do i drop duplicate rows in pandas but keep the final one please'",
+    max_results="Number of results to return (default 5)",
+)
+def web_search(query: str, max_results: int = 5) -> list[dict]:
+    ...
+```
+2. [ ] Make `_register_skill_tools()` in `agent.py` **dedup with code-wins**:
+```python
+def _register_skill_tools(self):
+    for skill in self.skills.all():
+        if skill.module and skill.name not in self.tools._tools:  # code-decorated wins
+            try:
+                mod = __import__(skill.module, fromlist=[skill.name])
+                func = getattr(mod, skill.name)
+                self.tools.register(name=skill.name, func=func,
+                                    description=skill.description,
+                                    parameters=skill.parameters, write=skill.write)
+            except (ImportError, AttributeError) as e:
+                print(f"[WARN] Could not load tool {skill.name}: {e}")
+```
+   Meanwhile, seed the ToolRegistry from the decorator's `_registry` when the agent starts (add to `_register_skill_tools` or `__init__`):
+```python
+from micron.tools.decorator import _registry
+for td in _registry:
+    self.tools.register(name=td.name, func=td.func, description=td.description,
+                        parameters=td.parameters, write=td.write)
+```
+3. [ ] Verify each migrated tool still callable and its schema matches (descriptions preserved).
 
 **Success Criteria:**
-- Write tools registered with `write=True` from code
-- Human-in-the-loop confirmation still works
-- All tests pass
+- 9 read-only tools now come from code decorators.
+- Union of registry = previous tool set (nothing lost) — the transition rule keeps `.md`-only tools registered.
+- All 159 tests still pass.
+
+---
+
+### Slice 22: Migrate WRITE built-ins to `@tool(write=True)` (2h)
+
+**Write tools to migrate here** — note this list CORRECTS the earlier draft (do not use the old read-only grouping):
+`create_skill`, `python_eval`, `run_command`, `write_file`, `edit_file`, `delete_file`, `paste_file`, `patch_file`, `write_knowledge`, `tree`, `restore_file`, `list_trash`, `purge_trash`, `undo_file` (14 total).
+
+(Read-only and file-recovery tools not gated on confirmation: `write_file`/`edit_file`/`delete_file`/`paste_file`/`patch_file`/`write_knowledge`/`create_skill`/`python_eval`/`run_command` are write/confirmation gated. `tree`, `restore_file`, `list_trash`, `purge_trash`, `undo_file` are NOT write-confirmation gated → `write=False`, but still migrate to `@tool`. **Verify each against the actual function/`.md` write flag — do not trust this summary, confirm at build time.**)
+
+**Tasks:**
+1. [ ] Annotate each write tool with `@tool(write=True)` (or `write=False` for the recovery/read helpers), migrating rich descriptions and per-param descriptions.
+2. [ ] Migrate the broken files' content explicitly: `paste_file.md` (missing `module:`), `patch_file.md` (missing `module:`), `write_knowledge.md` (missing closing `---`). Their descriptions go into the decorator now; the broken `.md` files get deleted in Slice 23.
+3. [ ] Confirm `run_command`, `python_eval`, `create_skill`, `write_file` keep `write=True` so the confirmation flow (`test_confirmation.py`) still gates them.
+4. [ ] Keep `_register_skill_tools()` dedup rule so unmigrated tools don't double-register.
+
+**Success Criteria:**
+- All 14 tools defined via `@tool`; write-gated ones carry `write=True`.
+- `tests/test_confirmation.py` still passes (confirmation required for writes).
+- All 159 tests pass.
 
 ---
 
 ### Slice 23: Flip registration + delete tool-markdown (2h)
 
-**Goal:** Make code the sole source of truth; remove markdown gating and dead code.
+**Goal:** Code is the sole source of truth. Switch the LLM's tool-schema and prompt sources to the ToolRegistry, then remove markdown gating and dead code.
 
 **Tasks:**
-1. [ ] Remove markdown-gating from `_register_skill_tools()` in `agent.py`
-2. [ ] All tools register exclusively from `@tool` decorators
-3. [ ] Delete the dead `TOOLS` dict from `builtin.py`
-4. [ ] Delete migrated `.md` tool-files (incl. broken `paste_file.md`, `write_knowledge.md`); keep genuine knowledge/procedure skills
-5. [ ] Verify all 24 tools now callable by the LLM
-
-**Files:**
-- `micron/agent.py`
-- `micron/tools/builtin.py`
-- `micron/__init__.py` (remove `TOOLS` export)
-- `context/skills/*.md` (delete tool-defs only)
+1. [ ] **Switch the LLM schema path** in `agent.py` `_run_with_messages()` — change `tools=self.skills.schemas()` → `tools=self.tools.schemas()`:
+```python
+for response in self.llm.stream_chat(
+    messages=messages,
+    tools=self.tools.schemas(),   # ← was self.skills.schemas()
+    ...
+):
+```
+2. [ ] **Switch the prompt text path** in `prompt.py::_load_tools()` — read from the registry, not skills. Change its signature to accept the registry (or add a registry reference) and iterate `registry.list()`:
+```python
+def _load_tools(self, registry=None) -> str:
+    tools = registry.list() if registry else []
+    if not tools:
+        return "(no tools available)"
+    lines = []
+    for t in tools:
+        marker = " [WRITE]" if t.get("write") else ""
+        props = (t.get("parameters") or {}).get("properties", {})
+        param_desc = ", ".join(f"{k}: {v.get('type','any')}" for k, v in props.items()) or "no parameters"
+        lines.append(f"- {t['name']}{marker}: {t['description']} ({param_desc})")
+    return "\n".join(lines)
+```
+   Wire the registry into `PromptBuilder` (pass `agent.tools` at construction in `agent.py`).
+3. [ ] **Stop registering from `.md`:** remove the markdown-gating loop from `_register_skill_tools()` so only `@tool`-decorated tools (built-ins + plugins) are registered.
+4. [ ] **Delete the dead `TOOLS` dict** from `micron/tools/builtin.py` (line 1178) and remove the `TOOLS` export from `micron/__init__.py`.
+5. [ ] **Delete migrated `.md` tool-def files.** DELETE these (tool-defs, now redundant): `web_search.md`, `fetch_url.md`, `read_file.md`, `list_files.md`, `calculate.md`, `current_time.md`, `save_memory.md`, `search_knowledge.md`, `search_skill_library.md`, `write_file.md`, `create_skill.md`, `python_eval.md`, `run_command.md`, `write_knowledge.md`, `paste_file.md`, `patch_file.md` (16 files).
+   **KEEP these** (knowledge/procedure skills, not tool-defs): everything under a directory (`ask-matt/`, `code-review/`, `grill-me/`, `handoff/`, `implement/`, `research/`, `teach/`, `to-spec/`, `to-tickets/`, `triage/`, `wayfinder/`, `writing-great-skills/`, etc.) plus any non-`module` flat `.md` knowledge files.
+6. [ ] Verify **all 24 tools** are exposed to the LLM via `agent.tools.schemas()`.
+7. [ ] Update any tests that import `micron.TOOLS` (remove/migrate to `ToolRegistry`).
 
 **Success Criteria:**
-- All 24 tools exposed to the LLM (gap closed)
-- Markdown no longer gates tool existence
-- All tests pass (updated)
+- All 24 tools callable by the LLM (gap closed).
+- Markdown no longer gates tool existence.
+- LLM schema and prompt text both come from the registry; `_load_tools()` never returns "(no tools available)" while tools exist.
+- All tests pass (updated for removed `TOOLS` / `.md` files).
 
 ---
 
 ### Slice 24: Docs + skill audit (1h)
 
-**Goal:** Update documentation and confirm the tool surface.
-
 **Tasks:**
-1. [ ] Update `README.md` tool list to reflect code-defined tools
-2. [ ] Update `PLAN.md` / `SLICE_PLAN.md` — mark slices 19-24 done, update test counts
-3. [ ] Add "one source of truth" note for tools
-4. [ ] Confirm `pytest --co -q` count matches docs
-
-**Files:**
-- `README.md`, `PLAN.md`, `SLICE_PLAN.md`
+1. [ ] Update `README.md` tool list to reflect code-defined tools (and delete the stale "17/19/21" numbers).
+2. [ ] Update `PLAN.md` / `SLICE_PLAN.md`: mark slices 19–24 done, update test counts.
+3. [ ] Fix the stale repo-tree claims: `micron/tools/` has no `__init__.py` unless we create it (Slice 19 does); reflect actual files.
+4. [ ] Document the "one source of truth" rule: tools = `@tool` decorators; skills = knowledge/procedure `.md`.
+5. [ ] Confirm `pytest --co -q` count matches docs exactly.
 
 **Success Criteria:**
-- Docs match the actual registered tool set
-- Test counts in docs match reality
+- Docs match the actual registered tool set and real file layout.
+- Test counts in docs match `pytest --co -q`.
 
 ---
 
@@ -602,10 +690,10 @@ Before merging any slice:
 
 | Slice | Task | Effort | Priority | Status |
 |-------|------|--------|----------|--------|
-| 19 | Shared `@tool` decorator | 2h | Critical | ⏳ Pending |
-| 20 | Unify plugins onto decorator | 1h | Critical | ⏳ Pending |
-| 21 | Migrate read-only built-ins | 2h | High | ⏳ Pending |
-| 22 | Migrate write built-ins | 2h | High | ⏳ Pending |
+| 19 | Extract shared `@tool` + per-param descs to `tools/decorator.py` | 2h | Critical | ⏳ Pending |
+| 20 | Verify plugins unified on shared decorator | 1h | Critical | ⏳ Pending |
+| 21 | Migrate read-only built-ins (9) | 2h | High | ⏳ Pending |
+| 22 | Migrate write built-ins (14) | 2h | High | ⏳ Pending |
 | 23 | Flip registration + delete tool-markdown | 2h | High | ⏳ Pending |
 | 24 | Docs + skill audit | 1h | Medium | ⏳ Pending |
 
