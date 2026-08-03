@@ -11,6 +11,8 @@ from typing import Any
 import requests
 from bs4 import BeautifulSoup
 
+from micron.tools.decorator import tool
+
 # Try to import resource module for Unix systems
 try:
     import resource
@@ -94,6 +96,14 @@ def _set_command_resource_limits():
         pass
 
 
+@tool(
+    name="web_search",
+    description="Search the web for current information, documentation, or news",
+    query="Search query - use keywords, not a question. "
+          "Good: 'python pandas drop duplicates keep last'. "
+          "Bad: 'how do i drop duplicate rows in pandas but keep the final one please'",
+    max_results="Number of results to return (default 5)",
+)
 def web_search(query: str, max_results: int = 5) -> list[dict]:
     """Search the web using Firecrawl."""
     try:
@@ -139,6 +149,12 @@ def _duckduckgo_search(query: str, max_results: int = 5) -> list[dict]:
     except Exception:
         return []
 
+@tool(
+    name="fetch_url",
+    description="Fetch and extract text content from a URL",
+    url="URL to fetch",
+    max_chars="Maximum characters to return",
+)
 def fetch_url(url: str, max_chars: int = 8000) -> dict:
     """Fetch a URL and return its content."""
     if not url.startswith(("http://", "https://")):
@@ -163,6 +179,13 @@ def _fetch_url_basic(url: str, max_chars: int = 8000) -> dict:
         text = r.read().decode("utf-8", errors="replace")
         return {"url": url, "content": text[:max_chars]}
 
+@tool(
+    name="read_file",
+    description="Read the contents of a file from the working directory",
+    path="Path to the file (relative to working directory)",
+    start_line="Starting line number (1-indexed). Use for large files to read specific sections.",
+    end_line="Ending line number (1-indexed, inclusive). Use with start_line for a range.",
+)
 def read_file(path: str, start_line: int = 0, end_line: int = 0) -> str:
     """Read and return the text content of a file from the working directory.
     Optionally read specific line range (1-indexed).
@@ -330,6 +353,11 @@ def patch_file(path: str, patches: list[dict]) -> str:
         )
 
 
+@tool(
+    name="list_files",
+    description="List all files and directories in a specified path",
+    path='Directory path to list (relative to working directory, default ".")',
+)
 def list_files(path: str = ".") -> str:
     """List files and directories in the specified path."""
     target_path = _resolve_path(path, must_exist=True)
@@ -552,6 +580,11 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
             "while executing command"
         )
 
+@tool(
+    name="calculate",
+    description="Safely evaluate a mathematical expression",
+    expression='Mathematical expression (e.g., "2 + 2", "sqrt(16) * 3")',
+)
 def calculate(expression: str) -> str:
     """Evaluate a math expression."""
     try:
@@ -589,11 +622,23 @@ def python_eval(code: str) -> str:
     except Exception as e:
         return f"Error executing code: {e}"
 
+@tool(
+    name="current_time",
+    description="Get current date and time",
+    timezone="Timezone (UTC or local)",
+)
 def current_time(timezone: str = "UTC") -> str:
     """Get current date/time."""
     now = datetime.utcnow() if timezone == "UTC" else datetime.now()
     return now.strftime("%Y-%m-%d %H:%M:%S") + f" ({timezone})"
 
+@tool(
+    name="save_memory",
+    description="Save something to long-term memory for future reference",
+    text="What to remember",
+    tags="Tags for categorization",
+    importance="Importance level (1-5, 5=highest)",
+)
 def save_memory(text: str, tags: list[str] = None, importance: int = 3) -> str:
     """Save something to long-term memory."""
     import uuid
@@ -625,6 +670,12 @@ def save_memory(text: str, tags: list[str] = None, importance: int = 3) -> str:
     return f"Saved: {text}"
 
 
+@tool(
+    name="search_knowledge",
+    description="Search knowledge documents and long-term memories by keyword. Returns ranked results by relevance.",
+    query="The search query to find in knowledge documents",
+    k="Number of results to return (default 5)",
+)
 def search_knowledge(query: str = "", k: int = 5) -> str:
     """Search knowledge documents using TF-IDF scoring. Returns ranked markdown snippets."""
     from pathlib import Path
@@ -1113,6 +1164,12 @@ def undo_file(path: str) -> str:
         )
 
 
+@tool(
+    name="search_skill_library",
+    description="Search existing skills by keyword. Use before creating a new skill to check if one already exists.",
+    query="Keywords to search for in skill names and descriptions",
+    text="Alias for query",
+)
 def search_skill_library(query: str = "", text: str = "") -> str:
     """Search skill files by keyword. Returns matching skills with descriptions."""
     actual_query = text or query

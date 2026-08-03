@@ -49,6 +49,15 @@ class MicronAgent:
         self.memory = Memory(self.context_dir / "memory")
         self.skills = SkillLoader(self.context_dir / "skills")
         self.tools = ToolRegistry()
+        # Seed the registry from the shared @tool decorator registry (built-ins
+        # defined in code are the authoritative source; see _register_skill_tools
+        # for the code-wins dedup rule during the Skills/Tools migration).
+        from micron.tools.decorator import _registry
+        for td in _registry:
+            self.tools.register(
+                name=td.name, func=td.func, description=td.description,
+                parameters=td.parameters, write=td.write,
+            )
         # Use pre-built backend if provided, otherwise create one
         if "backend" in config.llm_kwargs:
             self.llm = config.llm_kwargs.pop("backend")
@@ -70,8 +79,16 @@ class MicronAgent:
         self._consecutive_failures = 0
 
     def _register_skill_tools(self):
+        """Register tools from skill `.md` files — BUT code-decorated tools win.
+
+        During the Skills/Tools migration, a tool migrated to `@tool` in
+        `builtin.py` is already in the registry (seeded from `_registry`).
+        Its name already exists, so it is NOT re-registered here — this keeps
+        the code definition authoritative. Not-yet-migrated tools defined only
+        in `.md` files are still registered here so nothing is lost.
+        """
         for skill in self.skills.all():
-            if skill.module:
+            if skill.module and skill.name not in self.tools._tools:  # code-wins
                 try:
                     mod = __import__(skill.module, fromlist=[skill.name])
                     func = getattr(mod, skill.name)
