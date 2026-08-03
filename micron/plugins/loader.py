@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import List
 
-from . import ToolDescriptor, _registry
+from micron.tools.decorator import ToolDescriptor, _registry
 
 logger = logging.getLogger(__name__)
 
