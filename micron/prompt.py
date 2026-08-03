@@ -59,12 +59,16 @@ Tool results will be provided in the next message."""
         skills: SkillLoader,
         user: str = "user",
         use_text_tool_format: bool = False,
+        tools=None,
     ):
         self.context_dir = Path(context_dir)
         self.memory = memory
         self.skills = skills
         self.user = user
         self.use_text_tool_format = use_text_tool_format
+        # Optional ToolRegistry — when provided it is the source of truth for
+        # the tool list rendered into the prompt (Skills/Tools split).
+        self.tools = tools
 
     def build_system_prompt(self, query: str) -> str:
         """Build the complete system prompt for a query."""
@@ -113,7 +117,26 @@ Tool results will be provided in the next message."""
         return "\n".join(lines)
 
     def _load_tools(self) -> str:
-        """Generate tool description list dynamically from loaded skills."""
+        """Generate tool description list. Uses the ToolRegistry when provided
+        (source of truth after the Skills/Tools split); otherwise falls back to
+        loading skills that declare a `module` (legacy path)."""
+        # Preferred: read from the ToolRegistry.
+        if self.tools is not None:
+            tools = self.tools.list()
+            if not tools:
+                return "(no tools available)"
+            lines = []
+            for t in tools:
+                marker = " [WRITE]" if t.get("write") else ""
+                props = (t.get("parameters") or {}).get("properties", {})
+                if props:
+                    param_desc = ", ".join(f"{k}: {v.get('type', 'any')}" for k, v in props.items())
+                else:
+                    param_desc = "no parameters"
+                lines.append(f"- {t['name']}{marker}: {t['description']} ({param_desc})")
+            return "\n".join(lines)
+
+        # Legacy fallback: skills with a module.
         tool_skills = [s for s in self.skills.all() if s.module]
         if not tool_skills:
             return "(no tools available)"

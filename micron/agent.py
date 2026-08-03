@@ -70,6 +70,7 @@ class MicronAgent:
         self.prompt_builder = PromptBuilder(
             self.context_dir, self.memory, self.skills,
             use_text_tool_format=self.use_text_tool_format,
+            tools=self.tools,
         )
 
         self.skills.load_all()
@@ -79,25 +80,14 @@ class MicronAgent:
         self._consecutive_failures = 0
 
     def _register_skill_tools(self):
-        """Register tools from skill `.md` files — BUT code-decorated tools win.
+        """No longer registers tools from `.md` skill files.
 
-        During the Skills/Tools migration, a tool migrated to `@tool` in
-        `builtin.py` is already in the registry (seeded from `_registry`).
-        Its name already exists, so it is NOT re-registered here — this keeps
-        the code definition authoritative. Not-yet-migrated tools defined only
-        in `.md` files are still registered here so nothing is lost.
+        After the Skills/Tools split, all tools are defined via the shared
+        `@tool` decorator in code (`builtin.py` + plugins) and seeded into the
+        ToolRegistry at startup from ``micron.tools.decorator._registry``.
+        Markdown files no longer gate tool existence. This method is retained
+        as a no-op hook for backwards compatibility.
         """
-        for skill in self.skills.all():
-            if skill.module and skill.name not in self.tools._tools:  # code-wins
-                try:
-                    mod = __import__(skill.module, fromlist=[skill.name])
-                    func = getattr(mod, skill.name)
-                    self.tools.register(
-                        name=skill.name, func=func, description=skill.description,
-                        parameters=skill.parameters, write=skill.write,
-                    )
-                except (ImportError, AttributeError) as e:
-                    print(f"[WARN] Could not load tool {skill.name} from {skill.module}: {e}")
 
     def _load_plugins(self):
         """Discover and register plugin tools from context/plugins/."""
@@ -212,7 +202,7 @@ class MicronAgent:
 
             for response in self.llm.stream_chat(
                 messages=messages,
-                tools=self.skills.schemas(),
+                tools=self.tools.schemas(),
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
             ):

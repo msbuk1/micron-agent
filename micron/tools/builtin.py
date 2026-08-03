@@ -1333,22 +1333,3 @@ def purge_trash() -> str:
     count = len(files)
     shutil.rmtree(str(trash_dir))
     return success(f"Purged {count} file(s) from trash.")
-
-
-# Tool registry for easy importing
-TOOLS = {
-    "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
-    "write_file": write_file, "paste_file": paste_file, "patch_file": patch_file,
-    "list_files": list_files, "tree": tree, "run_command": run_command,
-    "calculate": calculate, "python_eval": python_eval, "current_time": current_time,
-    "save_memory": save_memory, "search_knowledge": search_knowledge,
-    "write_knowledge": write_knowledge,
-    "create_skill": create_skill, "search_skill_library": search_skill_library,
-    "delete_file": delete_file,
-    "restore_file": restore_file,
-    "list_trash": list_trash,
-    "edit_file": edit_file,
-    "undo_file": undo_file,
-    "list_skills": list_skills,
-    "purge_trash": purge_trash,
-}

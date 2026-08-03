@@ -10,9 +10,19 @@ from micron.tools.decorator import tool, ToolDescriptor, _registry, clear
 
 @pytest.fixture(autouse=True)
 def clean_registry():
-    clear()
+    """Isolate each test but preserve pre-existing registry contents.
+
+    The shared ``_registry`` is a module-global that also holds built-in tools
+    (registered when ``micron.tools.builtin`` is imported during the session).
+    We snapshot it before and restore it after so this unit test does not
+    destructively clear built-in registrations for other test modules.
+    """
+    saved = list(_registry)
+    _registry.clear()
     yield
-    clear()
+    # Restore prior contents; drop whatever THIS test appended.
+    del _registry[:]
+    _registry.extend(saved)
 
 
 def test_schema_types_from_signature():
