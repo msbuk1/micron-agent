@@ -1,7 +1,5 @@
 """Core agent — ties together LLM, memory, skills, tools, and prompt building."""
 import json
-import re
-import sys
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
@@ -12,6 +10,7 @@ from micron.llm import LLMBackend, LLMResponse, create_backend
 from micron.memory import Memory
 from micron.prompt import PromptBuilder
 from micron.skills import SkillLoader
+from micron.text_tool_parser import TextToolCallParser
 from micron.tools.registry import ToolRegistry
 
 
@@ -167,21 +166,6 @@ class MicronAgent:
 
         yield from self._run_with_messages(messages)
 
-    def _looks_like_tool_call(self, text: str) -> bool:
-            """Check if text buffer ends with a complete tool call pattern."""
-            if not text:
-                return False
-            # Check for <function name="..."> pattern
-            if '<function name="' in text and '[PROMPT_INJECTION]' in text:
-                return True
-            # Check for name="tool"> pattern
-            if re.search(r'name="\w+">\s*$', text):
-                return True
-            # Check for name="tool"> name="param">value pattern
-            if re.search(r'name="\w+">\s*name="\w+">', text):
-                return True
-            return False
-
     def _run_with_messages(self, messages: list[dict], skip_write_confirm: bool = False) -> Generator[dict, None, None]:
         """Run the tool loop with pre-built messages.
 
@@ -197,8 +181,15 @@ class MicronAgent:
         while tool_iterations < self.config.max_tool_iterations:
             full_text = ""
             pending_calls = []
-            # Buffer for suppressing tool-call markup from text output
-            text_buffer = ""
+            # TextToolCallParser owns the streaming buffer (one per iteration).
+            # Constructed only when the local text-tool format is in use; for
+            # API backends the LLM yields native tool_call events and the
+            # text stream is safe to surface verbatim.
+            text_parser = (
+                TextToolCallParser(self.tools.schemas())
+                if self.use_text_tool_format
+                else None
+            )
 
             for response in self.llm.stream_chat(
                 messages=messages,
@@ -208,20 +199,15 @@ class MicronAgent:
             ):
                 if response.type == "text":
                     full_text += response.content
-                    text_buffer += response.content
-
-                    # If we're using text tool format, check if buffer contains tool call markup
-                    # If so, don't emit it as text (we'll parse and emit tool events instead)
-                    if self.use_text_tool_format:
-                        # Check if buffer ends with a complete tool call pattern
-                        if self._looks_like_tool_call(text_buffer):
-                            # Don't emit the tool call markup - we'll parse it below
-                            continue
-
-                    yield {"type": "text", "content": response.content}
-                    text_buffer = ""  # Clear buffer after emitting
+                    if text_parser:
+                        yield from self._consume_parser_events(
+                            text_parser.feed(response.content),
+                            pending_calls,
+                            tools_used_this_turn,
+                        )
+                    else:
+                        yield {"type": "text", "content": response.content}
                 elif response.type == "reasoning":
-                    # YIELD THINKING STATES TO USER!
                     yield {"type": "thinking", "content": response.content}
                 elif response.type == "tool_call":
                     pending_calls.append(ToolCall(
@@ -232,23 +218,17 @@ class MicronAgent:
                     ))
                     yield {"type": "tool_start", "name": response.tool_name, "call_id": pending_calls[-1].call_id}
                 elif response.type == "done":
-                    # Flush any remaining clean text
-                    if text_buffer and not self._looks_like_tool_call(text_buffer):
-                        yield {"type": "text", "content": text_buffer}
+                    if text_parser:
+                        yield from self._consume_parser_events(
+                            text_parser.flush(),
+                            pending_calls,
+                            tools_used_this_turn,
+                        )
                     break
                 elif response.type == "error":
                     yield {"type": "error", "message": response.content}
                     yield {"type": "done"}
                     return
-
-            # Only use text-based parsing when configured (local/text models).
-            if not pending_calls and full_text and self.use_text_tool_format and not tools_used_this_turn:
-                text_calls = self._parse_text_tool_calls(full_text)
-                if text_calls:
-                    pending_calls = text_calls
-                    # Replay tool_start events for parsed text calls
-                    for tc in text_calls:
-                        yield {"type": "tool_start", "name": tc.name, "call_id": tc.call_id}
 
             if not pending_calls:
                 yield {"type": "done"}
@@ -405,6 +385,37 @@ class MicronAgent:
             text = str(result)
         return text[:max_len] + ("..." if len(text) > max_len else "")
 
+    def _consume_parser_events(
+        self,
+        events,
+        pending_calls: list[ToolCall],
+        tools_used_this_turn: bool,
+    ) -> Generator[dict, None, None]:
+        """Translate TextToolCallParser events into agent events.
+
+        The parser is suppressed once a read tool has been called in this
+        turn — the model is responding to the tool result, not planning
+        new tool calls. Text events are still emitted; tool_call events
+        are dropped.
+        """
+        for event in events:
+            if event["type"] == "text":
+                yield {"type": "text", "content": event["content"]}
+            elif event["type"] == "tool_call":
+                if tools_used_this_turn:
+                    continue
+                pending_calls.append(ToolCall(
+                    name=event["name"],
+                    args=event["args"],
+                    call_id=event["call_id"],
+                    is_write=self._is_write_tool(event["name"]),
+                ))
+                yield {
+                    "type": "tool_start",
+                    "name": event["name"],
+                    "call_id": event["call_id"],
+                }
+
     def _is_write_tool(self, name: str) -> bool:
         return self.tools.is_write(name)
 
@@ -421,114 +432,6 @@ class MicronAgent:
             if len(set(last6)) <= 2:
                 return True
         return False
-
-    def _parse_text_tool_calls(self, text: str) -> list[ToolCall]:
-        """Parse tool calls from MiniCPM/Qwen text output."""
-        tool_names = {t.name for t in self.tools.all()}
-
-        # Format 1: name="tool_name"> name="param">value (prompt-driven)
-        # Format 2: <function name="tool_name">...[PROMPT_INJECTION] (MiniCPM native)
-        # Try format 2 first as it handles JSON properly
-        calls_format2 = self._parse_function_tag_format(text, tool_names)
-        calls_format1 = self._parse_name_quote_format(text, tool_names)
-
-        return calls_format2 or calls_format1
-
-    def _parse_name_quote_format(self, text: str, tool_names: set) -> list[ToolCall]:
-        """Parse name=\"tool\"> name=\"param\">value format."""
-        calls = []
-        for match in re.finditer(r'name="(\w+)">', text):
-            tool_name = match.group(1)
-            if tool_name not in tool_names:
-                continue
-
-            tool = self.tools.get(tool_name)
-            if not tool:
-                continue
-
-            props = tool.parameters.get("properties", {}) if tool.parameters else {}
-            param_names = list(props.keys())
-
-            after = text[match.end():]
-            param_positions = [(m.start(), m.end(), m.group(1)) for m in re.finditer(r'name="(\w+)">\s*', after)]
-            args = {}
-            for i, (start, end, pname) in enumerate(param_positions):
-                if pname not in param_names:
-                    continue
-                if i + 1 < len(param_positions):
-                    value_end = param_positions[i + 1][0]
-                else:
-                    value_end = len(after)
-                raw = after[end:value_end].strip()
-                if raw:
-                    args[pname] = self._coerce_param(raw, props.get(pname, {}))
-
-            required = tool.parameters.get("required", []) if tool.parameters else []
-            if not args and not required:
-                args = {}
-
-            # Always add the call — even with empty args — so errors surface
-            calls.append(ToolCall(
-                name=tool_name, args=args, call_id=f"text_call_{len(calls)}",
-                is_write=self._is_write_tool(tool_name),
-            ))
-            break
-        return calls
-
-    def _parse_function_tag_format(self, text: str, tool_names: set) -> list[ToolCall]:
-        """Parse <function name="tool">...[PROMPT_INJECTION] format (MiniCPM/Qwen native)."""
-        calls = []
-        # Match <function name="tool_name">optional content[PROMPT_INJECTION]
-        for match in re.finditer(r'<function\s+name="(\w+)"[^>]*>(.*?)\[PROMPT_INJECTION\]', text, re.DOTALL):
-            tool_name = match.group(1)
-            if tool_name not in tool_names:
-                continue
-
-            tool = self.tools.get(tool_name)
-            if not tool:
-                continue
-
-            body = match.group(2).strip()
-            props = tool.parameters.get("properties", {}) if tool.parameters else {}
-            param_names = list(props.keys())
-            args = {}
-
-            if body:
-                # Try JSON first
-                try:
-                    parsed = json.loads(body)
-                    if isinstance(parsed, dict):
-                        args = {k: parsed[k] for k in parsed if k in param_names}
-                except (json.JSONDecodeError, TypeError):
-                    # Fall back to name="param">value extraction within the body
-                    for pm in re.finditer(r'name="(\w+)">\s*([^<\n]*)', body):
-                        pname, pval = pm.group(1), pm.group(2).strip()
-                        if pname in param_names and pval:
-                            args[pname] = self._coerce_param(pval, props.get(pname, {}))
-
-            required = tool.parameters.get("required", []) if tool.parameters else []
-            if not args and not required:
-                args = {}
-
-            # Always add the call — even with empty args — so errors surface
-            calls.append(ToolCall(
-                name=tool_name, args=args, call_id=f"text_call_{len(calls)}",
-                is_write=self._is_write_tool(tool_name),
-            ))
-        return calls
-
-    def _coerce_param(self, raw: str, prop_schema: dict) -> Any:
-        """Convert a string parameter to its schema type."""
-        param_type = prop_schema.get("type", "string")
-        if param_type == "integer":
-            try: return int(raw)
-            except (ValueError, TypeError): return raw
-        elif param_type == "number":
-            try: return float(raw)
-            except (ValueError, TypeError): return raw
-        elif param_type == "boolean":
-            return raw.lower() in ("true", "1", "yes")
-        return raw
 
     def _compress_history(self, history: list[dict], keep_recent: int = 8) -> list[dict]:
         """Compress old history by summarizing tool results into a single summary turn."""

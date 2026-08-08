@@ -16,7 +16,7 @@ A minimal, file-based AI agent with **Obsidian-style memory**, **Markdown skills
 - 🌐 **Web UI** — Dark-themed chat at `GET /` + file upload at `POST /upload`
 - 🛡️ **Security** — Blocklists for dangerous commands (30+ patterns), directory traversal guards, resource limits
 - ⚡ **Local-first** — Runs on Gemma4 12B, Qwen3.5, MiniCPM 1B, or any OpenAI-compatible API
-- 🔒 **Human-in-the-loop** u2014 Write tools require explicit confirmation before execution
+- 🔒 **Human-in-the-loop** — Write tools require explicit confirmation before execution
 
 ## Quick Start
 
@@ -169,24 +169,33 @@ curl -X POST http://localhost:8000/chat \
 ```
 ```
 micron/
+├── CONTEXT.md         # Domain glossary (module names, event vocabulary, config surface)
 ├── context/
-│   ├── skills/        # Tool definitions (Markdown + YAML)
+│   ├── skills/        # Markdown skill definitions (knowledge + procedure)
 │   ├── knowledge/     # Reference docs (auto-injected by query)
 │   ├── memory/        # Long-term memory (memories.jsonl)
 │   ├── sessions/      # Conversation logs (JSONL)
 │   ├── persona/       # Personality layers
 │   ├── plugins/       # Python plugin tools (@tool decorator)
 │   └── uploads/       # Uploaded files (via web UI)
+├── docs/
+│   └── adr/           # Architectural Decision Records (Nygard format)
 ├── micron/
 │   ├── __main__.py    # CLI + interactive mode
 │   ├── agent.py       # Core agent loop
+│   ├── config.py      # Unified config loader (YAML + env)
+│   ├── events.py      # process_events + EventType vocabulary
 │   ├── llm.py         # LLM backends + OllamaToolAdapter
 │   ├── memory.py      # JSONL + TF-IDF memory
 │   ├── prompt.py      # Prompt builder (persona, memory, skills, knowledge)
+│   ├── search.py      # Shared TFIDFIndex (used by Memory and knowledge search)
 │   ├── sessions.py    # Session persistence
 │   ├── skills.py      # Skill loader + plugin integration
 │   ├── server.py      # FastAPI + SSE server + web UI + file upload
+│   ├── text_tool_parser.py  # Stateful incremental parser for text-format tool calls
 │   ├── plugins/       # Drop-in tool extension directory (reuses @tool)
+│   │   ├── __init__.py
+│   │   └── loader.py  # discover_plugins
 │   └── tools/
 │       ├── __init__.py  # Imports builtin (triggers @tool registration)
 │       ├── decorator.py # Shared @tool decorator + ToolDescriptor
@@ -194,11 +203,19 @@ micron/
 │       ├── error_handling.py
 │       └── registry.py
 ├── tests/
+│   ├── test_agent.py
+│   ├── test_confirmation.py
+│   ├── test_decorator.py
+│   ├── test_events.py
 │   ├── test_memory.py
-│   ├── test_skills.py
+│   ├── test_procedure_skills.py
 │   ├── test_registry.py
-│   ├── test_agent.py  # Also tests OllamaToolAdapter + plugin discovery
-│   └── test_server.py
+│   ├── test_resource_limits.py
+│   ├── test_search.py
+│   ├── test_server.py
+│   ├── test_skills.py
+│   ├── test_text_tool_parser.py
+│   └── test_tools.py
 ├── micron.yaml        # Provider config
 └── pyproject.toml
 ```
@@ -206,7 +223,7 @@ micron/
 ## Testing
 
 ```bash
-python -m pytest tests/ -v        # 168 tests passing
+python -m pytest tests/ -v        # 204 tests passing
 ```
 
 ## License

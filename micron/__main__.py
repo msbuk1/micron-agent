@@ -14,39 +14,66 @@ import re
 from micron.agent import MicronAgent, AgentConfig, ToolCall, create_agent
 from micron.events import process_events, EventType
 from micron.sessions import SessionLogger
+from micron.text_tool_parser import strip_tool_call_markup
 
 
 class ThinkingIndicator:
-    """Shows 'Thinking...' with growing dots while the agent processes."""
+    """Shows 'Thinking...' with growing dots while the agent processes.
+
+    When the first thinking event arrives, the dots stop permanently and a
+    single 'Thinking...' line stays visible. Once the thinking phase ends,
+    the full reasoning text prints as a single block.
+    """
 
     def __init__(self):
         self._stop = threading.Event()
+        self._thinking_started = threading.Event()
         self._thread = None
+        self._thinking_text = ""
 
     def start(self):
         self._stop.clear()
+        self._thinking_started.clear()
+        self._thinking_text = ""
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def stop(self):
+        """Flush accumulated thinking text, then clear the line."""
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=1)
-        # Clear the line
+        self.flush()
         sys.stderr.write("\r" + " " * 40 + "\r")
         sys.stderr.flush()
 
     def update(self, text: str):
-        """Update the thinking display with actual reasoning text."""
-        # Replace the dots animation with a snippet of the thinking
-        if not self._stop.is_set():
-            snippet = text.strip()[-60:] if text.strip() else ""
-            sys.stderr.write(f"\rThinking: {snippet}...  ")
+        """Accumulate thinking text. Dots stop on first call; full text prints on stop()."""
+        if self._stop.is_set():
+            return
+        # First thinking event: kill the dots thread
+        if not self._thinking_started.is_set():
+            self._thinking_started.set()
+            sys.stderr.write("\r" + " " * 40 + "\r")
             sys.stderr.flush()
+            blue = "\033[34m" if sys.stderr.isatty() else ""
+            reset = "\033[0m" if sys.stderr.isatty() else ""
+            sys.stderr.write(f"{blue}  Thinking...{reset}\n")
+            sys.stderr.flush()
+        self._thinking_text += text
+
+    def flush(self):
+        """Print the accumulated thinking text as a block, then reset."""
+        text = self._thinking_text.strip()
+        self._thinking_text = ""
+        if text:
+            blue = "\033[34m" if sys.stderr.isatty() else ""
+            reset = "\033[0m" if sys.stderr.isatty() else ""
+            print(f"\n{blue}  Thinking:\n{text}{reset}\n", file=sys.stderr)
 
     def _run(self):
         dots = 0
-        while not self._stop.is_set():
+        while not self._stop.is_set() and not self._thinking_started.is_set():
             dots = (dots % 3) + 1
             sys.stderr.write(f"\rThinking{'.' * dots}  ")
             sys.stderr.flush()
@@ -57,8 +84,11 @@ def _strip_thinking(text: str) -> str:
     """Remove thinking tags, tool call markup, and looping text from model output."""
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
     text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
-    text = re.sub(r'<function\s+name="\w+"[^>]*>.*?</function>', '', text, flags=re.DOTALL)
-    text = re.sub(r'\n?\s*name="\w+">(?:\s+name="\w+">[^\n]*)*', '', text)
+    # Tool-call markup is stripped by the shared parser (single source of
+    # truth for what tool-call syntax looks like). <think> tags and the
+    # line-dedup below stay here — those are display concerns, not parser
+    # concerns.
+    text = strip_tool_call_markup(text)
     # Remove repeated lines (model looping)
     lines = text.split('\n')
     clean_lines = []

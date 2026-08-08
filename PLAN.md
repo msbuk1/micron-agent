@@ -1,580 +1,147 @@
-# Micron Agent - Development Plan
+# Roadmap
 
-**Last Updated:** 2026-07-13  
-**Status:** Active Development  
-**Repository:** msbuk1/micron-agent  
-**Branch:** master
+**Last Updated:** 2026-08-08
+**Status:** 262/262 tests passing · Skills/Tools split shipped · text-tool-call parser shipped · CommandPolicy + streaming parser shipped
 
----
-
-## Executive Summary
-
-The micron agent is a **minimal, file-based AI agent** with Obsidian-style memory, Markdown skills, knowledge vault, and tool calling. The codebase is **production-ready** with 143 tests passing.
-
-### Current State
-
-| Metric | Status |
-||--------|--------|
-|| **Test Coverage** | 168/168 passing (100%) ✅ |
-|| **Core Features** | 100% complete ✅ |
-|| **Security** | Hardened (30+ command patterns blocked, shell=True fixed) ✅ |
-|| **Error Handling** | Standardized across all tools ✅ |
-|| **Resource Limits** | Added (CPU, memory, processes, files) ✅ |
-|| **Confirmation Flow** | Working (human-in-the-loop) ✅ |
-|| **Server** | Merged (rate limiting + auth) ✅ |
+The forward-looking plan lives here. Historical slice work is in
+`git log`; architectural decisions are in `docs/adr/`.
 
 ---
 
-## Repository Structure
+## Project structure
 
 ```
 micron/
+├── CONTEXT.md         # Domain glossary (module names, event vocabulary, config surface)
+├── context/           # skills, knowledge, memory, sessions, persona, plugins, uploads
+├── docs/adr/          # Architectural Decision Records
 ├── micron/
-│   ├── __init__.py          # Package exports
-│   ├── __main__.py          # CLI entry point
-│   ├── agent.py             # Core agent loop + tool calling
-│   ├── config.py            # Configuration management
-│   ├── llm.py               # LLM backends (llama.cpp, Ollama, OpenAI)
-│   ├── memory.py            # JSONL memory + TF-IDF search
-│   ├── prompt.py            # Prompt builder
-│   ├── sessions.py          # Session persistence
-│   ├── skills.py            # Skill loader + plugin integration
-│   ├── server.py            # FastAPI + SSE server + web UI + rate limiting + auth
-│   ├── plugins/
-│   │   └── loader.py        # Plugin discovery
-│   └── tools/
-│       ├── __init__.py
-│       ├── builtin.py       # 17 built-in tools
-│       ├── error_handling.py # Standardized error handling
-│       └── registry.py      # Tool registry
-├── context/
-│   ├── skills/              # Markdown skill definitions
-│   ├── knowledge/           # Reference documents
-│   ├── memory/              # Long-term memory (JSONL)
-│   ├── sessions/            # Conversation logs
-│   ├── persona/             # Personality layers
-│   ├── plugins/             # Python plugin tools
-│   └── uploads/             # Uploaded files
-├── tests/                   # 88 tests
-├── docs/
-│   └── self-assembling-skills.md
-├── micron.yaml              # Provider configuration
-├── pyproject.toml           # Project metadata
-└── README.md                # User documentation
+│   ├── __main__.py    # CLI + interactive mode
+│   ├── agent.py       # Core agent loop
+│   ├── config.py      # Unified config loader (YAML + env)
+│   ├── events.py      # process_events + EventType vocabulary
+│   ├── llm.py         # LLM backends + OllamaToolAdapter
+│   ├── memory.py      # JSONL + TF-IDF memory
+│   ├── prompt.py      # Prompt builder
+│   ├── search.py      # Shared TFIDFIndex
+│   ├── sessions.py    # Session persistence
+│   ├── skills.py      # Skill loader + plugin integration
+│   ├── server.py      # FastAPI + SSE server + web UI + file upload
+│   ├── text_tool_parser.py  # Stateful incremental parser for text-format tool calls
+│   ├── plugins/       # Drop-in tool extension directory
+│   └── tools/         # decorator.py, builtin.py, registry.py, error_handling.py
+├── tests/             # 13 test files, 262 tests
+├── micron.yaml        # Provider config
+└── pyproject.toml
 ```
 
 ---
 
-## Feature Inventory
+## Live work
 
-### Core Capabilities ✅
+### Slices 25–27 — CLI / Web App Alignment
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| File-based memory | ✅ Working | JSONL storage, TF-IDF search |
-| Markdown skills | ✅ Working | YAML frontmatter, auto-discovery |
-| Knowledge vault | ✅ Working | Auto-injected by relevance |
-| Composable personas | ✅ Working | Layered personality files |
-| Python plugins | ✅ Working | `@tool` decorator, auto-discovery |
-| Tool calling | ✅ Working | 17 built-in + plugins |
-| Multi-provider | ✅ Working | llama.cpp, Ollama, OpenAI, LM Studio |
-| Session persistence | ✅ Working | Auto-logs to `context/sessions/` |
-| Web UI | ✅ Working | Dark-themed, SSE streaming |
-| File upload | ✅ Working | POST /upload endpoint |
-| Security | ✅ Hardened | Blocklists, path traversal guards |
-| Interactive CLI | ✅ Working | 15 slash commands |
-| Rate limiting | ✅ Working | Configurable per-minute limits |
-| Authentication | ✅ Working | API key via header or env var |
+**Goal:** Bring the two access modes (CLI and FastAPI web app) to feature
+parity. Today the CLI is the richer path; the web app lags on operational
+features, and each has capabilities the other lacks.
 
-### Built-in Tools (21)
+**Current gaps:**
 
-|| Tool | Write? | Status |
-||------|--------|--------|
-|| `web_search` | No | ✅ |
-|| `fetch_url` | No | ✅ |
-|| `read_file` | No | ✅ |
-|| `write_file` | ✅ | ✅ |
-|| `list_files` | No | ✅ |
-|| `run_command` | ✅ | ✅ (with resource limits, shell=True fixed) |
-|| `calculate` | No | ✅ |
-|| `python_eval` | ✅ | ✅ (sandboxed) |
-|| `current_time` | No | ✅ |
-|| `save_memory` | No | ✅ |
-|| `search_memory` | No | ✅ |
-|| `search_knowledge` | No | ✅ |
-|| `write_knowledge` | ✅ | ✅ |
-|| `create_skill` | No | ✅ |
-|| `search_skill_library` | No | ✅ |
-|| `delete_file` | ✅ | ✅ |
-|| `edit_file` | ✅ | ✅ |
-|| `list_skills` | No | ✅ |
-|| `paste_file` | ✅ | ✅ |
-|| `patch_file` | ✅ | ✅ |
-|| `tree` | ✅ | ✅ |
+| Capability | CLI | Web/Server |
+|---|---|---|
+| Clear history | `/clear` | ❌ |
+| Model / provider info | `/model`, `/providers` | ❌ (only bool in `/health`) |
+| Unload model | `/unload` | ❌ |
+| Sessions list / resume | `/sessions`, `/resume` | ❌ |
+| Last response | `/last` | ❌ |
+| File recovery | `/trash` `/restore` `/purge` `/undo` | ❌ |
+| Directory tree | `/tree` | ❌ |
+| Procedure skills | `/skill`, `/skills` | ❌ |
+| File upload | ❌ (uses `paste_file`) | `POST /upload` ✅ |
+| Delete individual memory | ❌ | `DELETE /memory/{id}` ✅ |
+| Write-confirmation UI | inline | Confirm/Cancel buttons ✅ |
+| Session persistence | ✅ logged to `context/sessions/` | ❌ (JS-only history) |
 
----
+**Planned slices:**
 
-## Completed Work
+- **Slice 25 — Server session endpoints:** add `/sessions`, `/session/{id}`,
+  `/session/{id}/resume`; persist web chat to `context/sessions/` via the
+  existing `SessionLogger`.
+- **Slice 26 — Server operational endpoints:** add `POST /clear`, `GET /model`,
+  `GET /providers`, `POST /unload`, and file-recovery `/trash` `/restore`
+  `/purge` `/undo`; wire into the web UI.
+- **Slice 27 — CLI missing features + docs:** add `--upload` flag and
+  per-memory delete to CLI; update README/PLAN.
 
-### ✅ Phase 1: Critical Fixes (COMPLETE)
+Sequence note: alignment touches `server.py`, `__main__.py`, and tool
+registration — fold into the architecture-review candidates below where
+the same files come up.
 
-| Task | Status |
-|------|--------|
-| Fix hardcoded IP address | ✅ Done |
-| Add comprehensive .gitignore | ✅ Done |
-| Fix TF-IDF bug in search_knowledge | ✅ Done |
-| Create unified config system | ✅ Done |
-| Fix test_write_tool_requires_confirmation | ✅ Done |
+### Architecture review candidates (2026-08-08)
 
-### ✅ Phase 2: Core UX (COMPLETE)
+A 5-candidate architecture review (`/tmp/architecture-review-20260808T203957Z.html`)
+identified four deferred deepening opportunities. **Candidate #1
+(TextToolCallParser) shipped as part of the same session** (see Recently
+shipped). The remaining four are listed below in priority order; see the
+report for full diagrams, trade-offs, and ADR callouts.
 
-| Task | Status |
-|------|--------|
-| Knowledge RAG | ✅ Done |
-| Interactive mode polish | ✅ Done |
-| Better error messages | ✅ Done |
-| Add search_knowledge tool | ✅ Done |
-| Wire write_knowledge confirmation | ✅ Done |
+| # | Candidate | Files | Strength |
+|---|---|---|---|
+| 2 | **Move the web UI inline markup behind a seam.** The 250 lines of inline HTML+JS+CSS in `server.py`'s `HTML_PAGE` are a second, divergent copy of the event handler that `process_events` already implements. Either delete `micron/static/` (which is dead code) or remove `HTML_PAGE`, serve the static dir, and put the SSE consumer behind an `EventRenderer` interface. | `micron/server.py`, `micron/static/*` | Strong |
+| 3 | **Replace the `handle_command` if/elif ladder with a slash-command registry.** New recovery / file tools currently require editing both `builtin.py` and `__main__.py` and adding the name to the hand-maintained `known_commands` set. A `SlashCommandRegistry` with one interface `register(name, run, help)` deepens the CLI without inflating the tool surface. | `micron/__main__.py`, `micron/tools/builtin.py` | Worth exploring |
+| ~~4~~ | ~~Share the streaming tool-call parser across LLM backends~~ — shipped [#11](https://github.com/msbuk1/micron-agent/issues/11). | | |
+| ~~5~~ | ~~Extract the `run_command` security policy~~ — shipped [#12](https://github.com/msbuk1/micron-agent/issues/12). | | |
 
-### ✅ Phase 3: Integration & Polish (COMPLETE)
-
-| Task | Status |
-|------|--------|
-| Server mode integration tests | ✅ Done |
-| GPU offload config | ✅ Done |
-| Streaming output cleanup | ✅ Done |
-| Documentation updates | ✅ Done |
-
-### ✅ Phase 4: Production Readiness (COMPLETE)
-
-|| Task | Status |
-||------|--------|
-|| Add 3 missing tools (paste_file, patch_file, tree) | ✅ Done |
-|| Standardize error handling | ✅ Done |
-|| Enhance security (30+ patterns, fix shell=True) | ✅ Done |
-|| Add resource limits | ✅ Done |
-|| Human-in-the-loop confirmation | ✅ Done |
-|| Rate limiting & authentication | ✅ Done |
-|| Merge server files | ✅ Done |
-|| Expand test coverage to 159 tests | ✅ Done |
-
-### ✅ Phase 5: Code Quality (COMPLETE)
-
-| Task | Commit | Status |
-|------|--------|--------|
-| Remove duplicate check_authentication | cb6bfd1 | ✅ Done |
-| Fix edit_file silent no-op | cb6bfd1 | ✅ Done |
-| Fix run_command return type | cb6bfd1 | ✅ Done |
-| Add delete_file directory guard | cb6bfd1 | ✅ Done |
-| Cache config in health endpoint | cb6bfd1 | ✅ Done |
-| Security: Replace shell=True | e8639b6 | ✅ Done |
-| Add .gitignore cleanup | c1089dc | ✅ Done |
-| Fix server tests threading | 1a55bb0 | ✅ Done |
-| Implement get_authentication() | 5fddae0 | ✅ Done |
-| Add delete_file trash recovery | 826491e | ✅ Done |
+The full report (with before/after diagrams, dependency analysis, and
+strength justifications) is at `/tmp/architecture-review-20260808T203957Z.html`
+on the machine that ran the review. Re-run `/improve-codebase-architecture`
+to regenerate it after the live items above land.
 
 ---
 
-## Remaining Tasks
+## Recently shipped
 
-### 🔴 Critical Priority (COMPLETED)
-
-#### 1. Security: Replace `shell=True` in `run_command`
-|**Effort:** 2 hours  
-|**Impact:** Eliminates command injection risk
-
-|**Status:** ✅ FIXED  
-|**Action Items:**
-|- ✅ Replace `shell=True` with `shlex.split()` + `shell=False`
-|- ✅ Update blocklist to work with arg list instead of regex  
-|- ✅ Add tests for injection attempts
-|- ✅ Verify all safe commands still work
-
-|**Files:**
-|- ✅ `micron/tools/builtin.py` (lines 330-350)
-
-**Verification:**
-```bash
-python -m pytest tests/test_resource_limits.py -v
-```
-
----
-
-#### 2. Add `.gitignore` for uploads and secrets
-**Effort:** 30 minutes  
-**Impact:** Prevent accidental commits of sensitive data
-
-**Action Items:**
-- [ ] Add `context/uploads/` to .gitignore
-- [ ] Add `*.pyc`, `__pycache__/` to .gitignore
-- [ ] Add `.env` to .gitignore
-- [ ] Add `.pytest_cache/` to .gitignore
-
-**Files:**
-- `.gitignore` (create or update)
-
----
-
-### 🟡 High Priority (Next Week)
-
-#### 3. Fix `test_server.py` threading errors
-**Effort:** 3 hours  
-**Impact:** 11 server tests currently skip in sandbox
-
-**Action Items:**
-- [ ] Switch from `TestClient` to `httpx.AsyncClient`
-- [ ] Add `pytest-asyncio` dependency
-- [ ] Rewrite server tests with async fixtures
-- [ ] Verify all 77 tests pass (66 + 11 server)
-
-**Files:**
-- `tests/test_server.py`
-
----
-
-#### 4. Implement `get_authentication()` on Config
-**Effort:** 1 hour  
-**Impact:** Clean up dead auth code
-
-**Action Items:**
-- [ ] Add `get_authentication()` method to Config class
-- [ ] Or remove dead auth code from server.py
-- [ ] Add config defaults for auth settings
-
-**Files:**
-- `micron/config.py`
-
----
-
-#### 5. Add undo/backup for `delete_file`
-**Effort:** 2 hours  
-**Impact:** Data recovery for accidental deletions
-
-**Action Items:**
-- [ ] Create `.trash/` directory in workdir
-- [ ] Move deleted files to `.trash/` with timestamp
-- [ ] Add `/trash` slash command to list deleted files
-- [ ] Add `/restore` slash command to recover files
-
-**Files:**
-- `micron/tools/builtin.py` (delete_file function)
-- `micron/__main__.py` (new slash commands)
-
----
-
-#### 6. Add undo for `edit_file`
-**Effort:** 1 hour  
-**Impact:** Easy revert for bad edits
-
-**Action Items:**
-- [ ] Write `.bak` files before edits
-- [ ] Auto-cleanup `.bak` files older than 7 days
-- [ ] Add `/undo` slash command
-
-**Files:**
-- `micron/tools/builtin.py` (edit_file function)
-- `micron/__main__.py` (new slash command)
-
----
-
-### 🟢 Medium Priority (Month 1)
-
-#### 7. Consolidate TF-IDF logic
-**Effort:** 2 hours  
-**Impact:** Remove code duplication
-
-**Action Items:**
-- [ ] Extract shared TF-IDF logic from memory.py
-- [ ] Create `micron/search.py` utility module
-- [ ] Refactor `search_knowledge` to use shared module
-- [ ] Refactor `Memory` class to use shared module
-
-**Files:**
-- `micron/search.py` (new)
-- `micron/memory.py`
-- `micron/tools/builtin.py`
-
----
-
-#### 8. Add `paste_file` tool
-**Effort:** 1 hour  
-**Impact:** Quick content upload without web UI
-
-**Action Items:**
-- [ ] Create `paste_file(content, filename)` tool
-- [ ] Auto-generate filename if not provided
-- [ ] Support multiline content
-- [ ] Add to TOOLS dict
-
-**Files:**
-- `micron/tools/builtin.py`
-
----
-
-#### 9. Add `patch_file` tool
-**Effort:** 2 hours  
-**Impact:** Surgical file edits instead of full rewrites
-
-**Action Items:**
-- [ ] Create `patch_file(path, old, new)` tool
-- [ ] Support multiple patches in one call
-- [ ] Add syntax validation for Python files
-- [ ] Add to TOOLS dict
-
-**Files:**
-- `micron/tools/builtin.py`
-
----
-
-#### 10. Add `tree` command
-**Effort:** 1 hour  
-**Impact:** Better directory visibility
-
-**Action Items:**
-- [ ] Add `/tree` slash command
-- [ ] Show directory structure with file sizes
-- [ ] Support depth limit
-- [ ] Support filtering by extension
-
-**Files:**
-- `micron/__main__.py`
-
----
-
-### 💡 Feature Ideas (Month 2+)
-
-#### 11. Plugin hot-reload
-**Effort:** 3 hours  
-**Impact:** Auto-detect changed plugins
-
-**Action Items:**
-- [ ] Watch `context/plugins/` for file changes
-- [ ] Auto-reload changed plugins
-- [ ] Log reload events
-
----
-
-#### 12. Multi-modal support (vision)
-**Effort:** 5 hours  
-**Impact:** Image understanding via OpenAI-compatible backends
-
-**Action Items:**
-- [ ] Add image input to chat endpoint
-- [ ] Convert images to base64 for API
-- [ ] Update web UI for image upload
-- [ ] Add vision model detection
-
----
-
-#### 13. Session export
-**Effort:** 2 hours  
-**Impact:** Share conversations as Markdown/PDF
-
-**Action Items:**
-- [ ] Add `/export` slash command
-- [ ] Export as Markdown with timestamps
-- [ ] Export as PDF (optional)
-- [ ] Include tool calls and results
-
----
-
-#### 14. Rate limiting per-provider
-**Effort:** 2 hours  
-**Impact:** Different limits for local vs. API providers
-
-**Action Items:**
-- [ ] Add provider-specific rate limit config
-- [ ] Track requests per provider
-- [ ] Apply appropriate limits
+- **CommandPolicy** (architecture #5, [#12](https://github.com/msbuk1/micron-agent/issues/12)) — security checks extracted to `micron/tools/command_policy.py`. `run_command` body shrinks to ~35 LOC. 30 new policy tests.
+- **Streaming parser shared across LLM backends** (architecture #4, [#11](https://github.com/msbuk1/micron-agent/issues/11)) — `parse_streaming_tool_calls` extracted to `micron/llm.py`. All three backends call it. 16 new parser tests.
+- **TextToolCallParser** (Slice 28 / architecture #1) — stateful SAX-style
+  parser owns the streaming buffer the agent used to manage. [ADR 0001](docs/adr/0001-text-tool-call-parser.md).
+  31 new tests. `agent.py`: 582 → 484 lines. Patterns shared with the CLI's
+  `_strip_thinking` so the two cannot drift.
+- **Skills/Tools split** (Slices 19–24) — all 24 tools now exposed to the
+  LLM from code via a shared `@tool` decorator; markdown skill files
+  no longer gate tool existence. `micron/tools/TOOLS` dict and 16 dead
+  `.md` tool-def files deleted.
+- **Slices 9–18** (security, tests, tools) — `shell=True` replaced with
+  `shlex.split()` + `shell=False`; 30+ command-injection patterns blocked;
+  `delete_file` trash recovery; `edit_file` `.bak` undo; `paste_file`,
+  `patch_file`, `tree` tools added; TF-IDF consolidated into `micron/search.py`.
 
 ---
 
 ## Configuration
 
-### Resource Limits
+`micron.yaml` + `MICRON_*` env vars via `Config` (in `micron/config.py`).
+CLI uses a second parallel loader (`__main__.load_config`) pre-dating
+`Config` — the split is a known seam, out of scope for current work.
+See `CONTEXT.md` for the full configuration surface.
+
+---
+
+## Verification
+
 ```bash
-# Environment variables
-MICRON_CMD_MAX_CPU=60              # CPU time in seconds
-MICRON_CMD_MAX_MEMORY_MB=512      # Memory in MB
-MICRON_CMD_MAX_PROCESSES=50       # Max processes
-MICRON_CMD_MAX_FILES=100          # Max open files
-```
+# All tests
+.venv/bin/python -m pytest tests/ -v        # 262 tests
 
-### Rate Limiting
-```yaml
-# micron.yaml
-rate_limits:
-  enabled: false
-  chat_requests_per_minute: 60
-```
-
-### Authentication
-```yaml
-# micron.yaml
-authentication:
-  enabled: false
-  api_key_required: false
-  api_key_env_var: MICRON_API_KEY
-```
-
-### Existing Configuration
-```yaml
-# micron.yaml
-default_provider: lmstudio
-providers:
-  lmstudio:
-    base_url: http://localhost:1234/v1
-  openrouter:
-    api_key: <your-key>
-    base_url: https://openrouter.ai/api/v1
+# Architecture review (regenerates the HTML report)
+# (run the /improve-codebase-architecture skill)
 ```
 
 ---
 
-## Verification Commands
+## Decisions
 
-### Run Tests
-```bash
-python -m pytest tests/ -v  # All 159 tests
-```
-
-### Test Resource Limits
-```bash
-MICRON_CMD_MAX_CPU=5 python -c "from micron.tools.builtin import run_command; print(run_command('sleep 10'))"
-# Should timeout after 5 seconds
-```
-
-### Test Confirmation Flow
-```bash
-python -m micron -i
-> delete test.txt
-# Prompts: Proceed? [Y/n]
-```
-
-### Test Rate Limiting
-```bash
-# Enable rate limiting in micron.yaml, then:
-for i in {1..70}; do curl -s http://localhost:8000/health; done
-# Should get 429 after 60 requests
-```
-
----
-
-## Success Metrics
-
-|| Metric | Current | Target |
-||--------|---------|--------|
-|| Test Coverage | 168/168 (100%) ✅ | 168+ ✅ |
-|| Feature Completeness | 100% | 100% |
-|| Production Readiness | ✅ Ready | ✅ Ready |
-|| Security Score | ✅ Excellent (shell=False, injection prevention) | ✅ Excellent |
-
----
-
-## Next Steps
-
-### Immediate (This Week)
-1. **_Skills/Tools Split refactor (Slices 19–24)** — see section below.
-
-### Short-term (Next Week)
-1. Plugin hot-reload
-2. Multi-modal support
-
-### Long-term (Month 2+)
-1. Session export
-2. Rate limiting per-provider
-
----
-
-#### ✅ All prior slices (9–18) complete — see Session Summary below.
-
-## Skills / Tools Split Refactor (Slices 19–24)
-
-**Goal:** Separate Skills and Tools into distinct concepts. Tools become code-defined (single source of truth via a shared `@tool` decorator); markdown files stop gating whether a tool is callable. This fixes the registration gap where functions exist in `builtin.py` but are silently unreachable because a hand-written `.md` skill file is missing/ broken (`paste_file`, `patch_file`, `write_knowledge`).
-
-**Origin:** Code-review + grilled design (`grill-with-docs`). Decisions recorded:
-
-- **Q1 Split:** Skills and Tools are separate concepts. Tools = code-executable; Skills = markdown knowledge/procedure docs.
-- **Q2 Schema:** `@tool` decorator auto-derives the JSON schema from the function signature and merges rich per-parameter descriptions. Markdown is optional attached docs, never the gate.
-- **Q3 write flag:** `write` is an explicit `@tool(write=...)` code flag — single auditable source for the confirmation flow.
-- **Q4 Plugins:** one unified `@tool` decorator + one registry; built-ins and plugins share it. `context/plugins/` stays as a drop-in extension directory (differ only in file location, not mechanism).
-- **Q5 Slicing:** landed as small slices (below); the registry accepts both code-tools and not-yet-migrated `.md` tools during transition (dedup by name), so every commit stays green.
-
-### Slice 19 — ✅ CONTRACT COMPLETE — Shared `@tool` decorator (foundation)
-New `micron/tools/decorator.py`: `@tool(name, description, write=False, **param_descs)` auto-derives JSON schema from the function signature + param descriptions. Pure additive; no behavior change. Tests for schema derivation (required params, types, write flag, param descriptions). *Done — extracted from `plugins/__init__.py`, plugins re-export the shared decorator.*
-
-### Slice 20 — ✅ COMPLETE — Unify plugins onto shared decorator
-Point `micron/plugins/__init__.py` at the shared `@tool`. `discover_plugins()` produces the same descriptors. Existing `context/plugins/example.py` (roll_dice, reverse_text) keeps working. *Done — verified single ToolDescriptor type across both.*
-
-### Slice 21 — ✅ COMPLETE — Migrate read-only built-ins
-Move no-confirmation tools (`web_search`, `fetch_url`, `read_file`, `list_files`, `calculate`, `current_time`, `save_memory`, `search_knowledge`, `search_skill_library`) onto `@tool`. Registry = code-tools + not-yet-migrated `.md` tools. *Done — 9 read-only migrated; added `param_descs` arg; code-wins dedup.*
-
-### Slice 22 — ✅ COMPLETE — Migrate write built-ins
-Add `@tool(write=True)` to `write_file`, `edit_file`, `delete_file`, `paste_file`, `patch_file`, `write_knowledge`, `tree`, + recovery tools. Confirmation flow tests stay green. *Done — all 24 tools now LLM-exposed; write gates verified.*
-
-### Slice 23 — ✅ COMPLETE — Flip registration + delete tool-markdown
-Remove markdown-gating from `_register_skill_tools()` so code decorators are the sole source; delete the dead `TOOLS` dict; delete migrated `.md` tool-files (keep genuine knowledge/procedure skills). *Done — LLM schema + prompt now read from registry; `micron/tools/__init__.py` imports builtin; 16 tool-`.md` files deleted.*
-
-### Slice 24 — 🔄 In progress — Docs + skill audit
-Update `README.md` tool list, `PLAN.md`/`SLICE_PLAN.md`; note "one source of truth" for tools. Update test counts if changed.
-
----
-
-## CLI / Web App Alignment (Slices 25–27) — DOCUMENTED ONLY, NOT STARTED
-
-**Goal:** Bring the two access modes (CLI and FastAPI web app) to feature parity in capabilities and operation. Currently the CLI is the richer path; the web app lags on operational features, and each has capabilities the other lacks.
-
-**Origin:** Feature-parity audit (2026-08-03). No code changes yet — recorded for planning.
-
-**Current gaps identified:**
-
-### CLI-only (not in web/server)
-- `/clear` (clear history), `/model` (model/provider info), `/providers`, `/unload`
-- `/sessions`, `/resume ID`, `/last` — session management
-- `/trash`, `/restore F`, `/purge`, `/undo F` — file-recovery operations
-- `/tree` — directory tree
-- `/skill NAME`, `/skills` — procedure-skill loading
-
-### Web/server-only (not in CLI)
-- File upload (`POST /upload`) — CLI relies on `paste_file` tool
-- Delete individual memory (`DELETE /memory/{id}`)
-- Interactive write-confirmation UI (Confirm/Cancel buttons)
-- **Web chat is not session-persistent** — history lives in JS only, not logged to `context/sessions/` (CLI logs via `SessionLogger.log_turn`)
-
-### Aligned (both)
-- SSE streaming chat, thinking/tool-status display, tool listing, memory search/list, skill reload
-
-### Planned slices (deferred)
-- **Slice 25 — Server session endpoints:** add `/sessions`, `/session/{id}`, `/session/{id}/resume`; make web chat persist to `context/sessions/`.
-- **Slice 26 — Server operational endpoints:** add `POST /clear`, `GET /model`, `GET /providers`, `POST /unload`, and file-recovery `/trash` `/restore` `/purge` `/undo`; wire into web UI.
-- **Slice 27 — CLI missing features + docs:** add `--upload` flag and per-memory delete to CLI; update README/PLAN.
-
-> **Note:** Alignment touches `server.py`, `__main__.py`, and tool registration — consider sequencing AFTER the Skills/Tools split (Slices 19–24) to avoid re-touching the same files.
-
----
-
-*This plan consolidates completed work and new priorities from codebase review.*
-
-## Session Summary (July 16-17, 2026)
-
-### Completed Slices (9-18)
-
-|| Slice | Task | Commit | Tests Added |
-||-------|------|--------|-------------|
-|| 9 | Security: Replace shell=True | e8639b6 | 15+ |
-|| 10 | Add .gitignore | c1089dc | 0 |
-|| 11 | Fix test_server.py threading | 1a55bb0 | 0 (11 skip) |
-|| 12 | Implement get_authentication() | 5fddae0 | 0 |
-|| 13 | Add delete_file undo | 826491e | 7 |
-|| 14 | Add edit_file undo | 991768f | 4 |
-|| 15 | Consolidate TF-IDF logic | 1e50283 | 14 |
-|| 16 | Add paste_file tool | 6ad7974 | 5 |
-|| 17 | Add patch_file tool | 3a0db72 | 5 |
-|| 18 | Add tree command | bc67e5c | 5 |
-
-### Final Statistics
-||- **Total Tests:** 168 passing (up from 66, +102 new)
-||- **Tools:** 24 built-in tools + plugins, all exposed to the LLM from code (`@tool` decorator)
-||- **Security:** shell=False, injection prevention, shell=True fixed
-||- **Features:** Trash recovery, edit undo, tree visualization, paste_file, patch_file
-||- **Status:** Production ready (Skills/Tools split Slices 19–24 done)
+Architectural decisions are in [`docs/adr/`](docs/adr/) (Nygard format).
+The index lives in [`CONTEXT.md`](CONTEXT.md) under "Architectural
+decisions". Read the relevant ADR before refactoring any module it
+covers — the decisions are load-bearing.

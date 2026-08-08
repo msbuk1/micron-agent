@@ -61,37 +61,51 @@ def _get_trash_dir() -> Path:
 # Firecrawl config (reads from env var set by CLI/server)
 FIRECRAWL_URL = os.getenv("FIRECRAWL_URL", "http://localhost:3002")
 
-def _set_command_resource_limits():
-    """Set resource limits for command execution."""
+def _set_command_resource_limits(decision=None):
+    """Set resource limits for command execution.
+
+    *decision* may be a :class:`~micron.tools.command_policy.Limit` instance
+    whose non-``None`` fields override the env-var defaults.
+    """
+    from micron.tools.command_policy import Limit
+
     if not _HAS_RESOURCE:
         return
-    
+
+    # Determine per-field overrides (Limit or use env defaults)
+    limit: Limit | None = decision if isinstance(decision, Limit) else None
+
+    def _val(override: int | None, env_key: str, default: str) -> int:
+        if override is not None:
+            return override
+        return int(os.getenv(env_key, default))
+
     try:
         if hasattr(resource, 'RLIMIT_CPU'):
-            max_cpu_time = int(os.getenv("MICRON_CMD_MAX_CPU", "60"))
-            resource.setrlimit(resource.RLIMIT_CPU, (max_cpu_time, max_cpu_time))
+            v = _val(limit.cpu if limit else None, "MICRON_CMD_MAX_CPU", "60")
+            resource.setrlimit(resource.RLIMIT_CPU, (v, v))
     except (ValueError, OSError):
         pass
-    
+
     try:
         if hasattr(resource, 'RLIMIT_AS'):
-            max_memory_mb = int(os.getenv("MICRON_CMD_MAX_MEMORY_MB", "512"))
-            max_memory_bytes = max_memory_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (max_memory_bytes, max_memory_bytes))
+            mb = _val(limit.memory if limit else None, "MICRON_CMD_MAX_MEMORY_MB", "512")
+            b = mb * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_AS, (b, b))
     except (ValueError, OSError):
         pass
-    
+
     try:
         if hasattr(resource, 'RLIMIT_NPROC'):
-            max_processes = int(os.getenv("MICRON_CMD_MAX_PROCESSES", "50"))
-            resource.setrlimit(resource.RLIMIT_NPROC, (max_processes, max_processes))
+            v = _val(limit.procs if limit else None, "MICRON_CMD_MAX_PROCESSES", "50")
+            resource.setrlimit(resource.RLIMIT_NPROC, (v, v))
     except (ValueError, OSError):
         pass
-    
+
     try:
         if hasattr(resource, 'RLIMIT_NOFILE'):
-            max_files = int(os.getenv("MICRON_CMD_MAX_FILES", "100"))
-            resource.setrlimit(resource.RLIMIT_NOFILE, (max_files, max_files))
+            v = _val(limit.files if limit else None, "MICRON_CMD_MAX_FILES", "100")
+            resource.setrlimit(resource.RLIMIT_NOFILE, (v, v))
     except (ValueError, OSError):
         pass
 
@@ -463,160 +477,49 @@ def tree(path: str = ".", max_depth: int = 3, show_files: bool = True, ext: str 
     timeout="Maximum execution time in seconds (default 30)",
 )
 def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
-    """Run a shell command and return its output.
-    
-    Args:
-        cmd: Shell command to execute
-        cwd: Working directory (relative to workdir)
-        timeout: Maximum execution time in seconds
-        
-    Returns:
-        Command output or error message
-    """
-    from micron.tools.error_handling import handle_error, success
-    import re
+    """Run a shell command and return its output."""
     import shlex
-    
-    # Restrict mode. If MICRON_UNRESTRICTED=1, only block truly destructive patterns.
-    unrestricted = os.getenv("MICRON_UNRESTRICTED", "").lower() in ("1", "true", "yes")
+    from micron.tools.error_handling import handle_error, success
+    from micron.tools.command_policy import CommandPolicy, Deny, Limit
 
-    # Additional safety checks
-    _set_command_resource_limits()
+    # Length guard
     if len(cmd) > 500:
-        return handle_error(
-            "run_command",
-            Exception("Command too long"),
-            "command exceeds 500 character limit"
-        )
+        return handle_error("run_command", Exception("Command too long"), "command exceeds 500 character limit")
 
-    # Parse command into args (shell-safe)
+    # Parse
     try:
         args = shlex.split(cmd)
     except ValueError as e:
-        return handle_error(
-            "run_command",
-            Exception(f"Invalid command syntax: {e}"),
-            "could not parse command"
-        )
-    
-    if not args:
-        return handle_error(
-            "run_command",
-            Exception("Empty command"),
-            "no command provided"
-        )
-    
-    # Check first argument (command name) against blocklist
-    cmd_name = args[0].lower()
-    
-    # Blocked command names (always blocked)
-    blocked_commands = {
-        "rm", "mkfs", "dd", "sudo", "chown", "chmod",
-        "chsh", "useradd", "userdel", "passwd",
-        "wget", "curl", "apt-get", "yum", "pacman",
-    }
-    
-    # Check if command is blocked
-    if cmd_name in blocked_commands and not unrestricted:
-        # Special case: allow safe rm usage (rm file.txt, not rm -rf)
-        if cmd_name == "rm" and not any(a.startswith("-") and "r" in a for a in args[1:]):
-            pass  # Allow safe rm
-        else:
-            return handle_error(
-                "run_command",
-                Exception(f"Command '{cmd_name}' is blocked"),
-                f"blocked command for security reasons"
-            )
-    
-    # Check for dangerous flags and patterns in ALL args (including command name)
-    if not unrestricted:
-        for i, arg in enumerate(args):
-            arg_lower = arg.lower()
-            
-            # Block recursive delete flags
-            if cmd_name == "rm" and arg_lower.startswith("-") and "r" in arg_lower:
-                return handle_error(
-                    "run_command",
-                    Exception("Recursive delete is blocked"),
-                    "rm -r/-rf is not allowed"
-                )
-            
-            # Block pipe operator
-            if arg == "|":
-                return handle_error(
-                    "run_command",
-                    Exception("Pipe operator is blocked"),
-                    "shell pipes are not allowed"
-                )
-            
-            # Block shell execution via path (./ or ~/)
-            if arg.startswith("./") or arg.startswith("~/"):
-                return handle_error(
-                    "run_command",
-                    Exception("Executing scripts from path is blocked"),
-                    "cannot execute ./script or ~/script"
-                )
-            
-            # Block command substitution
-            if arg.startswith("$(") or arg.startswith("`"):
-                return handle_error(
-                    "run_command",
-                    Exception("Command substitution is blocked"),
-                    "cannot use $(...) or backticks"
-                )
-            
-            # Block redirection to block devices
-            if arg.startswith("/dev/sd") or arg.startswith("/dev/nvme"):
-                return handle_error(
-                    "run_command",
-                    Exception("Redirect to block device is blocked"),
-                    "cannot write to block devices"
-                )
-            
-            # Block shell names as arguments (bash, sh, zsh)
-            if arg_lower in ("bash", "sh", "zsh"):
-                return handle_error(
-                    "run_command",
-                    Exception("Shell execution is blocked"),
-                    "cannot execute bash/sh/zsh"
-                )
-    
+        return handle_error("run_command", Exception(f"Invalid command syntax: {e}"), "could not parse command")
+
+    # Evaluate policy
+    decision = CommandPolicy().evaluate(args)
+    if isinstance(decision, Deny):
+        return handle_error("run_command", Exception(decision.reason), decision.reason)
+
+    # Apply resource limits
+    if isinstance(decision, Limit):
+        _set_command_resource_limits(decision)
+    else:
+        _set_command_resource_limits()
+
+    # Resolve cwd and run
     try:
         workdir = _resolve_path(cwd)
         if isinstance(workdir, str):
             return workdir
 
-        result = subprocess.run(
-            args, shell=False, capture_output=True, text=True,
-            timeout=timeout, cwd=workdir,
-        )
-
+        result = subprocess.run(args, shell=False, capture_output=True, text=True, timeout=timeout, cwd=workdir)
         output = result.stdout
         if result.stderr:
             output += f"\n[STDERR]\n{result.stderr}"
-
-        if output.strip():
-            return output.strip()
-        
-        return success("Command executed successfully")
+        return output.strip() if output.strip() else success("Command executed successfully")
     except subprocess.TimeoutExpired as e:
-        return handle_error(
-            "run_command",
-            e,
-            f"command timed out after {timeout} seconds"
-        )
+        return handle_error("run_command", e, f"command timed out after {timeout} seconds")
     except FileNotFoundError as e:
-        return handle_error(
-            "run_command",
-            e,
-            f"command not found: {args[0]}"
-        )
+        return handle_error("run_command", e, f"command not found: {args[0]}")
     except Exception as e:
-        return handle_error(
-            "run_command",
-            e,
-            "while executing command"
-        )
+        return handle_error("run_command", e, "while executing command")
 
 @tool(
     name="calculate",

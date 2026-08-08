@@ -22,6 +22,73 @@ class LLMResponse:
     tool_call_id: Optional[str] = None
 
 
+def parse_streaming_tool_calls(delta_iter) -> Generator[LLMResponse, None, None]:
+    """Shared parser for streaming tool-call deltas across all backends.
+
+    Each delta must expose (or be a dict with):
+      - ``content`` — text chunk (str or None)
+      - ``tool_calls`` — list of tool-call parts (or None)
+      - ``reasoning_content`` — reasoning text (str or None, optional)
+
+    Tool-call parts must expose:
+      - ``index`` — slot index (int)
+      - ``id`` — call identifier (str or None)
+      - ``function`` — object/dict with ``name`` and ``arguments``
+        (attribute access for SDK objects, key access for dicts)
+
+    Yields LLMResponse events for text, reasoning, tool_call, and done.
+    """
+    tool_calls_buffer: dict[int, dict] = {}
+
+    def _attr_or_key(obj, attr, default=None):
+        if isinstance(obj, dict):
+            return obj.get(attr, default)
+        return getattr(obj, attr, default)
+
+    for delta in delta_iter:
+        content = _attr_or_key(delta, "content")
+        if content:
+            yield LLMResponse(type="text", content=content)
+
+        reasoning = _attr_or_key(delta, "reasoning_content")
+        if reasoning:
+            yield LLMResponse(type="reasoning", content=reasoning)
+
+        tool_calls = _attr_or_key(delta, "tool_calls")
+        if tool_calls:
+            for tc in tool_calls:
+                idx = _attr_or_key(tc, "index", 0)
+                if idx not in tool_calls_buffer:
+                    tool_calls_buffer[idx] = {
+                        "id": _attr_or_key(tc, "id") or f"call_{idx}",
+                        "name": "",
+                        "arguments": "",
+                    }
+                func = _attr_or_key(tc, "function")
+                if func:
+                    name = _attr_or_key(func, "name")
+                    if name:
+                        tool_calls_buffer[idx]["name"] += name
+                    args = _attr_or_key(func, "arguments")
+                    if args:
+                        tool_calls_buffer[idx]["arguments"] += args
+
+    for buf in tool_calls_buffer.values():
+        if buf["name"]:
+            try:
+                args = json.loads(buf["arguments"]) if buf["arguments"] else {}
+            except json.JSONDecodeError:
+                args = {}
+            yield LLMResponse(
+                type="tool_call",
+                tool_name=buf["name"],
+                tool_args=args,
+                tool_call_id=buf["id"],
+            )
+
+    yield LLMResponse(type="done")
+
+
 class LLMBackend(ABC):
     """Abstract base class for LLM backends."""
 
@@ -125,44 +192,11 @@ class LlamaCppBackend(LLMBackend):
             stream=True,
         )
 
-        tool_call_buffer: dict = {}
+        def _llamacpp_deltas():
+            for chunk in stream:
+                yield chunk["choices"][0].get("delta", {})
 
-        for chunk in stream:
-            delta = chunk["choices"][0].get("delta", {})
-
-            if "content" in delta and delta["content"]:
-                yield LLMResponse(type="text", content=delta["content"])
-
-            if "tool_calls" in delta and delta["tool_calls"]:
-                for tc in delta["tool_calls"]:
-                    idx = tc.get("index", 0)
-                    if idx not in tool_call_buffer:
-                        tool_call_buffer[idx] = {
-                            "id": tc.get("id", f"call_{idx}"),
-                            "name": "",
-                            "arguments": "",
-                        }
-                    if "function" in tc:
-                        if "name" in tc["function"]:
-                            tool_call_buffer[idx]["name"] = tc["function"]["name"]
-                        if "arguments" in tc["function"]:
-                            tool_call_buffer[idx]["arguments"] += tc["function"]["arguments"]
-
-        # Emit tool calls
-        for buf in tool_call_buffer.values():
-            if buf["name"]:
-                try:
-                    args = json.loads(buf["arguments"]) if buf["arguments"] else {}
-                except json.JSONDecodeError:
-                    args = {}
-                yield LLMResponse(
-                    type="tool_call",
-                    tool_name=buf["name"],
-                    tool_args=args,
-                    tool_call_id=buf["id"],
-                )
-
-        yield LLMResponse(type="done")
+        yield from parse_streaming_tool_calls(_llamacpp_deltas())
 
 
 class OllamaToolAdapter:
@@ -280,45 +314,39 @@ class OllamaBackend(LLMBackend):
                 yield LLMResponse(type="done")
                 return
 
-        tool_calls_buffer: list[dict] = []
+        def _ollama_deltas():
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line.decode())
+                except json.JSONDecodeError:
+                    continue
 
-        for line in resp.iter_lines():
-            if not line:
-                continue
-            try:
-                data = json.loads(line.decode())
-            except json.JSONDecodeError:
-                continue
+                msg = data.get("message", {})
+                tc_list = msg.get("tool_calls")
+                tool_calls = None
+                if tc_list:
+                    tool_calls = []
+                    for tc in tc_list:
+                        tool_calls.append({
+                            "index": len(tool_calls),
+                            "id": tc.get("id"),
+                            "function": {
+                                "name": tc["function"]["name"],
+                                "arguments": tc["function"].get("arguments", ""),
+                            },
+                        })
 
-            msg = data.get("message", {})
+                yield {
+                    "content": msg.get("content"),
+                    "tool_calls": tool_calls,
+                }
 
-            if "content" in msg and msg["content"]:
-                yield LLMResponse(type="text", content=msg["content"])
+                if data.get("done", False):
+                    break
 
-            if "tool_calls" in msg:
-                for tc in msg["tool_calls"]:
-                    tool_calls_buffer.append({
-                        "id": tc.get("id", f"call_{len(tool_calls_buffer)}"),
-                        "name": tc["function"]["name"],
-                        "arguments": tc["function"].get("arguments", "{}"),
-                    })
-
-            if data.get("done", False):
-                break
-
-        for tc in tool_calls_buffer:
-            try:
-                args = json.loads(tc["arguments"]) if tc["arguments"] else {}
-            except json.JSONDecodeError:
-                args = {}
-            yield LLMResponse(
-                type="tool_call",
-                tool_name=tc["name"],
-                tool_args=args,
-                tool_call_id=tc["id"],
-            )
-
-        yield LLMResponse(type="done")
+        yield from parse_streaming_tool_calls(_ollama_deltas())
 
 
 class OpenAICompatibleBackend(LLMBackend):
@@ -384,42 +412,9 @@ class OpenAICompatibleBackend(LLMBackend):
 
         try:
             stream = client.chat.completions.create(**payload)
-            tool_calls_buffer: dict[int, dict] = {}
-
-            for chunk in stream:
-                delta = chunk.choices[0].delta
-
-                if delta.content:
-                    yield LLMResponse(type="text", content=delta.content)
-
-                if getattr(delta, "reasoning_content", None):
-                    yield LLMResponse(type="reasoning", content=delta.reasoning_content)
-
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        idx = tc.index or 0
-                        if idx not in tool_calls_buffer:
-                            tool_calls_buffer[idx] = {"id": tc.id or f"call_{idx}", "name": "", "arguments": ""}
-                        if tc.function:
-                            if tc.function.name:
-                                tool_calls_buffer[idx]["name"] += tc.function.name
-                            if tc.function.arguments:
-                                tool_calls_buffer[idx]["arguments"] += tc.function.arguments
-
-            for buf in tool_calls_buffer.values():
-                if buf["name"]:
-                    try:
-                        args = json.loads(buf["arguments"]) if buf["arguments"] else {}
-                    except json.JSONDecodeError:
-                        args = {}
-                    yield LLMResponse(
-                        type="tool_call",
-                        tool_name=buf["name"],
-                        tool_args=args,
-                        tool_call_id=buf["id"],
-                    )
-
-            yield LLMResponse(type="done")
+            yield from parse_streaming_tool_calls(
+                chunk.choices[0].delta for chunk in stream
+            )
 
         except Exception as e:
             yield LLMResponse(type="error", content=f"OpenAI API error: {e}")
