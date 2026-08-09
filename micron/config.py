@@ -44,8 +44,8 @@ class Config:
             env_prefix: Prefix for environment variables (default: MICRON)
         """
         self.env_prefix = env_prefix
-        self.config_path = Path(config_path) if config_path else None
-        
+        self.config_path = self._resolve_config_path(config_path)
+
         # Load from all sources
         self._config = self._load_all()
 
@@ -56,6 +56,19 @@ class Config:
         # Replaces the side-effect that __main__.load_config used to own.
         self._apply_env_vars()
     
+    def _resolve_config_path(self, config_path: Optional[str]) -> Optional[Path]:
+        """Resolve the config file path, auto-discovering micron.yaml if not given."""
+        if config_path:
+            return Path(config_path)
+        candidates = [
+            Path.cwd() / "micron.yaml",
+            Path(__file__).parent.parent / "micron.yaml",
+        ]
+        for c in candidates:
+            if c.exists():
+                return c
+        return None
+
     def _load_all(self) -> dict:
         """Load configuration from all sources."""
         config = {}
