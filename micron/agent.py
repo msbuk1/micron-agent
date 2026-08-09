@@ -326,8 +326,9 @@ class MicronAgent:
                 # Add tool_start events for consistency
                 for tc in write_calls:
                     yield {"type": "tool_start", "name": tc.name, "call_id": tc.call_id}
-                
+
                 tool_iterations += 1
+                yield {"type": "done"}
                 return
 
         yield {"type": "done"}

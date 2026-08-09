@@ -55,6 +55,8 @@ def _iterate_agent(
             app.post_message(AgentEvent(chunk))
     except Exception as exc:  # noqa: BLE001 - worker errors bubble via message
         app.post_message(AgentError(str(exc)))
+    else:
+        app.post_message(AgentDone())
 
 
 def run_agent(
@@ -94,3 +96,5 @@ async def run_agent_async(
             await asyncio.sleep(0)
     except Exception as exc:  # noqa: BLE001 - worker errors bubble via message
         app.post_message(AgentError(str(exc)))
+    else:
+        app.post_message(AgentDone())
