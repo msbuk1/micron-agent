@@ -123,7 +123,7 @@ class MicronTUI(App):
                 if msg["role"] == "user":
                     chat_log.add_user(msg["content"])
                 elif msg["role"] == "assistant":
-                    chat_log.add_system(f"[assistant]: {msg['content'][:200]}")
+                    chat_log.add_system(f"\\[Assistant]: {msg['content'][:200]}")
         if result.loaded_skill is not None:
             self.active_skill = result.loaded_skill
         if result.reload_sidebar:
@@ -343,7 +343,7 @@ class MicronTUI(App):
                 if msg["role"] == "user":
                     chat_log.add_user(msg["content"])
                 elif msg["role"] == "assistant":
-                    chat_log.add_system(f"[assistant]: {msg['content'][:200]}")
+                    chat_log.add_system(f"\\[PROMPT_INJECTION]: {msg['content'][:200]}")
             chat_log.add_system(f"Resumed session {sid[:8]} ({len(resumed)} turns loaded).")
         else:
             self.query_one("#chat-log", ChatLog).add_system(f"Session '{sid[:8]}' not found.")

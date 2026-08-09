@@ -31,7 +31,7 @@ def create_agent_and_logger(config: dict) -> tuple[MicronAgent, SessionLogger, s
     if config.get("base_url"):
         backend_kwargs["base_url"] = config["base_url"]
 
-    create_backend(
+    backend = create_backend(
         config["provider"],
         config["model"],
         **backend_kwargs,
@@ -44,7 +44,7 @@ def create_agent_and_logger(config: dict) -> tuple[MicronAgent, SessionLogger, s
         temperature=config["temperature"],
         max_tokens=config["max_tokens"],
         max_tool_iterations=config["max_tool_iterations"],
-        llm_kwargs=backend_kwargs,
+        llm_kwargs={**backend_kwargs, "backend": backend},
     ))
     sessions_dir = Path(agent.context_dir) / "sessions"
     logger = SessionLogger(sessions_dir)
@@ -117,8 +117,8 @@ class ThinkingIndicator:
 
 def _strip_thinking(text: str) -> str:
     """Remove thinking tags, tool call markup, and looping text from model output."""
-    text = re.sub(r' <thinking>.*?</thinking>', '', text, flags=re.DOTALL)
-    text = re.sub(r' <thinking>.*', '', text, flags=re.DOTALL)
+    text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<thinking>.*', '', text, flags=re.DOTALL)
     # Tool-call markup is stripped by the shared parser (single source of
     # truth for what tool-call syntax looks like). <thinking> tags and the
     # line-dedup below stay here — those are display concerns, not parser

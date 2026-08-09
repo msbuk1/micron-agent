@@ -33,7 +33,7 @@ class ConfirmationScreen(Screen):
             elif name == "patch_file":
                 lines.append(f"  • Patch file: {args.get('path', '?')}")
             elif name == "run_command":
-                lines.append(f"  • Run command: {args.get('command', '?')}")
+                lines.append(f"  • Run command: {args.get('cmd', '?')}")
             elif name == "python_eval":
                 lines.append("  • Execute Python code")
             else:

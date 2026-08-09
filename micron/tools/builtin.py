@@ -37,12 +37,20 @@ def _get_workdir() -> Path:
     return _workdir_cache
 
 def _resolve_path(path: str, *, must_exist: bool = False) -> Path | str:
-    """Resolve a path relative to the working directory."""
+    """Resolve a path relative to the working directory.
+
+    Prevents path traversal — the resolved path must remain inside workdir.
+    """
     workdir = _get_workdir().resolve()
     try:
         target = (workdir / path).resolve()
     except Exception as e:
         return f"Error resolving path: {e}"
+    # Prevent path traversal — target must be inside workdir
+    workdir_str = str(workdir)
+    target_str = str(target)
+    if target_str != workdir_str and not target_str.startswith(workdir_str + os.sep):
+        return f"Error: Path '{path}' escapes the working directory."
     if must_exist and not target.exists():
         return f"Error: Path '{path}' does not exist."
     return target
@@ -183,7 +191,7 @@ def fetch_url(url: str, max_chars: int = 8000) -> dict:
     except Exception as e:
         try:
             return _fetch_url_basic(url, max_chars)
-        except:
+        except Exception:
             return {"url": url, "error": str(e), "content": ""}
 
 def _fetch_url_basic(url: str, max_chars: int = 8000) -> dict:
@@ -278,6 +286,8 @@ def read_file(path: str, start_line: int = 0, end_line: int = 0) -> str:
 )
 def write_file(path: str, content: str, mode: str = "w") -> str:
     """Write or append content to a text file."""
+    if len(content) > 1_048_576:  # 1MB limit
+        return f"Error: Content too large ({len(content)} chars, max 1048576)."
     target_path = _resolve_path(path)
     if isinstance(target_path, str):
         return target_path
@@ -527,10 +537,26 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
     expression='Mathematical expression (e.g., "2 + 2", "sqrt(16) * 3")',
 )
 def calculate(expression: str) -> str:
-    """Evaluate a math expression."""
+    """Evaluate a math expression safely using asteval."""
     try:
-        result = eval(expression, {"__builtins__": {}}, {"abs": abs, "round": round, "int": int, "float": float, "min": min, "max": max, "sum": sum, "pow": pow, "sqrt": __import__("math").sqrt, "pi": __import__("math").pi})
-        return str(result)
+        import asteval
+        import math
+        aeval = asteval.Interpreter(
+            usersyms={
+                "abs": abs, "round": round, "int": int, "float": float,
+                "min": min, "max": max, "sum": sum, "pow": pow,
+                "sqrt": math.sqrt, "pi": math.pi, "e": math.e,
+                "sin": math.sin, "cos": math.cos, "tan": math.tan,
+                "log": math.log, "log10": math.log10, "ceil": math.ceil,
+                "floor": math.floor, "factorial": math.factorial,
+            },
+        )
+        result = aeval.eval(expression)
+        if result is None and aeval.error:
+            return f"Error: {aeval.error[0].get_error()}"
+        return str(result) if result is not None else "Error: no result"
+    except ImportError:
+        return "Error: calculate requires the 'asteval' package. Install with: pip install asteval"
     except Exception as e:
         return f"Error: {e}"
 
@@ -576,7 +602,8 @@ def python_eval(code: str) -> str:
 )
 def current_time(timezone: str = "UTC") -> str:
     """Get current date/time."""
-    now = datetime.utcnow() if timezone == "UTC" else datetime.now()
+    from datetime import datetime, timezone as tz
+    now = datetime.now(tz.utc) if timezone == "UTC" else datetime.now()
     return now.strftime("%Y-%m-%d %H:%M:%S") + f" ({timezone})"
 
 @tool(

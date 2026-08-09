@@ -43,10 +43,8 @@ def check_authentication(request: Request) -> bool:
     Returns:
         True if authenticated or auth disabled, False otherwise
     """
-    from micron.config import load_config
-    
-    config = load_config()
-    
+    config = _get_cached_config()
+
     # Get API key from header or query parameter
     api_key = request.headers.get("X-API-KEY")
     if not api_key:
@@ -62,9 +60,7 @@ def check_rate_limit() -> bool:
     Returns:
         True if rate limit exceeded, False otherwise
     """
-    from micron.config import load_config
-    
-    config = load_config()
+    config = _get_cached_config()
     rate_limits = config.get_rate_limits()
     
     if not rate_limits.get("enabled", False):
@@ -140,7 +136,7 @@ app = FastAPI(
 # CORS for local development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:8000", "http://[IP_ADDRESS]:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
