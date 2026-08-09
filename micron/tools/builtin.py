@@ -507,11 +507,8 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
     if isinstance(decision, Deny):
         return handle_error("run_command", Exception(decision.reason), decision.reason)
 
-    # Apply resource limits
-    if isinstance(decision, Limit):
-        _set_command_resource_limits(decision)
-    else:
-        _set_command_resource_limits()
+    # Resource limits are applied to the child process via preexec_fn
+    # below — not here, which would constrain the agent process itself.
 
     # Resolve cwd and run
     try:
@@ -519,7 +516,13 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
         if isinstance(workdir, str):
             return workdir
 
-        result = subprocess.run(args, shell=False, capture_output=True, text=True, timeout=timeout, cwd=workdir)
+        # Apply resource limits to the child only (via preexec_fn) so the
+        # agent process itself is not constrained after the call returns.
+        result = subprocess.run(
+            args, shell=False, capture_output=True, text=True,
+            timeout=timeout, cwd=workdir,
+            preexec_fn=lambda: _set_command_resource_limits(decision),
+        )
         output = result.stdout
         if result.stderr:
             output += f"\n[STDERR]\n{result.stderr}"

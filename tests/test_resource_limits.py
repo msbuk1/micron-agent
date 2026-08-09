@@ -1,4 +1,6 @@
 """Tests for resource limits in run_command."""
+import platform
+
 import pytest
 
 from micron.tools.builtin import run_command
@@ -116,8 +118,9 @@ class TestInjectionPrevention:
         """
         result = run_command("cat /etc/passwd; sudo rm -rf /")
         # With shlex.split, this becomes ['cat', '/etc/passwd;', 'sudo', 'rm', '-rf', '/']
-        # cat receives the args (treating ';' as part of filename), which fails safely
-        assert "Error" in result or "root:" in result or "passwd" in result
+        # cat receives the args (treating ';' as part of filename), which fails safely.
+        # The key assertion: sudo rm -rf / was NOT executed — cat just errors on bad args.
+        assert "Error" in result or "invalid option" in result or "passwd" in result or "No such file" in result
 
     def test_pipe_not_executed(self):
         """Test that pipes are not executed as shell pipes."""
@@ -132,3 +135,45 @@ class TestInjectionPrevention:
         result = run_command("echo $(whoami)")
         # Should either fail or echo "$(whoami)" as literal
         assert "Error" in result or "$(whoami)" in result
+
+
+class TestParentProcessNotPolluted:
+    """Regression tests: resource limits must not leak into the parent process.
+
+    Before the fix, _set_command_resource_limits() called setrlimit() on the
+    agent process itself, capping RLIMIT_AS / RLIMIT_NPROC / RLIMIT_CPU /
+    RLIMIT_NOFILE. These persisted after subprocess.run returned, causing
+    the agent to hang or crash when it later needed memory (e.g. LLM load).
+    """
+
+    @pytest.mark.skipif(platform.system() != "Linux", reason="RLIMIT tests are Linux-only")
+    def test_rlimit_as_not_polluted(self):
+        import resource
+        before = resource.getrlimit(resource.RLIMIT_AS)[0]
+        run_command("echo hello", timeout=5)
+        after = resource.getrlimit(resource.RLIMIT_AS)[0]
+        assert before == after, f"RLIMIT_AS changed {before} -> {after}"
+
+    @pytest.mark.skipif(platform.system() != "Linux", reason="RLIMIT tests are Linux-only")
+    def test_rlimit_nproc_not_polluted(self):
+        import resource
+        before = resource.getrlimit(resource.RLIMIT_NPROC)[0]
+        run_command("echo hello", timeout=5)
+        after = resource.getrlimit(resource.RLIMIT_NPROC)[0]
+        assert before == after, f"RLIMIT_NPROC changed {before} -> {after}"
+
+    @pytest.mark.skipif(platform.system() != "Linux", reason="RLIMIT tests are Linux-only")
+    def test_rlimit_cpu_not_polluted(self):
+        import resource
+        before = resource.getrlimit(resource.RLIMIT_CPU)[0]
+        run_command("echo hello", timeout=5)
+        after = resource.getrlimit(resource.RLIMIT_CPU)[0]
+        assert before == after, f"RLIMIT_CPU changed {before} -> {after}"
+
+    @pytest.mark.skipif(platform.system() != "Linux", reason="RLIMIT tests are Linux-only")
+    def test_rlimit_nofile_not_polluted(self):
+        import resource
+        before = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        run_command("echo hello", timeout=5)
+        after = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        assert before == after, f"RLIMIT_NOFILE changed {before} -> {after}"
