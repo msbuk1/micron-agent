@@ -1,0 +1,193 @@
+/* Custom Textual theme for micron TUI */
+
+Screen {
+    background: $surface-darken-1;
+    color: $text;
+}
+
+#main {
+    layout: vertical;
+    height: 100%;
+    width: 100%;
+}
+
+#top {
+    layout: horizontal;
+    height: 6fr;
+    width: 100%;
+}
+
+#chat-container {
+    width: 3fr;
+    height: 100%;
+    border: solid $primary;
+    padding: 0 1;
+}
+
+#sidebar {
+    width: 1fr;
+    height: 100%;
+    border: solid $primary;
+    padding: 0 1;
+}
+
+#tool-panel {
+    height: 1fr;
+    width: 100%;
+    border: solid $primary;
+    padding: 0 1;
+}
+
+#input-bar {
+    height: auto;
+    width: 100%;
+    padding: 0 1;
+}
+
+ChatLog {
+    width: 100%;
+    height: 100%;
+}
+
+ChatLog .user-message {
+    color: $text;
+    margin: 1 0;
+}
+
+ChatLog .assistant-message {
+    color: $text;
+    background: $surface-darken-2;
+    margin: 1 0;
+    padding: 0 1;
+}
+
+ChatLog .thinking-block {
+    color: $text-muted;
+    text-style: italic;
+    margin: 1 0;
+}
+
+ChatLog .thinking-indicator {
+    color: $warning;
+    text-style: italic;
+    margin: 1 0;
+}
+
+ChatLog .tool-result {
+    color: $text-muted;
+    margin: 0 0;
+    padding: 0 1;
+}
+
+ChatLog .system-message {
+    color: $text-muted;
+    text-style: dim;
+    margin: 1 0;
+}
+
+ToolPanel {
+    width: 100%;
+    height: 100%;
+}
+
+ToolPanel .tool-running {
+    color: $warning;
+}
+
+ToolPanel .tool-done {
+    color: $success;
+}
+
+ToolPanel .tool-error {
+    color: $error;
+}
+
+Sidebar {
+    width: 100%;
+    height: 100%;
+}
+
+InputBar {
+    layout: horizontal;
+    height: auto;
+    width: 100%;
+}
+
+InputBar Input {
+    width: 1fr;
+}
+
+InputBar Button {
+    margin-left: 1;
+}
+
+StatusBar {
+    height: 1;
+    width: 100%;
+    background: $primary-darken-2;
+    color: $text;
+    content-align: center middle;
+}
+
+ConfirmationScreen {
+    align: center middle;
+}
+
+#confirm-dialog {
+    width: 60;
+    height: auto;
+    border: thick $primary;
+    padding: 1 2;
+    background: $surface;
+}
+
+#confirm-dialog Static {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+#confirm-dialog Horizontal {
+    width: 100%;
+    height: auto;
+    align: center middle;
+}
+
+#confirm-dialog Button {
+    margin: 0 1;
+}
+
+HelpScreen {
+    align: center middle;
+}
+
+.detail-screen, .menu-screen {
+    align: center middle;
+}
+
+#help-dialog, #detail-dialog, #menu-dialog {
+    width: 80;
+    height: auto;
+    max-height: 80%;
+    border: thick $primary;
+    padding: 1 2;
+    background: $surface;
+}
+
+#detail-dialog Markdown {
+    width: 100%;
+    height: auto;
+    max-height: 40;
+}
+
+#loading-overlay {
+    align: center middle;
+    background: $surface 80%;
+}
+
+#loading-dialog {
+    width: auto;
+    height: auto;
+    padding: 2 4;
+    border: thick $primary;
+    background: $surface;
+}

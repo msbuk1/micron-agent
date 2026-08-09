@@ -2,19 +2,54 @@
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 import time
-from pathlib import Path
 from collections import Counter
+from pathlib import Path
 
 import yaml
-import re
 
-from micron.agent import MicronAgent, AgentConfig, ToolCall, create_agent
-from micron.events import process_events, EventType
+from micron.agent import AgentConfig, MicronAgent
+from micron.events import process_events
 from micron.sessions import SessionLogger
 from micron.text_tool_parser import strip_tool_call_markup
+
+
+def create_agent_and_logger(config: dict) -> tuple[MicronAgent, SessionLogger, str]:
+    """Create agent, backend, and session logger from loaded config."""
+    from micron.llm import create_backend
+
+    backend_kwargs = {
+        "n_threads": config.get("n_threads", 8),
+        "n_gpu_layers": config.get("n_gpu_layers", 0),
+        "n_ctx": config.get("n_ctx", 8192),
+    }
+    if config.get("api_key"):
+        backend_kwargs["api_key"] = config["api_key"]
+    if config.get("base_url"):
+        backend_kwargs["base_url"] = config["base_url"]
+
+    create_backend(
+        config["provider"],
+        config["model"],
+        **backend_kwargs,
+    )
+
+    agent = MicronAgent(AgentConfig(
+        context_dir=config["context_dir"],
+        provider=config["provider"],
+        model=config["model"],
+        temperature=config["temperature"],
+        max_tokens=config["max_tokens"],
+        max_tool_iterations=config["max_tool_iterations"],
+        llm_kwargs=backend_kwargs,
+    ))
+    sessions_dir = Path(agent.context_dir) / "sessions"
+    logger = SessionLogger(sessions_dir)
+    session_id = logger.start_session()
+    return agent, logger, session_id
 
 
 class ThinkingIndicator:
@@ -82,10 +117,10 @@ class ThinkingIndicator:
 
 def _strip_thinking(text: str) -> str:
     """Remove thinking tags, tool call markup, and looping text from model output."""
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
+    text = re.sub(r' <thinking>.*?</thinking>', '', text, flags=re.DOTALL)
+    text = re.sub(r' <thinking>.*', '', text, flags=re.DOTALL)
     # Tool-call markup is stripped by the shared parser (single source of
-    # truth for what tool-call syntax looks like). <think> tags and the
+    # truth for what tool-call syntax looks like). <thinking> tags and the
     # line-dedup below stay here — those are display concerns, not parser
     # concerns.
     text = strip_tool_call_markup(text)
@@ -103,7 +138,7 @@ def _strip_thinking(text: str) -> str:
     return text
 
 
-def load_config(args: argparse.Namespace | None = None, config_path: str = None) -> dict:
+def load_config(args: argparse.Namespace | None = None, config_path: str | None = None) -> dict:
     """Load config from micron.yaml with env var overrides."""
     if config_path is None:
         candidates = [
@@ -164,10 +199,9 @@ def load_config(args: argparse.Namespace | None = None, config_path: str = None)
     return config
 
 
-def parse_args(argv: list[str] = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="micron — lightweight AI agent")
-    parser.add_argument("query", nargs="*", help="Query to run (omit for interactive mode)")
-    parser.add_argument("-i", "--interactive", action="store_true", help="Run in interactive mode")
+    parser.add_argument("query", nargs="*", help="Query to run (omit to launch TUI)")
     parser.add_argument("--server", action="store_true", help="Run HTTP server")
     parser.add_argument("--host", default=None, help="Server host (default from config)")
     parser.add_argument("--port", type=int, default=None, help="Server port (default from config)")
@@ -198,40 +232,11 @@ def main():
     for sub in ("skills", "memory", "knowledge", "persona"):
         (context_dir / sub).mkdir(exist_ok=True)
 
-    # Create backend
-    from micron.llm import create_backend
-
-    backend_kwargs = {
-        "n_threads": config.get("n_threads", 8),
-        "n_gpu_layers": config.get("n_gpu_layers", 0),
-        "n_ctx": config.get("n_ctx", 8192),
-    }
-    if config.get("api_key"):
-        backend_kwargs["api_key"] = config["api_key"]
-    if config.get("base_url"):
-        backend_kwargs["base_url"] = config["base_url"]
-
-    backend = create_backend(
-        config["provider"],
-        config["model"],
-        **backend_kwargs,
-    )
-
-    agent = MicronAgent(AgentConfig(
-        context_dir=config["context_dir"],
-        provider=config["provider"],
-        model=config["model"],
-        temperature=config["temperature"],
-        max_tokens=config["max_tokens"],
-        max_tool_iterations=config["max_tool_iterations"],
-        llm_kwargs=backend_kwargs,
-    ))
-    sessions_dir = Path(agent.context_dir) / "sessions"
-    logger = SessionLogger(sessions_dir)
-    session_id = logger.start_session()
+    # Create agent and session logger
+    agent, logger, session_id = create_agent_and_logger(config)
     print(f"Session: {session_id}")
     if args.server:
-        host = args.host or config.get("host", "0.0.0.0")
+        host = args.host or config.get("host", "[IP_ADDRESS]")
         port = args.port or config.get("port", 8000)
         from micron.server import run_server
         run_server(agent, host=host, port=port)
@@ -262,21 +267,20 @@ def main():
     # Build query
     if args.query:
         query = " ".join(args.query)
-    elif args.interactive:
-        query = None
     else:
-        parser = argparse.ArgumentParser()
-        parse_args(["--help"])
-        return
+        query = None
 
     # Run agent
-    if args.interactive or query is None:
-        run_interactive(agent, args.no_stream)
+    if query is None:
+        from micron.tui.app import MicronTUI
+        def factory():
+            return create_agent_and_logger(config)
+        MicronTUI(factory).run()
     else:
-        run_query(agent, query, args.no_stream)
+        run_query(agent, logger, query, args.no_stream)
 
 
-def run_query(agent, query: str, no_stream: bool = False):
+def run_query(agent, logger, query: str, no_stream: bool = False):
     """Run a single query and print results."""
     thinking = ThinkingIndicator()
     thinking.start()
@@ -313,338 +317,6 @@ def run_query(agent, query: str, no_stream: bool = False):
     if cleaned:
         print(cleaned)
     logger.log_turn("assistant", cleaned or result.text)
-
-
-def run_interactive(agent, no_stream: bool = False):
-    """Run interactive chat loop with history, slash commands, and session logging."""
-    print("micron interactive mode (type '/help' for commands)")
-    print("=" * 40)
-    history: list[dict] = []
-
-    # Session logging
-    sessions_dir = Path(agent.context_dir) / "sessions"
-    logger = SessionLogger(sessions_dir)
-    session_id = logger.start_session()
-    print(f"Session: {session_id}")
-    _active_skill = None  # Set by /skill command, consumed on next query
-
-    def handle_command(cmd: str) -> bool:
-        parts = cmd[1:].strip().split()
-        command = parts[0].lower()
-        args = parts[1:]
-
-        if command in ("exit", "quit", "q"):
-            return False
-
-        elif command in ("help", "?", "h"):
-            print("Commands:")
-            print("  /help, /?    Show this help")
-            print("  /exit, /quit Exit")
-            print("  /clear       Clear conversation history")
-            print("  /mem         List recent memories")
-            print("  /tools       Show available tools")
-            print("  /model       Show current model info")
-            print("  /providers   List available providers from config")
-            print("  /unload      Unload model from memory (frees RAM)")
-            print("  /reload      Reload skills from disk")
-            print("  /sessions    List recent sessions")
-            print("  /resume ID   Resume a previous session")
-            print("  /last        Show last assistant response")
-            print("  /trash       List deleted files (recoverable)")
-            print("  /restore F   Restore a file from trash")
-            print("  /purge       Empty trash permanently")
-            print("  /undo F      Restore file from .bak backup")
-            print("  /tree        Show directory tree (--depth=N --ext=EXT)")
-            print("  /skill NAME  Load a procedure skill into context")
-            print("  /skills      List available procedure skills")
-            print("")
-            print("Just type your message to chat with the agent.")
-
-        elif command == "clear":
-            history.clear()
-            print("Conversation history cleared.")
-
-        elif command == "mem":
-            memories = agent.list_memories(10)
-            if not memories:
-                print("No memories stored.")
-            else:
-                print(f"Recent memories ({len(memories)}):")
-                for m in memories:
-                    tags = " ".join(f"#{t}" for t in m.tags) if m.tags else ""
-                    print(f"  [{m.id[:8]}] {m.text[:80]} {tags}")
-
-        elif command == "tools":
-            tools = agent.tools.list()
-            if not tools:
-                print("No tools available.")
-            else:
-                print(f"Available tools ({len(tools)}):")
-                for t in tools:
-                    write_tag = " [write]" if t.get("write", False) else ""
-                    print(f"  {t['name']}: {t['description']}{write_tag}")
-
-        elif command == "model":
-            llm = agent.llm
-            print(f"Provider: {llm.__class__.__name__}")
-            if hasattr(llm, '_init_kwargs'):
-                print(f"Config: {json.dumps(llm._init_kwargs, indent=2, default=str)}")
-
-        elif command == "unload":
-            agent.unload_model()
-            print("Model unloaded from memory.")
-
-        elif command == "reload":
-            before = len(agent.skills.all())
-            agent.reload_skills()
-            after = len(agent.skills.all())
-            print(f"Skills reloaded ({before} → {after}).")
-
-        elif command == "providers":
-            cfg = load_config()
-            providers = cfg.get("providers", {})
-            default = cfg.get("default_provider", "llamacpp")
-            active = os.environ.get("MICRON_PROVIDER", default)
-            print(f"Default: {default}  Active: {active}")
-            for name, prov_cfg in providers.items():
-                model = prov_cfg.get("model", "(no model set)")
-                marker = " ← active" if name == active else ""
-                print(f"  {name}: {model}{marker}")
-
-        elif command == "sessions":
-            sessions = logger.list_sessions(10)
-            if not sessions:
-                print("No sessions found.")
-            else:
-                print("Recent sessions:")
-                for s in sessions:
-                    print(f"  {s['id']}  {s['turns']} turns  {s['size'] // 1024}KB")
-
-        elif command == "resume":
-            if not args:
-                print("Usage: /resume <session_id>")
-                return True
-            resume_id = args[0]
-            resumed = logger.get_session_context(resume_id)
-            if not resumed:
-                print(f"Session '{resume_id}' not found.")
-                return True
-            history.clear()
-            history.extend(resumed)
-            print(f"Resumed session {resume_id} ({len(resumed)} turns loaded).")
-
-        elif command == "last":
-            if history:
-                last_msg = history[-1]
-                print(f"[{last_msg['role']}]: {last_msg['content'][:500]}")
-            else:
-                print("No messages yet.")
-
-        elif command == "trash":
-            from micron.tools.builtin import list_trash
-            result = list_trash()
-            print(result)
-
-        elif command == "restore":
-            if not args:
-                print("Usage: /restore <filename>")
-                print("Use /trash to see available files")
-                return True
-            from micron.tools.builtin import restore_file
-            result = restore_file(args[0])
-            print(result)
-
-        elif command == "purge":
-            from micron.tools.builtin import purge_trash
-            result = purge_trash()
-            print(result)
-
-        elif command == "undo":
-            if not args:
-                print("Usage: /undo <filename>")
-                print("Restores file from .bak backup created by edit_file")
-                return True
-            from micron.tools.builtin import undo_file
-            result = undo_file(args[0])
-            print(result)
-
-
-        elif command == "tree":
-            from micron.tools.builtin import tree
-            # Parse --depth and --ext from args
-            max_depth = 3
-            ext = None
-            tree_path = '.'
-            for arg in args:
-                if arg.startswith('--depth='):
-                    max_depth = int(arg.split('=')[1])
-                elif arg.startswith('--ext='):
-                    ext = arg.split('=')[1]
-                else:
-                    tree_path = arg
-            result = tree(tree_path, max_depth=max_depth, ext=ext)
-            print(result)
-
-        elif command == "skill":
-            if not args:
-                print("Usage: /skill <name>")
-                print("Use /skills to list available procedure skills")
-                return True
-            skill_name = args[0]
-            found = agent.skills.get(skill_name)
-            if not found:
-                print(f"Skill '{skill_name}' not found.")
-                return True
-            if not found.procedure:
-                print(f"'{skill_name}' is a tool skill, not a procedure skill.")
-                return True
-            _active_skill = found
-            print(f"Loaded: {found.name}")
-            print(f"Description: {found.description}")
-            print(f"Content: {len(found.content)} chars")
-            print("(Skill will be included in your next message)")
-
-        elif command == "skills":
-            procedures = [s for s in agent.skills.all() if s.procedure]
-            if not procedures:
-                print("No procedure skills loaded.")
-            else:
-                print(f"Procedure skills ({len(procedures)}):")
-                for s in procedures:
-                    print(f"  {s.name:30s} {s.description[:60]}")
-
-        else:
-            print(f"Unknown command: {command}. Try /help")
-
-        return True
-
-    known_commands = {"help", "?", "exit", "quit", "q", "clear", "mem", "tools", "model",
-                      "h", "unload", "reload", "providers", "sessions", "resume", "last",
-                      "trash", "restore", "purge", "undo", "tree", "skill", "skills"}
-
-    try:
-        while True:
-            try:
-                query = input("\n> ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                break
-
-            if not query:
-                continue
-
-            # Handle slash commands
-            if query.startswith("/"):
-                first_word = query[1:].strip().split()[0].lower() if query[1:].strip() else ""
-                if first_word in known_commands:
-                    if not handle_command(query):
-                        break
-                    continue
-
-            # Log user turn
-            logger.log_turn("user", query)
-
-            # Inject active skill content if loaded via /skill
-            if _active_skill:
-                query = f"[Active skill: {_active_skill.name}]\n\n{_active_skill.content}\n\n---\n\nUser request: {query}"
-                _active_skill = None  # One-shot injection
-
-            # Normal query
-            thinking = ThinkingIndicator()
-            thinking.start()
-            result = ""
-            pending_writes = None
-
-            def on_text(t):
-                nonlocal result
-                thinking.stop()
-                result += t
-
-            def on_thinking(t):
-                thinking.update(t)
-
-            def on_tool_start(name, call_id):
-                thinking.stop()
-                print(f"\n[Using: {name}]", file=sys.stderr)
-
-            def on_tool_result(name, summary):
-                thinking.stop()
-                print(f"\n[{name} done]", file=sys.stderr)
-
-            def on_tool_error(name, error):
-                thinking.stop()
-                print(f"\n[Error] {error}", file=sys.stderr)
-
-            def on_confirmation_required(writes):
-                nonlocal pending_writes
-                thinking.stop()
-                pending_writes = writes
-
-            event_result = process_events(
-                agent.run(query, history=history),
-                on_text=on_text,
-                on_thinking=on_thinking,
-                on_tool_start=on_tool_start,
-                on_tool_result=on_tool_result,
-                on_tool_error=on_tool_error,
-                on_confirmation_required=on_confirmation_required,
-            )
-            pending_writes = pending_writes or event_result.pending_writes
-            thinking.stop()
-
-            # Confirm and execute write tools
-            if pending_writes:
-                # Ask user for confirmation
-                for w in pending_writes:
-                    tool_name = w["tool_name"]
-                    args = w.get("args", {})
-                    if tool_name == "write_file":
-                        print(f"\n[Write file: {args.get('path', '?')}]", file=sys.stderr)
-                    elif tool_name == "write_knowledge":
-                        print(f"\n[Write knowledge: {args.get('title', '?')}]", file=sys.stderr)
-                    else:
-                        print(f"\n[Write: {tool_name}({args})]", file=sys.stderr)
-
-                try:
-                    confirm = input("Proceed? [Y/n] ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    confirm = "n"
-
-                if confirm in ("n", "no", ""):
-                    print("Cancelled.", file=sys.stderr)
-                    result = "Write operation cancelled by user."
-                else:
-                    calls = []
-                    for w in pending_writes:
-                        calls.append(ToolCall(
-                            name=w["tool_name"], args=w.get("args", {}),
-                            call_id=w.get("call_id", f"confirm_{len(calls)}"),
-                            is_write=True,
-                        ))
-                    if calls:
-                        result = ""
-                        confirmed = process_events(
-                            agent.run(query, history=history, confirm=True, pending_tool_calls=calls),
-                            on_tool_result=lambda name, s: print(f"\n[{name} done]", file=sys.stderr),
-                            on_tool_error=lambda name, err: print(f"\n[Error] {err}", file=sys.stderr),
-                        )
-                        result = confirmed.text
-
-            cleaned = _strip_thinking(result)
-            if cleaned:
-                print(cleaned)
-
-            # Log assistant turn
-            logger.log_turn("assistant", cleaned or result)
-
-            # Track conversation history
-            history.append({"role": "user", "content": query})
-            history.append({"role": "assistant", "content": cleaned or result})
-
-    except KeyboardInterrupt:
-        print("\nGoodbye!")
-    finally:
-        logger.end_session()
 
 
 if __name__ == "__main__":

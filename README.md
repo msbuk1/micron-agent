@@ -33,14 +33,16 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev,server]"
 
-# 2. Run CLI
-python -m micron "What time is it?"
+# 2. Run CLI (use the venv's python3, or ./run.sh)
+./run.sh "What time is it?"
+# or: .venv/bin/python3 -m micron "What time is it?"
 
-# 3. Interactive mode
-python -m micron -i
+# 3. Launch the TUI (omit query to launch TUI)
+./run.sh
+# or: .venv/bin/python3 -m micron
 
 # 4. Use LM Studio (or any OpenAI-compatible API)
-python -m micron --provider lmstudio "Search for python tips"
+./run.sh --provider lmstudio "Search for python tips"
 ```
 
 ## Configuration
@@ -65,29 +67,31 @@ providers:
 
 Override via CLI or env vars:
 ```bash
-python -m micron --provider openrouter "query"
-MICRON_PROVIDER=lmstudio python -m micron "query"
+./run.sh --provider openrouter "query"
+MICRON_PROVIDER=lmstudio ./run.sh "query"
 ```
 
 ## CLI Usage
 
 ```bash
 # Single query
-python -m micron "What is 2+2?"
+./run.sh "What is 2+2?"
+# or: .venv/bin/python3 -m micron "What is 2+2?"
 
-# Interactive mode
-python -m micron -i
+# Launch TUI
+./run.sh
+# or: .venv/bin/python3 -m micron
 
 # List tools
-python -m micron --list-tools
+./run.sh --list-tools
 
 # Memory management
-python -m micron --add-memory "User prefers dark mode"
-python -m micron --search-memory "dark mode"
-python -m micron --list-memories
+./run.sh --add-memory "User prefers dark mode"
+./run.sh --search-memory "dark mode"
+./run.sh --list-memories
 
 # Server mode
-python -m micron --server --port 8000
+./run.sh --server --port 8000
 ```
 
 ### Interactive Commands
