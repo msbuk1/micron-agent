@@ -80,11 +80,22 @@ def _set_command_resource_limits(decision=None):
 
     *decision* may be a :class:`~micron.tools.command_policy.Limit` instance
     whose non-``None`` fields override the env-var defaults.
+
+    Only the **soft** limit is lowered — the hard limit is preserved so the
+    parent process can restore its original limits after the child is forked.
     """
     from micron.tools.command_policy import Limit
 
     if not _HAS_RESOURCE:
         return
+
+    RLIM_INFINITY = getattr(resource, "RLIM_INFINITY", -1)
+
+    def _clamp(desired: int, hard: int) -> int:
+        """Return desired if it fits within hard, else hard. Treats RLIM_INFINITY as no cap."""
+        if hard == RLIM_INFINITY:
+            return desired
+        return min(desired, hard)
 
     # Determine per-field overrides (Limit or use env defaults)
     limit: Limit | None = decision if isinstance(decision, Limit) else None
@@ -97,7 +108,8 @@ def _set_command_resource_limits(decision=None):
     try:
         if hasattr(resource, 'RLIMIT_CPU'):
             v = _val(limit.cpu if limit else None, "MICRON_CMD_MAX_CPU", "60")
-            resource.setrlimit(resource.RLIMIT_CPU, (v, v))
+            hard = resource.getrlimit(resource.RLIMIT_CPU)[1]
+            resource.setrlimit(resource.RLIMIT_CPU, (_clamp(v, hard), hard))
     except (ValueError, OSError):
         pass
 
@@ -105,23 +117,52 @@ def _set_command_resource_limits(decision=None):
         if hasattr(resource, 'RLIMIT_AS'):
             mb = _val(limit.memory if limit else None, "MICRON_CMD_MAX_MEMORY_MB", "512")
             b = mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (b, b))
+            hard = resource.getrlimit(resource.RLIMIT_AS)[1]
+            resource.setrlimit(resource.RLIMIT_AS, (_clamp(b, hard), hard))
     except (ValueError, OSError):
         pass
 
     try:
         if hasattr(resource, 'RLIMIT_NPROC'):
             v = _val(limit.procs if limit else None, "MICRON_CMD_MAX_PROCESSES", "50")
-            resource.setrlimit(resource.RLIMIT_NPROC, (v, v))
+            hard = resource.getrlimit(resource.RLIMIT_NPROC)[1]
+            resource.setrlimit(resource.RLIMIT_NPROC, (_clamp(v, hard), hard))
     except (ValueError, OSError):
         pass
 
     try:
         if hasattr(resource, 'RLIMIT_NOFILE'):
             v = _val(limit.files if limit else None, "MICRON_CMD_MAX_FILES", "100")
-            resource.setrlimit(resource.RLIMIT_NOFILE, (v, v))
+            hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+            resource.setrlimit(resource.RLIMIT_NOFILE, (_clamp(v, hard), hard))
     except (ValueError, OSError):
         pass
+
+
+def _save_resource_limits():
+    """Snapshot the current process resource limits so they can be restored."""
+    if not _HAS_RESOURCE:
+        return None
+    saved = {}
+    for name in ("RLIMIT_CPU", "RLIMIT_AS", "RLIMIT_NPROC", "RLIMIT_NOFILE"):
+        attr = getattr(resource, name, None)
+        if attr is not None:
+            try:
+                saved[attr] = resource.getrlimit(attr)
+            except (ValueError, OSError):
+                pass
+    return saved
+
+
+def _restore_resource_limits(saved):
+    """Restore resource limits from a snapshot taken by _save_resource_limits."""
+    if not _HAS_RESOURCE or saved is None:
+        return
+    for attr, (soft, hard) in saved.items():
+        try:
+            resource.setrlimit(attr, (soft, hard))
+        except (ValueError, OSError):
+            pass
 
 
 @tool(
@@ -513,8 +554,12 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
     if isinstance(decision, Deny):
         return handle_error("run_command", Exception(decision.reason), decision.reason)
 
-    # Resource limits are applied to the child process via preexec_fn
-    # below — not here, which would constrain the agent process itself.
+    # Resource limits are applied by temporarily setting them on the parent
+    # process before fork (child inherits them), then restoring immediately
+    # after. This avoids preexec_fn, which is unsafe in multi-threaded
+    # applications (the TUI runs the agent in a worker thread).
+    saved_limits = _save_resource_limits()
+    _set_command_resource_limits(decision)
 
     # Resolve cwd and run
     try:
@@ -522,12 +567,9 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
         if isinstance(workdir, str):
             return workdir
 
-        # Apply resource limits to the child only (via preexec_fn) so the
-        # agent process itself is not constrained after the call returns.
         result = subprocess.run(
             args, shell=False, capture_output=True, text=True,
             timeout=timeout, cwd=workdir,
-            preexec_fn=lambda: _set_command_resource_limits(decision),
         )
         output = result.stdout
         if result.stderr:
@@ -539,6 +581,8 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
         return handle_error("run_command", e, f"command not found: {args[0]}")
     except Exception as e:
         return handle_error("run_command", e, "while executing command")
+    finally:
+        _restore_resource_limits(saved_limits)
 
 @tool(
     name="calculate",
