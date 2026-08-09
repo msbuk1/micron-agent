@@ -76,23 +76,25 @@ Two flavours:
 ## Configuration surface
 
 - `micron.yaml` — provider config, rate limits, auth, firecrawl URL.
-- `Config` (in `micron/config.py`) — unified loader: defaults → YAML →
+- `Config` (in `micron/config.py`) — **single loader**: defaults → YAML →
   env (`MICRON_*`). Exposes `get_rate_limits`, `get_resource_limits`,
-  `get_authentication`, `is_valid_api_key`, `get_provider_config`.
-- `__main__.py:load_config` is a **second, parallel loader** that
-  pre-dates `Config` and reads its own defaults. Currently both loaders
-  are reachable; CLI uses `__main__.load_config`, server uses
-  `Config`. The split is a known seam but out of scope for this review.
+  `get_authentication`, `is_valid_api_key`, `get_provider_config`,
+  `resolve_runtime` (flat dict for agent+backend construction),
+  `_apply_env_vars` (populates `MICRON_WORKDIR` / `MICRON_CONTEXT_DIR` /
+  `MICRON_PROVIDER` / `FIRECRAWL_URL` for tools that read env vars).
+  CLI, TUI, and server all use `Config`. The former `__main__.load_config`
+  parallel loader has been removed.
 
 ## Out-of-band notes
 
 - Web chat is **not** session-persistent. History lives in the browser;
   CLI uses `SessionLogger`. (Slices 25–27 are the planned alignment.)
-- `micron/static/{index.html,app.js,style.css}` is **dead code** — the
-  server serves the inline `HTML_PAGE` from `server.py`.
-- `error_handling.py` defines `ToolError`, `handle_error`,
-  `format_tool_result` — but `agent._friendly_error` re-implements the
-  same string-shape coercion. One seam, two implementations.
+- `micron/static/` has been removed — the server serves the inline
+  `HTML_PAGE` from `server.py`.
+- `error_handling.py` defines `handle_error`, `success` — but
+  `agent._friendly_error` re-implements the same string-shape coercion.
+  One seam, two implementations. (`ToolError` and `format_tool_result`
+  were dead and have been removed.)
 
 ## Architectural decisions
 

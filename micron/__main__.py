@@ -9,41 +9,56 @@ import time
 from collections import Counter
 from pathlib import Path
 
-import yaml
-
 from micron.agent import AgentConfig, MicronAgent
+from micron.config import Config
 from micron.events import process_events
 from micron.sessions import SessionLogger
 from micron.text_tool_parser import strip_tool_call_markup
 
 
-def create_agent_and_logger(config: dict) -> tuple[MicronAgent, SessionLogger, str]:
-    """Create agent, backend, and session logger from loaded config."""
+def create_agent_and_logger(
+    config: Config,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> tuple[MicronAgent, SessionLogger, str]:
+    """Create agent, backend, and session logger from a Config object."""
     from micron.llm import create_backend
 
+    rt = config.resolve_runtime(
+        provider_override=provider,
+        model_override=model,
+    )
+    if temperature is not None:
+        rt["temperature"] = temperature
+    if max_tokens is not None:
+        rt["max_tokens"] = max_tokens
+
     backend_kwargs = {
-        "n_threads": config.get("n_threads", 8),
-        "n_gpu_layers": config.get("n_gpu_layers", 0),
-        "n_ctx": config.get("n_ctx", 8192),
+        "n_threads": rt["n_threads"],
+        "n_gpu_layers": rt["n_gpu_layers"],
+        "n_ctx": rt["n_ctx"],
     }
-    if config.get("api_key"):
-        backend_kwargs["api_key"] = config["api_key"]
-    if config.get("base_url"):
-        backend_kwargs["base_url"] = config["base_url"]
+    if rt.get("api_key"):
+        backend_kwargs["api_key"] = rt["api_key"]
+    if rt.get("base_url"):
+        backend_kwargs["base_url"] = rt["base_url"]
 
     backend = create_backend(
-        config["provider"],
-        config["model"],
+        rt["provider"],
+        rt["model"],
         **backend_kwargs,
     )
 
     agent = MicronAgent(AgentConfig(
-        context_dir=config["context_dir"],
-        provider=config["provider"],
-        model=config["model"],
-        temperature=config["temperature"],
-        max_tokens=config["max_tokens"],
-        max_tool_iterations=config["max_tool_iterations"],
+        context_dir=rt["context_dir"],
+        provider=rt["provider"],
+        model=rt["model"],
+        temperature=rt["temperature"],
+        max_tokens=rt["max_tokens"],
+        max_tool_iterations=rt["max_tool_iterations"],
         llm_kwargs={**backend_kwargs, "backend": backend},
     ))
     sessions_dir = Path(agent.context_dir) / "sessions"
@@ -138,67 +153,6 @@ def _strip_thinking(text: str) -> str:
     return text
 
 
-def load_config(args: argparse.Namespace | None = None, config_path: str | None = None) -> dict:
-    """Load config from micron.yaml with env var overrides."""
-    if config_path is None:
-        candidates = [
-            Path("micron.yaml"),
-            Path(__file__).parent.parent / "micron.yaml",
-        ]
-        for c in candidates:
-            if c.exists():
-                config_path = str(c)
-                break
-
-    config = {}
-    if config_path:
-        with open(config_path) as f:
-            config = yaml.safe_load(f) or {}
-
-    defaults = {
-        "context_dir": "context",
-        "temperature": 0.1,
-        "max_tokens": 2048,
-        "max_tool_iterations": 8,
-        "firecrawl_url": "http://localhost:3002",
-        "workdir": "/home/matt",
-    }
-    for k, v in defaults.items():
-        config.setdefault(k, v)
-
-    # Resolve provider config
-    default_provider = config.get("default_provider", "llamacpp")
-    providers = config.get("providers", {})
-    selected = (args.provider if args else None) or os.environ.get("MICRON_PROVIDER") or default_provider
-
-    if selected not in providers:
-        print(f"[WARN] Unknown provider '{selected}', falling back to {default_provider}", file=sys.stderr)
-        selected = default_provider
-
-    prov_cfg = providers.get(selected, {})
-    config["provider"] = selected
-    config["model"] = (args.model if args else None) or prov_cfg.get("model")
-    config["api_key"] = prov_cfg.get("api_key")
-    config["base_url"] = prov_cfg.get("base_url")
-    config.setdefault("n_threads", prov_cfg.get("n_threads", 8))
-    config.setdefault("n_gpu_layers", prov_cfg.get("n_gpu_layers", 0))
-    config.setdefault("n_ctx", prov_cfg.get("n_ctx", 8192))
-
-    # CLI env var overrides config file
-    if "FIRECRAWL_URL" not in os.environ:
-        os.environ["FIRECRAWL_URL"] = config["firecrawl_url"]
-    if "MICRON_WORKDIR" not in os.environ:
-        os.environ["MICRON_WORKDIR"] = config["workdir"]
-    if "MICRON_CONTEXT_DIR" not in os.environ:
-        # Resolve context_dir relative to the project root
-        project_root = Path(__file__).parent.parent
-        os.environ["MICRON_CONTEXT_DIR"] = str(project_root / config["context_dir"])
-    if "MICRON_PROVIDER" not in os.environ:
-        os.environ["MICRON_PROVIDER"] = selected
-
-    return config
-
-
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="micron — lightweight AI agent")
     parser.add_argument("query", nargs="*", help="Query to run (omit to launch TUI)")
@@ -219,25 +173,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main():
     args = parse_args()
-    config = load_config(args)
-
-    # CLI overrides for non-provider settings
-    if args.temperature:
-        config["temperature"] = args.temperature
-    if args.max_tokens:
-        config["max_tokens"] = args.max_tokens
+    config = Config()  # single loader — reads micron.yaml + env + defaults
 
     # Ensure context directories exist
-    context_dir = Path(config["context_dir"])
+    context_dir = Path(config.get("context_dir", "context"))
     for sub in ("skills", "memory", "knowledge", "persona"):
         (context_dir / sub).mkdir(exist_ok=True)
 
     # Create agent and session logger
-    agent, logger, session_id = create_agent_and_logger(config)
+    agent, logger, session_id = create_agent_and_logger(
+        config,
+        provider=args.provider,
+        model=args.model,
+        temperature=args.temperature,
+        max_tokens=args.max_tokens,
+    )
     print(f"Session: {session_id}")
     if args.server:
-        host = args.host or config.get("host", "[IP_ADDRESS]")
-        port = args.port or config.get("port", 8000)
+        rt = config.resolve_runtime()
+        host = args.host or rt.get("host", "[IP_ADDRESS]")
+        port = args.port or rt.get("port", 8000)
         from micron.server import run_server
         run_server(agent, host=host, port=port)
         return
@@ -274,7 +229,13 @@ def main():
     if query is None:
         from micron.tui.app import MicronTUI
         def factory():
-            return create_agent_and_logger(config)
+            return create_agent_and_logger(
+                config,
+                provider=args.provider,
+                model=args.model,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+            )
         MicronTUI(factory).run()
     else:
         run_query(agent, logger, query, args.no_stream)

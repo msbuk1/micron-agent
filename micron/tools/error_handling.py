@@ -2,24 +2,6 @@
 
 Provides consistent error handling across all built-in tools.
 """
-from typing import Any
-
-
-class ToolError(Exception):
-    """Base exception for tool-related errors."""
-    
-    def __init__(self, message: str, tool_name: str = "unknown"):
-        self.tool_name = tool_name
-        self.message = message
-        super().__init__(f"[{tool_name}] {message}")
-    
-    def to_dict(self) -> dict:
-        """Convert error to dictionary format."""
-        return {
-            "type": "tool_error",
-            "name": self.tool_name,
-            "error": self.message
-        }
 
 
 def handle_error(tool_name: str, error: Exception, context: str = "") -> str:
@@ -36,10 +18,7 @@ def handle_error(tool_name: str, error: Exception, context: str = "") -> str:
     error_type = type(error).__name__
     
     # Format error message based on error type
-    if isinstance(error, ToolError):
-        return f"Error: {error.message}"
-    
-    elif "FileNotFoundError" in error_type or "FileNotFound" in str(error):
+    if "FileNotFoundError" in error_type or "FileNotFound" in str(error):
         return f"Error: File not found - {context or 'the specified file does not exist'}"
     
     elif "PermissionError" in error_type or "Permission" in str(error):
@@ -75,40 +54,3 @@ def success(message: str) -> str:
         Formatted success message
     """
     return f"Success: {message}"
-
-
-def format_tool_result(result: Any, tool_name: str = "unknown") -> dict:
-    """Format tool result in a consistent way.
-    
-    Args:
-        result: The result to format
-        tool_name: Name of the tool
-        
-    Returns:
-        Dictionary with type and content
-    """
-    if isinstance(result, str):
-        return {
-            "type": "text",
-            "content": result
-        }
-    elif isinstance(result, list):
-        return {
-            "type": "list",
-            "items": result
-        }
-    elif isinstance(result, dict) and "type" in result:
-        return result
-    else:
-        return {
-            "type": "text",
-            "content": str(result)
-        }
-
-
-# Example usage in a tool:
-# try:
-#     result = some_operation()
-#     return format_tool_result(result, "my_tool")
-# except Exception as e:
-#     return handle_error("my_tool", e, "while processing file")

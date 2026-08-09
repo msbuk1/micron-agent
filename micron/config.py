@@ -48,9 +48,13 @@ class Config:
         
         # Load from all sources
         self._config = self._load_all()
-        
+
         # Validate
         self._validate()
+
+        # Populate env vars consumed by tools and other modules.
+        # Replaces the side-effect that __main__.load_config used to own.
+        self._apply_env_vars()
     
     def _load_all(self) -> dict:
         """Load configuration from all sources."""
@@ -151,7 +155,7 @@ class Config:
                 value = os.environ[full_var]
                 
                 # Convert numeric values
-                if config_key in ["temperature", "max_tokens", "max_tool_iterations", "port"]:
+                if config_key in ["max_tokens", "max_tool_iterations", "port"]:
                     try:
                         value = int(value)
                     except ValueError:
@@ -203,6 +207,63 @@ class Config:
         
         if self._config["default_provider"] not in self._config["providers"]:
             print(f"[config] Warning: Default provider '{self._config['default_provider']}' not configured")
+
+    def _apply_env_vars(self) -> None:
+        """Set env vars consumed by tools and other modules.
+
+        Only sets a var if it isn't already in the environment, so explicit
+        shell exports always win.
+        """
+        workdir = self.get("workdir")
+        if workdir and "MICRON_WORKDIR" not in os.environ:
+            os.environ["MICRON_WORKDIR"] = workdir
+
+        context_dir = self.get("context_dir")
+        if context_dir:
+            ctx_path = Path(context_dir)
+            if not ctx_path.is_absolute():
+                ctx_path = Path(__file__).parent.parent / context_dir
+            if "MICRON_CONTEXT_DIR" not in os.environ:
+                os.environ["MICRON_CONTEXT_DIR"] = str(ctx_path)
+
+        provider = self.get("default_provider")
+        if provider and "MICRON_PROVIDER" not in os.environ:
+            os.environ["MICRON_PROVIDER"] = provider
+
+        firecrawl = self.get("firecrawl_url")
+        if firecrawl and "FIRECRAWL_URL" not in os.environ:
+            os.environ["FIRECRAWL_URL"] = firecrawl
+
+    def resolve_runtime(
+        self,
+        provider_override: Optional[str] = None,
+        model_override: Optional[str] = None,
+    ) -> dict:
+        """Return a flat dict with all settings needed to build an agent + backend.
+
+        Hoists the selected provider's config (model, api_key, base_url,
+        n_threads, …) to the top level so ``create_agent_and_logger`` can
+        read everything without knowing about the providers dict.
+        """
+        provider = provider_override or self.get("default_provider")
+        prov_cfg = self.get_provider_config(provider)
+        return {
+            "context_dir": self.get("context_dir", "context"),
+            "provider": provider,
+            "model": model_override or prov_cfg.get("model"),
+            "api_key": prov_cfg.get("api_key"),
+            "base_url": prov_cfg.get("base_url"),
+            "temperature": self.get("temperature", 0.1),
+            "max_tokens": self.get("max_tokens", 10000),
+            "max_tool_iterations": self.get("max_tool_iterations", 10),
+            "n_threads": prov_cfg.get("n_threads", 8),
+            "n_gpu_layers": prov_cfg.get("n_gpu_layers", 0),
+            "n_ctx": prov_cfg.get("n_ctx", 8192),
+            "workdir": self.get("workdir"),
+            "firecrawl_url": self.get("firecrawl_url"),
+            "host": self.get("host"),
+            "port": self.get("port"),
+        }
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value by key.

@@ -117,38 +117,21 @@ Tool results will be provided in the next message."""
         return "\n".join(lines)
 
     def _load_tools(self) -> str:
-        """Generate tool description list. Uses the ToolRegistry when provided
-        (source of truth after the Skills/Tools split); otherwise falls back to
-        loading skills that declare a `module` (legacy path)."""
-        # Preferred: read from the ToolRegistry.
-        if self.tools is not None:
-            tools = self.tools.list()
-            if not tools:
-                return "(no tools available)"
-            lines = []
-            for t in tools:
-                marker = " [WRITE]" if t.get("write") else ""
-                props = (t.get("parameters") or {}).get("properties", {})
-                if props:
-                    param_desc = ", ".join(f"{k}: {v.get('type', 'any')}" for k, v in props.items())
-                else:
-                    param_desc = "no parameters"
-                lines.append(f"- {t['name']}{marker}: {t['description']} ({param_desc})")
-            return "\n".join(lines)
-
-        # Legacy fallback: skills with a module.
-        tool_skills = [s for s in self.skills.all() if s.module]
-        if not tool_skills:
+        """Generate tool description list from the ToolRegistry."""
+        if self.tools is None:
+            return "(no tools available)"
+        tools = self.tools.list()
+        if not tools:
             return "(no tools available)"
         lines = []
-        for skill in tool_skills:
-            marker = " [WRITE]" if skill.write else ""
-            params = skill.parameters.get("properties", {})
-            if params:
-                param_desc = ", ".join(f"{k}: {v.get('type', 'any')}" for k, v in params.items())
+        for t in tools:
+            marker = " [WRITE]" if t.get("write") else ""
+            props = (t.get("parameters") or {}).get("properties", {})
+            if props:
+                param_desc = ", ".join(f"{k}: {v.get('type', 'any')}" for k, v in props.items())
             else:
                 param_desc = "no parameters"
-            lines.append(f"- {skill.name}{marker}: {skill.description} ({param_desc})")
+            lines.append(f"- {t['name']}{marker}: {t['description']} ({param_desc})")
         return "\n".join(lines)
 
     def _load_knowledge(self, query: str = "") -> str:

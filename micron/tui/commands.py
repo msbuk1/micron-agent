@@ -167,7 +167,7 @@ class CommandDispatcher:
         return "\n".join(lines)
 
     def _providers(self) -> str:
-        from micron.__main__ import load_config
+        from micron.config import load_config
         cfg = load_config()
         providers = cfg.get("providers", {})
         default = cfg.get("default_provider", "llamacpp")

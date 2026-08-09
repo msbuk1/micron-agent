@@ -1,6 +1,5 @@
 """Tool registry — manages tool registration and execution."""
 import inspect
-import json
 from dataclasses import dataclass
 from typing import Any, Callable
 

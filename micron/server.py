@@ -12,13 +12,13 @@ from typing import AsyncGenerator
 from fastapi import FastAPI, File, Request, UploadFile, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import time
 from collections import deque
 
 from micron.agent import create_agent, AgentConfig, MicronAgent
 from micron.llm import create_backend
+from micron.config import load_config
 
 # Rate limiting storage
 chat_request_times = deque(maxlen=1000)  # Store last 1000 request timestamps
@@ -82,8 +82,6 @@ def check_rate_limit() -> bool:
     return False
 
 
-from micron.config import load_config
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize agent on startup if not already set (e.g. via run_server)."""
@@ -97,27 +95,30 @@ async def lifespan(app: FastAPI):
     
     # Load configuration
     config = load_config()
-    
+    rt = config.resolve_runtime()
+
     # Create agent
     agent = create_agent(
-        context_dir=config.get("context_dir"),
-        temperature=config.get("temperature", 0.1),
-        max_tokens=config.get("max_tokens", 2048),
+        context_dir=rt["context_dir"],
+        temperature=rt["temperature"],
+        max_tokens=rt["max_tokens"],
+        max_tool_iterations=rt["max_tool_iterations"],
+        provider=rt["provider"],
+        model=rt["model"],
     )
-    
+
     # Create and attach LLM backend
     try:
-        provider_config = config.get_provider_config()
         backend = create_backend(
-            provider=config.get("default_provider"),
-            model=provider_config.get("model"),
-            n_threads=provider_config.get("n_threads", 8),
-            n_gpu_layers=provider_config.get("n_gpu_layers", 0),
-            api_key=provider_config.get("api_key"),
-            base_url=provider_config.get("base_url"),
+            provider=rt["provider"],
+            model=rt["model"],
+            n_threads=rt["n_threads"],
+            n_gpu_layers=rt["n_gpu_layers"],
+            api_key=rt.get("api_key"),
+            base_url=rt.get("base_url"),
         )
         agent.llm = backend
-        print(f"[micron] Loaded {config.get('default_provider')} backend with model: {provider_config.get('model')}")
+        print(f"[micron] Loaded {rt['provider']} backend with model: {rt['model']}")
     except Exception as e:
         print(f"[micron] Warning: Could not load LLM backend: {e}")
         print("[micron] Server will run without LLM (tools/memory only)")
@@ -141,9 +142,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-STATIC_DIR = Path(__file__).parent / "static"
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 class ChatRequest(BaseModel):
