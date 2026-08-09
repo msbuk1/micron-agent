@@ -214,7 +214,6 @@ class MicronTUI(App):
     def _finalize_turn(self) -> None:
         if self._pending_writes:
             writes = self._pending_writes
-            self._pending_writes = None
             self.push_screen(ConfirmationScreen(writes), callback=self._on_confirm)
             return
 
@@ -233,6 +232,7 @@ class MicronTUI(App):
         chat_log = self.query_one("#chat-log", ChatLog)
         if not confirmed:
             chat_log.add_system("Write operation cancelled by user.")
+            self._pending_writes = None
             self.query_one("#input-bar", InputBar).set_pending(False)
             self._update_status("ready")
             return
@@ -246,6 +246,7 @@ class MicronTUI(App):
             )
             for i, w in enumerate(self._pending_writes or [])
         ]
+        self._pending_writes = None
         if calls:
             runner = run_agent if self._thread_workers else run_agent_async
             self.run_worker(
