@@ -26,7 +26,13 @@ _workdir_env_cache = None
 
 def _get_workdir() -> Path:
     global _workdir_cache, _workdir_env_cache
-    env_val = os.getenv("MICRON_WORKDIR", os.getcwd())
+    env_val = os.getenv("MICRON_WORKDIR")
+    if not env_val:
+        # Fall back to Config-resolved workdir (reads micron.yaml) rather
+        # than os.getcwd(), so tools work without a Config having been
+        # constructed elsewhere in the process.
+        from micron.config import Config
+        env_val = Config().get("workdir") or os.getcwd()
     # Invalidate cache if env var changes
     if _workdir_env_cache != env_val:
         _workdir_cache = None
