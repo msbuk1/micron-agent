@@ -200,3 +200,129 @@ class TestSessionLogging:
             assert resp.status_code == 200
         finally:
             srv.session_logger = original
+
+
+class TestSessionEndpoints:
+    """Listing, reading, and resuming conversations by session ID."""
+
+    async def test_list_sessions(self, client, tmp_path, monkeypatch):
+        sessions_dir = tmp_path / "sessions"
+        logger = SessionLogger(sessions_dir)
+        session_id = logger.start_session()
+        logger.log_turn("user", "first message")
+        logger.log_turn("assistant", "first reply")
+        logger.end_session()
+
+        original_logger = srv.session_logger
+        srv.session_logger = logger
+        try:
+            resp = await client.get("/sessions")
+            assert resp.status_code == 200
+            sessions = resp.json()["sessions"]
+            ids = [s["id"] for s in sessions]
+            assert session_id in ids
+        finally:
+            srv.session_logger = original_logger
+
+    async def test_read_session(self, client, tmp_path, monkeypatch):
+        sessions_dir = tmp_path / "sessions"
+        logger = SessionLogger(sessions_dir)
+        session_id = logger.start_session()
+        logger.log_turn("user", "hello")
+        logger.log_turn("assistant", "world")
+        logger.end_session()
+
+        original_logger = srv.session_logger
+        srv.session_logger = logger
+        try:
+            resp = await client.get(f"/session/{session_id}")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["id"] == session_id
+            turns = data["turns"]
+            assert len(turns) == 2
+            assert turns[0]["role"] == "user"
+            assert turns[0]["content"] == "hello"
+            assert turns[1]["role"] == "assistant"
+            assert turns[1]["content"] == "world"
+        finally:
+            srv.session_logger = original_logger
+
+    async def test_read_session_not_found(self, client, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        logger = SessionLogger(sessions_dir)
+        original_logger = srv.session_logger
+        srv.session_logger = logger
+        try:
+            resp = await client.get("/session/does_not_exist")
+            assert resp.status_code == 404
+        finally:
+            srv.session_logger = original_logger
+
+    async def test_resume_session(self, client, tmp_path, monkeypatch):
+        sessions_dir = tmp_path / "sessions"
+        logger = SessionLogger(sessions_dir)
+        session_id = logger.start_session()
+        logger.log_turn("user", "earlier question")
+        logger.log_turn("assistant", "earlier answer")
+
+        original_logger = srv.session_logger
+        original_run = srv.agent.run
+
+        def fake_run(message, history=None, confirm=False, pending_tool_calls=None, **_):
+            yield {"type": "text", "content": "follow-up-reply"}
+            yield {"type": "done"}
+
+        srv.session_logger = logger
+        monkeypatch.setattr(srv.agent, "run", fake_run)
+        try:
+            resp = await client.post(
+                f"/session/{session_id}/resume",
+                json={"message": "follow-up question", "stream": False},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["response"] == "follow-up-reply"
+            # Loaded history from disk should be returned alongside the reply.
+            history = data["history"]
+            assert history[0] == {"role": "user", "content": "earlier question"}
+            assert history[1] == {"role": "assistant", "content": "earlier answer"}
+        finally:
+            srv.session_logger = original_logger
+            srv.agent.run = original_run
+            logger.end_session()
+
+    async def test_resume_returns_history_only(self, client, tmp_path):
+        """Calling /resume with no message just returns the loaded history."""
+        sessions_dir = tmp_path / "sessions"
+        logger = SessionLogger(sessions_dir)
+        session_id = logger.start_session()
+        logger.log_turn("user", "hi")
+        logger.log_turn("assistant", "hello!")
+
+        original_logger = srv.session_logger
+        srv.session_logger = logger
+        try:
+            resp = await client.post(f"/session/{session_id}/resume", json={})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["id"] == session_id
+            assert data["history"][0] == {"role": "user", "content": "hi"}
+            assert data["history"][1] == {"role": "assistant", "content": "hello!"}
+        finally:
+            srv.session_logger = original_logger
+            logger.end_session()
+
+    async def test_resume_nonexistent_session(self, client, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        logger = SessionLogger(sessions_dir)
+        original_logger = srv.session_logger
+        srv.session_logger = logger
+        try:
+            resp = await client.post(
+                "/session/does_not_exist/resume",
+                json={"message": "hi", "stream": False},
+            )
+            assert resp.status_code == 404
+        finally:
+            srv.session_logger = original_logger

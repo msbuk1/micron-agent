@@ -200,6 +200,11 @@ class UndoRequest(BaseModel):
     path: str
 
 
+class ResumeRequest(BaseModel):
+    message: str | None = None
+    stream: bool = False
+
+
 def _recovery_result(result: str, field: str, value: str):
     if result.startswith("Error"):
         return {"error": result}
@@ -318,6 +323,72 @@ async def chat(request: ChatRequest, req: Request = None):
             return {"response": result.text, "events": []}
         except Exception as e:
             return {"error": str(e), "response": ""}
+
+
+@app.get("/sessions")
+async def list_sessions_endpoint(n: int = 20):
+    """List recent sessions, newest first."""
+    if session_logger is None:
+        return {"sessions": []}
+    sessions = session_logger.list_sessions(n=n)
+    return {"sessions": sessions}
+
+
+@app.get("/session/{session_id}")
+async def read_session_endpoint(session_id: str):
+    """Read the turns of a single session."""
+    if session_logger is None:
+        raise HTTPException(status_code=503, detail="Session logging not configured")
+    turns = session_logger.read_session(session_id)
+    # read_session returns [] for both "missing file" and "empty session".
+    # Distinguish the two so clients can show a clear 404 vs an empty session.
+    session_file = session_logger.sessions_dir / f"{session_id}.jsonl"
+    if not session_file.exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"id": session_id, "turns": turns}
+
+
+@app.post("/session/{session_id}/resume")
+async def resume_session_endpoint(session_id: str, request: ResumeRequest):
+    """Resume a previous conversation by session ID.
+
+    Loads the conversation history and either returns it (when no message
+    is supplied) or continues the conversation with a new user message.
+    """
+    if session_logger is None:
+        raise HTTPException(status_code=503, detail="Session logging not configured")
+
+    session_file = session_logger.sessions_dir / f"{session_id}.jsonl"
+    if not session_file.exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    history = session_logger.get_session_context(session_id)
+
+    if not request.message:
+        return {"id": session_id, "history": history}
+
+    if agent.llm is None:
+        return {
+            "error": "LLM backend not configured",
+            "response": "Server is running without LLM. Configure via MICRON_PROVIDER and MICRON_MODEL env vars.",
+        }
+
+    session_logger.log_turn("user", request.message)
+
+    if request.stream:
+        return StreamingResponse(
+            generate_sse(request.message, history),
+            media_type="text/event-stream",
+        )
+
+    from micron.events import process_events
+    try:
+        result = process_events(agent.run(request.message, history=history))
+        if result.text:
+            session_logger.log_turn("assistant", result.text)
+        return {"response": result.text, "history": history}
+    except Exception as e:
+        return {"error": str(e), "response": ""}
 
 
 @app.get("/health")
