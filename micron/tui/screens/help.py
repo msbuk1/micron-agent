@@ -28,6 +28,7 @@ Type in the input bar:
 - `/tools` — Show available tools
 - `/model` — Show current model info
 - `/providers` — List configured providers
+- `/models` — List models / switch provider+model
 - `/unload` — Unload model from RAM
 - `/reload` — Reload skills from disk
 - `/sessions` — Refresh session list

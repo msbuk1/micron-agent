@@ -65,6 +65,8 @@ class MicronAgent:
         # Default to text-tool format for local models, off for API backends.
         provider = getattr(config, "provider", "llamacpp").lower()
         self.use_text_tool_format = config.llm_kwargs.get("use_text_tool_format", provider in ("llamacpp", "ollama"))
+        self.provider = provider
+        self.model = config.model
 
         self.prompt_builder = PromptBuilder(
             self.context_dir, self.memory, self.skills,
@@ -480,6 +482,51 @@ class MicronAgent:
         """Unload the LLM model from memory."""
         if hasattr(self.llm, 'unload'):
             self.llm.unload()
+
+    def set_backend(self, provider: str, model: str, **kwargs) -> None:
+        """Switch to a new LLM provider/model at runtime.
+
+        Unloads the old backend (if it supports ``unload()``), creates a
+        new one via :func:`micron.llm.create_backend`, and updates the
+        agent's ``provider``/``model``/``llm`` fields plus the
+        ``use_text_tool_format`` flag and ``prompt_builder`` so the next
+        ``run()`` uses the new backend.
+
+        Raises ``ValueError`` if the provider is unknown, or the backend
+        constructor / ``is_available()`` call fails — the agent is left
+        on its previous backend in that case.
+        """
+        provider = provider.lower()
+        # Build & validate new backend before touching any state, so a
+        # failed swap doesn't leave the agent with a half-changed config.
+        new_llm = create_backend(provider, model, **kwargs)
+        if not new_llm.is_available():
+            raise RuntimeError(
+                f"{provider} backend for {model!r} is not available"
+            )
+
+        # Unload old backend (best-effort; some backends have no unload)
+        if self.llm is not None and hasattr(self.llm, "unload"):
+            try:
+                self.llm.unload()
+            except Exception:
+                pass
+
+        self.llm = new_llm
+        self.provider = provider
+        self.model = model
+        self.config.provider = provider
+        self.config.model = model
+        # Recompute the text-tool flag (mirrors __init__ logic).
+        self.use_text_tool_format = self.config.llm_kwargs.get(
+            "use_text_tool_format", provider in ("llamacpp", "ollama")
+        )
+        # PromptBuilder captures use_text_tool_format at construction.
+        self.prompt_builder = PromptBuilder(
+            self.context_dir, self.memory, self.skills,
+            use_text_tool_format=self.use_text_tool_format,
+            tools=self.tools,
+        )
 
 
 def create_agent(**kwargs) -> MicronAgent:

@@ -48,9 +48,11 @@ class CommandDispatcher:
         self.logger = logger
         self.config = config
         self.registry = SlashCommandRegistry()
+        self._last_models: list[tuple[str, str]] = []
         self._register_readonly_commands()
         self._register_session_commands()
         self._register_file_commands()
+        self._register_model_commands()
 
     def _register_readonly_commands(self) -> None:
         """Register /help, /clear, /mem, /tools, /model, /providers."""
@@ -191,6 +193,14 @@ class CommandDispatcher:
         def _tree(args: list[str]) -> SlashCommandResult:
             return SlashCommandResult(text=self._tree(args))
 
+    def _register_model_commands(self) -> None:
+        """Register /models: list models and switch active backend."""
+        reg = self.registry
+
+        @reg.register("models", help_text="List models / switch provider+model")
+        def _models(args: list[str]) -> SlashCommandResult:
+            return self._models(args)
+
     def handle(self, cmd: str) -> CommandResult:
         result = self.registry.dispatch(cmd)
         return CommandResult(
@@ -278,3 +288,104 @@ class CommandDispatcher:
         for s in procedures:
             lines.append(f"  {s.name:30s} {s.description[:60]}")
         return "\n".join(lines)
+
+    # ── /models ──────────────────────────────────────────────────────────
+
+    def _all_model_entries(self) -> list[tuple[str, str]]:
+        """Read every configured (provider, model) pair from micron.yaml.
+
+        Each provider config may carry a ``models: [list]`` for multi-model
+        support; otherwise the single ``model`` field is used. Returned in
+        the order the providers appear in the config.
+        """
+        from micron.config import load_config
+        cfg = load_config()
+        providers = cfg.get("providers", {}) if cfg else {}
+        entries: list[tuple[str, str]] = []
+        for prov_name, prov_cfg in providers.items():
+            models = prov_cfg.get("models")
+            if isinstance(models, list) and models:
+                entries.extend((prov_name, m) for m in models)
+            elif prov_cfg.get("model"):
+                entries.append((prov_name, prov_cfg["model"]))
+        return entries
+
+    def _format_model_list(self, entries: list[tuple[str, str]]) -> str:
+        active = (self.agent.provider, self.agent.model)
+        lines = ["Available models:"]
+        if not entries:
+            lines.append("  (none configured)")
+        for prov, model in entries:
+            marker = "  ← active" if (prov, model) == active else ""
+            lines.append(f"  {prov:<11} {model}{marker}")
+        lines.append("")
+        lines.append("Use: /models <provider> [<model>]")
+        return "\n".join(lines)
+
+    def _models(self, args: list[str]) -> SlashCommandResult:
+        entries = self._all_model_entries()
+
+        # No args → list everything, remember for numeric selection.
+        if not args:
+            self._last_models = entries
+            return SlashCommandResult(text=self._format_model_list(entries))
+
+        first = args[0]
+
+        # Numeric selection → pick from the last list.
+        if first.isdigit():
+            if not self._last_models:
+                return SlashCommandResult(
+                    text="No model list yet — run /models first."
+                )
+            idx = int(first) - 1
+            if idx < 0 or idx >= len(self._last_models):
+                return SlashCommandResult(
+                    text=f"Index {first} out of range (1..{len(self._last_models)})."
+                )
+            prov, model = self._last_models[idx]
+            return self._switch_model(prov, model)
+
+        # Provider-only → filter list to that provider.
+        if len(args) == 1:
+            provider = first
+            provider_entries = [(p, m) for (p, m) in entries if p == provider]
+            if not provider_entries:
+                if provider not in {p for (p, _) in entries}:
+                    providers = sorted({p for (p, _) in entries})
+                    return SlashCommandResult(
+                        text=f"Unknown provider: {provider}. Known: {', '.join(providers)}"
+                    )
+                return SlashCommandResult(text=f"No models for {provider}.")
+            self._last_models = provider_entries
+            return SlashCommandResult(text=self._format_model_list(provider_entries))
+
+        # Provider + model → switch.
+        provider, model = first, args[1]
+        return self._switch_model(provider, model)
+
+    def _switch_model(self, provider: str, model: str) -> SlashCommandResult:
+        from micron.config import load_config
+        cfg = load_config()
+        prov_cfg = (cfg.get("providers", {}) or {}).get(provider, {})
+        if not prov_cfg:
+            return SlashCommandResult(text=f"Unknown provider: {provider}.")
+
+        # Pass through all provider config keys except the model itself
+        # (and the optional `models` list) as backend kwargs.
+        kwargs = {
+            k: v for k, v in prov_cfg.items()
+            if k not in ("model", "models")
+        }
+
+        try:
+            self.agent.set_backend(provider, model, **kwargs)
+        except Exception as e:
+            return SlashCommandResult(
+                text=f"Failed to switch to {provider}/{model}: {e}"
+            )
+
+        return SlashCommandResult(
+            text=f"Switched to {provider}/{model}.\n"
+                 f"Use /model to confirm."
+        )

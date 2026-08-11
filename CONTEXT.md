@@ -12,7 +12,7 @@ redefined here.
 
 | Name | Lives in | Interface (what callers must know) | Notes |
 |---|---|---|---|
-| `MicronAgent` | `micron/agent.py` | `run(message, history, stream, confirm, pending_tool_calls) -> Iterator[Event]` | Composes memory, skills, tools, llm, prompt. Yields typed events; event names are the `EventType` constants in `micron/events.py`. |
+| `MicronAgent` | `micron/agent.py` | `run(message, history, stream, confirm, pending_tool_calls) -> Iterator[Event]`; `set_backend(provider, model, **kwargs)`; `unload_model()` | Composes memory, skills, tools, llm, prompt. Yields typed events; event names are the `EventType` constants in `micron/events.py`. `set_backend` swaps the active LLM at runtime via `create_backend`, updates `provider`/`model`/`use_text_tool_format` and rebuilds `prompt_builder`. |
 | `Memory` | `micron/memory.py` | `add / search / get / delete / tag / list / __len__` | JSONL file at `<context>/memory/memories.jsonl`. Sole document store is `TFIDFIndex`; time-decay + importance boost applied in `Memory._score`. |
 | `TFIDFIndex` | `micron/search.py` | `add / score / search / docs / get_doc / clear` | Pure-Python TF-IDF. Used by `Memory` and by the `search_knowledge` tool via the shared `search.py`. |
 | `ToolDescriptor` | `micron/tools/decorator.py` | `name, description, func, parameters, write` | One descriptor per `@tool`-decorated function. The decorator's global `_registry` is populated on import. |
