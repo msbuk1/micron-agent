@@ -44,8 +44,10 @@ The agent yields events as plain dicts. The canonical names are
 - `error` — fatal agent error.
 - `done` — stream finished.
 
-The web UI's inline JavaScript implements a second handler for the same
-event types — the duplication is candidate #2.
+The web UI (`micron/static/app.js`) renders these via an `EventRenderer`
+class — one method per event type — dispatched by the SSE consumer. The
+dispatch shape mirrors `process_events` so both halves of the system stay
+in lock-step when a new event type lands.
 
 ## Tools
 
@@ -88,8 +90,9 @@ Two flavours:
 
 ## Out-of-band notes
 
-- `micron/static/` has been removed — the server serves the inline
-  `HTML_PAGE` from `server.py`.
+- The web UI lives in `micron/static/{index.html,style.css,app.js}`
+  served via FastAPI's `StaticFiles` mounted at `/`. `server.py` no
+  longer carries any HTML/JS/CSS markup.
 - `error_handling.py` defines `handle_error`, `success` — but
   `agent._friendly_error` re-implements the same string-shape coercion.
   One seam, two implementations. (`ToolError` and `format_tool_result`

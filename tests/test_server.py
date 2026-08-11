@@ -326,3 +326,40 @@ class TestSessionEndpoints:
             assert resp.status_code == 404
         finally:
             srv.session_logger = original_logger
+
+
+class TestWebUI:
+    """Static UI served from micron/static/ — verifies the seam, not the markup."""
+
+    async def test_get_root_serves_index_html(self, client):
+        resp = await client.get("/")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "<title>micron</title>" in body
+        assert "/style.css" in body
+        assert "/app.js" in body
+
+    async def test_get_style_css(self, client):
+        resp = await client.get("/style.css")
+        assert resp.status_code == 200
+        assert ":root" in resp.text
+        assert "--bg" in resp.text
+
+    async def test_get_app_js_has_event_renderer(self, client):
+        resp = await client.get("/app.js")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "class EventRenderer" in body
+        for method in ("text", "thinking", "tool_start", "tool_result",
+                       "tool_error", "confirmation_required", "error", "done"):
+            assert method in body, f"EventRenderer missing {method} handler"
+
+    async def test_index_has_no_inline_styles_or_scripts(self, client):
+        """Static seam — index.html is markup only, no inline CSS/JS."""
+        resp = await client.get("/")
+        assert "<style" not in resp.text
+        import re
+        # Allow external script references like `<script src="..."></script>`,
+        # but no inline `<script>...</script>` blocks.
+        inline_scripts = re.findall(r"<script(?![^>]*\bsrc=)[^>]*>", resp.text)
+        assert inline_scripts == [], f"Inline scripts found: {inline_scripts}"
