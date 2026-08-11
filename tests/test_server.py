@@ -4,6 +4,7 @@ Uses httpx.AsyncClient with ASGITransport for async testing.
 """
 import json
 import os
+import tempfile
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -17,6 +18,7 @@ import micron.server as srv
 from micron.server import app
 from micron.agent import create_agent
 from micron.llm import create_backend
+from micron.sessions import SessionLogger
 
 
 @pytest.fixture(scope="module")
@@ -28,7 +30,7 @@ async def client():
 
     backend = create_backend(
         provider="lmstudio",
-        model="gemma-4-12b-it-qat",
+        model="minicpm5-1b",
         api_key="no_key",
         base_url="http://localhost:1234/v1",
     )
@@ -36,7 +38,7 @@ async def client():
     srv.agent = create_agent(
         context_dir=str(context_dir),
         provider="lmstudio",
-        model="gemma-4-12b-it-qat",
+        model="minicpm5-1b",
         temperature=0.1,
         max_tokens=2048,
         llm_kwargs={"backend": backend},
@@ -141,3 +143,60 @@ class TestSkillsEndpoint:
         resp = await client.post("/skills/reload")
         assert resp.status_code == 200
         assert len(resp.json()["tools"]) > 0
+
+
+class TestSessionLogging:
+    """Chat exchanges should append to a JSONL session file matching the CLI format."""
+
+    async def test_chat_writes_user_and_assistant_turns(self, client, tmp_path, monkeypatch):
+        sessions_dir = tmp_path / "sessions"
+        logger = SessionLogger(sessions_dir)
+        session_id = logger.start_session()
+
+        original_logger = srv.session_logger
+        original_run = srv.agent.run
+        srv.session_logger = logger
+        # Stub agent.run so we don't need a working LLM.
+        def fake_run(message, history=None, confirm=False, pending_tool_calls=None, **_):
+            yield {"type": "text", "content": "stubbed-reply"}
+            yield {"type": "done"}
+        monkeypatch.setattr(srv.agent, "run", fake_run)
+
+        try:
+            resp = await client.post(
+                "/chat",
+                json={"message": "hello server", "stream": False},
+            )
+            assert resp.status_code == 200
+        finally:
+            srv.session_logger = original_logger
+            srv.agent.run = original_run
+            logger.end_session()
+
+        session_file = sessions_dir / f"{session_id}.jsonl"
+        assert session_file.exists()
+        lines = [json.loads(line) for line in session_file.read_text().splitlines()]
+        # First line is the CLI-style header.
+        assert lines[0]["type"] == "session_start"
+        assert lines[0]["id"] == session_id
+        # User turn was logged before processing.
+        user_turn = next(e for e in lines if e["type"] == "turn" and e["role"] == "user")
+        assert user_turn["content"] == "hello server"
+        # Assistant turn was logged after the run completed.
+        assistant_turns = [e for e in lines if e["type"] == "turn" and e["role"] == "assistant"]
+        assert any(e["content"] == "stubbed-reply" for e in assistant_turns)
+        # session_end marker is the final line.
+        assert lines[-1]["type"] == "session_end"
+
+    async def test_chat_logging_is_optional(self, client, tmp_path):
+        """Server should still respond when no session logger is wired up."""
+        original = srv.session_logger
+        srv.session_logger = None
+        try:
+            resp = await client.post(
+                "/chat",
+                json={"message": "hello", "stream": False},
+            )
+            assert resp.status_code == 200
+        finally:
+            srv.session_logger = original
