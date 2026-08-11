@@ -29,6 +29,8 @@ redefined here.
 | `coerce_param` | `micron/text_tool_parser.py` | `coerce_param(raw, prop_schema) -> Any` | Module-level. Converts a string to the JSON-schema type of the param. Falls back to the raw string on parse failure. |
 | `parse_streaming_tool_calls` | `micron/llm.py` | `parse_streaming_tool_calls(delta_iter) -> Iterator[LLMResponse]` | Module-level. Buffers tool-call deltas from any LLM backend stream, emits completed `tool_call` and `text` events. Replaces three duplicate buffering patterns in `LlamaCppBackend`, `OllamaBackend`, and `OpenAICompatibleBackend`. |
 | `CommandPolicy` | `micron/tools/command_policy.py` | `evaluate(args) -> Decision` | Pure computation. Evaluates a shell command argument list against the blocklist and flag-scan rules. Returns `Allow`, `Deny(reason)`, or `Limit(cpu, memory, procs, files)`. Tested with synthetic args, no subprocess. |
+| `SlashCommandRegistry` | `micron/slash.py` | `register / add / get / all / dispatch(query) -> SlashCommandResult / help_text` | Transport-agnostic `/command` dispatcher. Handlers take `list[str]` args, return a `SlashCommandResult` with `text` and an `extras` dict for transport-specific flags. Decorator-style and imperative register both supported. |
+| `CommandDispatcher` | `micron/tui/commands.py` | `handle(cmd) -> CommandResult` | TUI adapter wrapping `SlashCommandRegistry`. Read-only commands (`/help`, `/clear`, `/mem`, `/tools`, `/model`, `/providers`) route through the registry; the rest still through an if/elif ladder pending issues #3, #4. Translates registry `extras` into Textual `Message` fields. |
 
 ## Event vocabulary
 

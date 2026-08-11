@@ -1,7 +1,18 @@
-"""Slash command dispatcher for micron TUI."""
+"""Slash command dispatcher for micron TUI.
+
+The read-only batch (/help, /clear, /mem, /tools, /model, /providers) is
+handled by :class:`micron.slash.SlashCommandRegistry`. The remaining
+session-management and file-recovery commands still live in the
+if/elif block — they will migrate in later slices (issues #3, #4).
+
+When all commands have migrated, the if/elif block disappears (issue
+#4). The contract step.
+"""
 from __future__ import annotations
 
 from textual.message import Message
+
+from micron.slash import SlashCommandRegistry, SlashCommandResult
 
 
 class CommandResult(Message):
@@ -27,13 +38,51 @@ class CommandResult(Message):
 
 
 class CommandDispatcher:
-    """Handles /commands for the TUI."""
+    """Handles /commands for the TUI.
+
+    Read-only commands go through ``self.registry``; the rest still
+    through the if/elif ladder. Once all commands migrate, the ladder
+    disappears (issue #4).
+    """
 
     def __init__(self, app, agent, logger, config: dict):
         self.app = app
         self.agent = agent
         self.logger = logger
         self.config = config
+        self.registry = SlashCommandRegistry()
+        self._register_readonly_commands()
+
+    def _register_readonly_commands(self) -> None:
+        """Register /help, /clear, /mem, /tools, /model, /providers."""
+        reg = self.registry
+
+        @reg.register("help", aliases=("?", "h"), help_text="Show this help")
+        def _help(args: list[str]) -> SlashCommandResult:
+            return SlashCommandResult(text=self._help_text())
+
+        @reg.register("clear", help_text="Clear conversation history")
+        def _clear(args: list[str]) -> SlashCommandResult:
+            return SlashCommandResult(extras={"clear_history": True})
+
+        @reg.register("mem", help_text="List recent memories")
+        def _mem(args: list[str]) -> SlashCommandResult:
+            return SlashCommandResult(
+                text=self._memories(),
+                extras={"reload_sidebar": True},
+            )
+
+        @reg.register("tools", help_text="Show available tools")
+        def _tools(args: list[str]) -> SlashCommandResult:
+            return SlashCommandResult(text=self._tools())
+
+        @reg.register("model", help_text="Show current model info")
+        def _model(args: list[str]) -> SlashCommandResult:
+            return SlashCommandResult(text=self._model())
+
+        @reg.register("providers", help_text="List configured providers")
+        def _providers(args: list[str]) -> SlashCommandResult:
+            return SlashCommandResult(text=self._providers())
 
     def handle(self, cmd: str) -> CommandResult:
         parts = cmd[1:].strip().split()
@@ -42,26 +91,21 @@ class CommandDispatcher:
         command = parts[0].lower()
         args = parts[1:]
 
+        # Migrated commands — registry handles them.
+        if self.registry.get(command) is not None:
+            result = self.registry.dispatch(cmd)
+            return CommandResult(
+                text=result.text,
+                clear_history=result.extras.get("clear_history", False),
+                reload_sidebar=result.extras.get("reload_sidebar", False),
+                loaded_skill=result.extras.get("loaded_skill"),
+                resumed_history=result.extras.get("resumed_history"),
+                should_exit=result.extras.get("should_exit", False),
+            )
+
+        # Unmigrated commands — original if/elif ladder.
         if command in ("exit", "quit", "q"):
             return CommandResult(should_exit=True)
-
-        if command in ("help", "?", "h"):
-            return CommandResult(text=self._help_text())
-
-        if command == "clear":
-            return CommandResult(clear_history=True)
-
-        if command == "mem":
-            return CommandResult(text=self._memories(), reload_sidebar=True)
-
-        if command == "tools":
-            return CommandResult(text=self._tools())
-
-        if command == "model":
-            return CommandResult(text=self._model())
-
-        if command == "providers":
-            return CommandResult(text=self._providers())
 
         if command == "unload":
             self.agent.unload_model()
@@ -113,8 +157,9 @@ class CommandDispatcher:
 
         return CommandResult(text=f"Unknown command: {command}. Try /help")
 
-    @staticmethod
-    def _help_text() -> str:
+    def _help_text(self) -> str:
+        # Show both registry commands and the unmigrated ones, so /help
+        # still describes everything the user can type.
         return (
             "Commands:\n"
             "  /help, /?    Show this help\n"
