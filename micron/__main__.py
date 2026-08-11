@@ -236,7 +236,7 @@ def main():
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
             )
-        MicronTUI(factory).run()
+        MicronTUI(factory, config=config).run()
     else:
         run_query(agent, logger, query, args.no_stream)
 

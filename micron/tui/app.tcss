@@ -134,19 +134,25 @@ ConfirmationScreen {
 }
 
 #confirm-dialog {
-    width: 60;
+    width: auto;
+    max-width: 70;
     height: auto;
     border: thick $primary;
     padding: 1 2;
     background: $surface;
 }
 
-#confirm-dialog Static {
+#confirm-dialog #confirm-summary {
     width: 100%;
     margin-bottom: 1;
 }
 
-#confirm-dialog Horizontal {
+#confirm-dialog #confirm-remember {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+#confirm-dialog .confirm-buttons {
     width: 100%;
     height: auto;
     align: center middle;

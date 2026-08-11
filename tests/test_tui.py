@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import ClassVar
+from unittest.mock import patch
 
 import pytest
 from textual.widgets import Input
@@ -229,3 +230,61 @@ async def test_confirmation_screen_default_no(tmp_path):
         focused = app.focused
         assert focused is not None
         assert focused.id == "confirm-no"
+
+
+def test_confirmation_screen_summary(tmp_path):
+    """Summary line is compact and includes all operations."""
+    app = MicronTUI(make_factory(tmp_path), thread_workers=False)
+    writes = [
+        {"tool_name": "write_file", "args": {"path": "foo.txt"}, "call_id": "c1"},
+        {"tool_name": "edit_file", "args": {"path": "bar.py"}, "call_id": "c2"},
+        {"tool_name": "run_command", "args": {"cmd": "ls -la"}, "call_id": "c3"},
+    ]
+    screen = ConfirmationScreen(writes)
+    summary = screen._summarize()
+    assert "3 write operations" in summary
+    assert "write foo.txt" in summary
+    assert "edit bar.py" in summary
+    assert "run ls -la" in summary
+
+
+def test_resolve_confirm_defaults(tmp_path):
+    """No config, no session override -> 'ask'."""
+    app = MicronTUI(make_factory(tmp_path), thread_workers=False, config=None)
+    assert app._resolve_confirm() == "ask"
+
+
+def test_resolve_confirm_config_allow(tmp_path):
+    """Config auto_confirm_writes: allow is respected."""
+    cfg = {"auto_confirm_writes": "allow"}
+    app = MicronTUI(make_factory(tmp_path), thread_workers=False, config=cfg)
+    assert app._resolve_confirm() == "allow"
+
+
+def test_resolve_confirm_session_override(tmp_path):
+    """Session override wins over config."""
+    cfg = {"auto_confirm_writes": "deny"}
+    app = MicronTUI(make_factory(tmp_path), thread_workers=False, config=cfg)
+    app._session_confirm_writes = "allow"
+    assert app._resolve_confirm() == "allow"
+
+
+@pytest.mark.asyncio
+async def test_on_confirm_remember_sets_session(tmp_path):
+    """_on_confirm with remember=True sets session override to allow."""
+    app = MicronTUI(make_factory(tmp_path), thread_workers=False, config=None)
+    async with app.run_test():
+        app._pending_writes = [{"tool_name": "write_file", "args": {"path": "x"}, "call_id": "c1"}]
+        with patch.object(app, "_execute_confirmed_writes"):
+            app._on_confirm({"confirm": True, "remember": True})
+        assert app._session_confirm_writes == "allow"
+
+
+@pytest.mark.asyncio
+async def test_on_confirm_deny_remember_sets_deny(tmp_path):
+    """_on_confirm with confirm=False + remember sets session to deny."""
+    app = MicronTUI(make_factory(tmp_path), thread_workers=False, config=None)
+    async with app.run_test():
+        app._pending_writes = [{"tool_name": "write_file", "args": {"path": "x"}, "call_id": "c1"}]
+        app._on_confirm({"confirm": False, "remember": True})
+        assert app._session_confirm_writes == "deny"

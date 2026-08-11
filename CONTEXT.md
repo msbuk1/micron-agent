@@ -75,7 +75,8 @@ Two flavours:
 
 ## Configuration surface
 
-- `micron.yaml` — provider config, rate limits, auth, firecrawl URL.
+- `micron.yaml` — provider config, rate limits, auth, firecrawl URL,
+  write confirmation (`auto_confirm_writes`: `ask` | `allow` | `deny`).
 - `Config` (in `micron/config.py`) — **single loader**: defaults → YAML →
   env (`MICRON_*`). Exposes `get_rate_limits`, `get_resource_limits`,
   `get_authentication`, `is_valid_api_key`, `get_provider_config`,

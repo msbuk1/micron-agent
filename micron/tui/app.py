@@ -5,7 +5,7 @@ import threading
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -48,6 +48,7 @@ class MicronTUI(App):
         *,
         title: str = "micron",
         thread_workers: bool = True,
+        config: Any = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -63,6 +64,10 @@ class MicronTUI(App):
         self._current_history: list[dict] | None = None
         self._current_assistant_text: str = ""
         self._commands: CommandDispatcher | None = None
+        self._config = config
+        # Session-level override set when the user checks "Remember for this session".
+        # One of None (no override), "allow", "deny".
+        self._session_confirm_writes: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -211,8 +216,67 @@ class MicronTUI(App):
         self.query_one("#chat-log", ChatLog).add_system(f"[Error] {event.error}")
         self._finalize_turn()
 
+    def _resolve_confirm(self) -> str:
+        """Return the effective confirm-writes policy.
+
+        Priority: session override > config > default "ask".
+        """
+        if self._session_confirm_writes is not None:
+            return self._session_confirm_writes
+        if self._config is not None:
+            return self._config.get("auto_confirm_writes", "ask")
+        return "ask"
+
+    def _build_confirm_calls(self) -> list[ToolCall]:
+        return [
+            ToolCall(
+                name=w["tool_name"],
+                args=w.get("args", {}),
+                call_id=w.get("call_id", f"confirm_{i}"),
+                is_write=True,
+            )
+            for i, w in enumerate(self._pending_writes or [])
+        ]
+
+    def _execute_confirmed_writes(self) -> None:
+        calls = self._build_confirm_calls()
+        self._pending_writes = None
+        if not calls:
+            self.query_one("#input-bar", InputBar).set_pending(False)
+            self._update_status("ready")
+            return
+        runner = run_agent if self._thread_workers else run_agent_async
+        self.run_worker(
+            partial(
+                runner,
+                self,
+                self._agent,
+                self._current_query,
+                history=self._current_history,
+                confirm=True,
+                pending_tool_calls=calls,
+            ),
+            thread=self._thread_workers,
+            name="agent_confirm",
+        )
+        self._update_status("confirming writes")
+
+    def _cancel_pending_writes(self, reason: str = "cancelled by user") -> None:
+        chat_log = self.query_one("#chat-log", ChatLog)
+        chat_log.add_system(f"Write operation {reason}.")
+        self._pending_writes = None
+        self.query_one("#input-bar", InputBar).set_pending(False)
+        self._update_status("ready")
+
     def _finalize_turn(self) -> None:
         if self._pending_writes:
+            policy = self._resolve_confirm()
+            if policy == "allow":
+                self._execute_confirmed_writes()
+                return
+            if policy == "deny":
+                self._cancel_pending_writes("auto-denied by policy")
+                return
             writes = self._pending_writes
             self.push_screen(ConfirmationScreen(writes), callback=self._on_confirm)
             return
@@ -228,44 +292,25 @@ class MicronTUI(App):
         self._update_status("ready")
         self._refresh_sidebar()
 
-    def _on_confirm(self, confirmed: bool | None) -> None:
-        chat_log = self.query_one("#chat-log", ChatLog)
+    def _on_confirm(self, payload: dict | bool | None) -> None:
+        # Dismiss payloads older than the current screen callback may pass a
+        # bool; the new screen passes {"confirm": bool, "remember": bool}.
+        if isinstance(payload, dict):
+            confirmed = payload.get("confirm", False)
+            remember = payload.get("remember", False)
+        else:
+            confirmed = bool(payload)
+            remember = False
+
+        if remember:
+            self._session_confirm_writes = "allow" if confirmed else "deny"
+
         if not confirmed:
-            chat_log.add_system("Write operation cancelled by user.")
-            self._pending_writes = None
-            self.query_one("#input-bar", InputBar).set_pending(False)
-            self._update_status("ready")
+            reason = "cancelled by user" if not remember else "denied for session"
+            self._cancel_pending_writes(reason)
             return
 
-        calls = [
-            ToolCall(
-                name=w["tool_name"],
-                args=w.get("args", {}),
-                call_id=w.get("call_id", f"confirm_{i}"),
-                is_write=True,
-            )
-            for i, w in enumerate(self._pending_writes or [])
-        ]
-        self._pending_writes = None
-        if calls:
-            runner = run_agent if self._thread_workers else run_agent_async
-            self.run_worker(
-                partial(
-                    runner,
-                    self,
-                    self._agent,
-                    self._current_query,
-                    history=self._current_history,
-                    confirm=True,
-                    pending_tool_calls=calls,
-                ),
-                thread=self._thread_workers,
-                name="agent_confirm",
-            )
-            self._update_status("confirming writes")
-        else:
-            self.query_one("#input-bar", InputBar).set_pending(False)
-            self._update_status("ready")
+        self._execute_confirmed_writes()
 
     def action_clear_history(self) -> None:
         self.conversation_history.clear()

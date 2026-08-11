@@ -3,11 +3,22 @@ from typing import ClassVar
 
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Button, Static
+from textual.widgets import Button, Checkbox, Static
+
+_VERB = {
+    "write_file": "write",
+    "write_knowledge": "knowledge",
+    "create_skill": "skill",
+    "delete_file": "delete",
+    "edit_file": "edit",
+    "patch_file": "edit",
+    "run_command": "run",
+    "python_eval": "eval",
+}
 
 
 class ConfirmationScreen(Screen):
-    """Modal confirmation dialog for pending write tools."""
+    """Compact modal confirmation dialog for pending write tools."""
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [("escape", "decline", "Decline")]
 
@@ -15,45 +26,49 @@ class ConfirmationScreen(Screen):
         super().__init__(**kwargs)
         self.pending_writes = pending_writes
 
-    def compose(self):
-        lines = ["The agent wants to perform the following write operations:", ""]
+    def _summarize(self) -> str:
+        n = len(self.pending_writes)
+        noun = "operation" if n == 1 else "operations"
+        parts = [f"{n} write {noun}:"]
         for w in self.pending_writes:
             name = w.get("tool_name", "?")
             args = w.get("args", {})
+            verb = _VERB.get(name, name)
             if name == "write_file":
-                lines.append(f"  • Write file: {args.get('path', '?')}")
+                parts.append(f"  {verb} {args.get('path', '?')}")
             elif name == "write_knowledge":
-                lines.append(f"  • Write knowledge: {args.get('title', '?')}")
+                parts.append(f"  {verb} {args.get('title', '?')}")
             elif name == "create_skill":
-                lines.append(f"  • Create skill: {args.get('name', '?')}")
+                parts.append(f"  {verb} {args.get('name', '?')}")
             elif name == "delete_file":
-                lines.append(f"  • Delete file: {args.get('path', '?')}")
-            elif name == "edit_file":
-                lines.append(f"  • Edit file: {args.get('path', '?')}")
-            elif name == "patch_file":
-                lines.append(f"  • Patch file: {args.get('path', '?')}")
+                parts.append(f"  {verb} {args.get('path', '?')}")
+            elif name in ("edit_file", "patch_file"):
+                parts.append(f"  {verb} {args.get('path', '?')}")
             elif name == "run_command":
-                lines.append(f"  • Run command: {args.get('cmd', '?')}")
+                parts.append(f"  {verb} {args.get('cmd', '?')}")
             elif name == "python_eval":
-                lines.append("  • Execute Python code")
+                parts.append(f"  {verb}")
             else:
-                lines.append(f"  • {name}({args})")
-        lines.extend(["", "Proceed?"])
+                parts.append(f"  {verb}")
+        return "\n".join(parts)
 
+    def compose(self):
         with Vertical(id="confirm-dialog"):
-            yield Static("\n".join(lines))
-            with Horizontal():
+            yield Static(self._summarize(), id="confirm-summary")
+            yield Checkbox("Remember for this session", id="confirm-remember")
+            with Horizontal(classes="confirm-buttons"):
                 yield Button("No", id="confirm-no", variant="error")
                 yield Button("Yes", id="confirm-yes", variant="success")
 
     def on_mount(self):
         self.query_one("#confirm-no", Button).focus()
 
+    def _dismiss_with(self, confirmed: bool) -> None:
+        remember = self.query_one("#confirm-remember", Checkbox).value
+        self.dismiss({"confirm": confirmed, "remember": remember})
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "confirm-yes":
-            self.dismiss(True)
-        else:
-            self.dismiss(False)
+        self._dismiss_with(event.button.id == "confirm-yes")
 
     def action_decline(self) -> None:
-        self.dismiss(False)
+        self._dismiss_with(False)

@@ -103,6 +103,11 @@ class Config:
             "max_tokens": 10000,
             "max_tool_iterations": 10,
             
+            # Write confirmation
+            # "ask" (default) — prompt in TUI; "allow" — execute writes without prompting;
+            # "deny" — reject all write tools silently.
+            "auto_confirm_writes": "ask",
+
             # Server settings
             "host": "0.0.0.0",
             "port": 8000,
@@ -159,6 +164,7 @@ class Config:
             "HOST": "host",
             "PORT": "port",
             "FIRECRAWL_URL": "firecrawl_url",
+            "AUTO_CONFIRM_WRITES": "auto_confirm_writes",
         }
         
         for env_var, config_key in env_mappings.items():
