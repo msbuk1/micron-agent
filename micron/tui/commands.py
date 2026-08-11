@@ -1,9 +1,10 @@
 """Slash command dispatcher for micron TUI.
 
-The read-only batch (/help, /clear, /mem, /tools, /model, /providers) is
-handled by :class:`micron.slash.SlashCommandRegistry`. The remaining
-session-management and file-recovery commands still live in the
-if/elif block — they will migrate in later slices (issues #3, #4).
+The read-only batch (/help, /clear, /mem, /tools, /model, /providers)
+and the session-management batch (/unload, /reload, /sessions, /resume,
+/last, /skill, /skills) are handled by
+:class:`micron.slash.SlashCommandRegistry`. The remaining file-recovery
+commands and /exit still live in the if/elif block.
 
 When all commands have migrated, the if/elif block disappears (issue
 #4). The contract step.
@@ -40,9 +41,9 @@ class CommandResult(Message):
 class CommandDispatcher:
     """Handles /commands for the TUI.
 
-    Read-only commands go through ``self.registry``; the rest still
-    through the if/elif ladder. Once all commands migrate, the ladder
-    disappears (issue #4).
+    Read-only + session-management commands go through ``self.registry``;
+    file-recovery commands and /exit still through the if/elif ladder.
+    Once all commands migrate, the ladder disappears (issue #4).
     """
 
     def __init__(self, app, agent, logger, config: dict):
@@ -52,6 +53,7 @@ class CommandDispatcher:
         self.config = config
         self.registry = SlashCommandRegistry()
         self._register_readonly_commands()
+        self._register_session_commands()
 
     def _register_readonly_commands(self) -> None:
         """Register /help, /clear, /mem, /tools, /model, /providers."""
@@ -84,6 +86,78 @@ class CommandDispatcher:
         def _providers(args: list[str]) -> SlashCommandResult:
             return SlashCommandResult(text=self._providers())
 
+    def _register_session_commands(self) -> None:
+        """Register /unload, /reload, /sessions, /resume, /last, /skill, /skills."""
+        reg = self.registry
+
+        @reg.register("unload", help_text="Unload model from RAM")
+        def _unload(args: list[str]) -> SlashCommandResult:
+            self.agent.unload_model()
+            return SlashCommandResult(text="Model unloaded from memory.")
+
+        @reg.register("reload", help_text="Reload skills from disk")
+        def _reload(args: list[str]) -> SlashCommandResult:
+            before = len(self.agent.skills.all())
+            self.agent.reload_skills()
+            after = len(self.agent.skills.all())
+            return SlashCommandResult(
+                text=f"Skills reloaded ({before} → {after}).",
+                extras={"reload_sidebar": True},
+            )
+
+        @reg.register("sessions", help_text="List recent sessions")
+        def _sessions(args: list[str]) -> SlashCommandResult:
+            return SlashCommandResult(
+                text=self._sessions_text(),
+                extras={"reload_sidebar": True},
+            )
+
+        @reg.register("resume", help_text="Resume a previous session")
+        def _resume(args: list[str]) -> SlashCommandResult:
+            if not args:
+                return SlashCommandResult(text="Usage: /resume <session_id>")
+            resumed = self.logger.get_session_context(args[0])
+            if not resumed:
+                return SlashCommandResult(text=f"Session '{args[0]}' not found.")
+            return SlashCommandResult(
+                text=f"Resumed session {args[0]} ({len(resumed)} turns loaded).",
+                extras={"resumed_history": resumed},
+            )
+
+        @reg.register("last", help_text="Show last assistant response")
+        def _last(args: list[str]) -> SlashCommandResult:
+            history = self.app.conversation_history
+            if not history:
+                return SlashCommandResult(text="No messages yet.")
+            last_msg = history[-1]
+            return SlashCommandResult(
+                text=f"[{last_msg['role']}]: {last_msg['content'][:500]}"
+            )
+
+        @reg.register("skill", help_text="Load a procedure skill")
+        def _skill(args: list[str]) -> SlashCommandResult:
+            if not args:
+                return SlashCommandResult(text="Usage: /skill <name>")
+            found = self.agent.skills.get(args[0])
+            if not found:
+                return SlashCommandResult(text=f"Skill '{args[0]}' not found.")
+            if not found.procedure:
+                return SlashCommandResult(
+                    text=f"'{args[0]}' is a tool skill, not a procedure skill."
+                )
+            return SlashCommandResult(
+                text=(
+                    f"Loaded: {found.name}\n"
+                    f"Description: {found.description}\n"
+                    f"Content: {len(found.content)} chars"
+                ),
+                extras={"loaded_skill": found},
+            )
+
+        @reg.register("skills", help_text="List procedure skills")
+        def _skills(args: list[str]) -> SlashCommandResult:
+            return SlashCommandResult(text=self._skills_text())
+
     def handle(self, cmd: str) -> CommandResult:
         parts = cmd[1:].strip().split()
         if not parts:
@@ -106,25 +180,6 @@ class CommandDispatcher:
         # Unmigrated commands — original if/elif ladder.
         if command in ("exit", "quit", "q"):
             return CommandResult(should_exit=True)
-
-        if command == "unload":
-            self.agent.unload_model()
-            return CommandResult(text="Model unloaded from memory.")
-
-        if command == "reload":
-            before = len(self.agent.skills.all())
-            self.agent.reload_skills()
-            after = len(self.agent.skills.all())
-            return CommandResult(text=f"Skills reloaded ({before} → {after}).", reload_sidebar=True)
-
-        if command == "sessions":
-            return CommandResult(text=self._sessions(), reload_sidebar=True)
-
-        if command == "resume":
-            return self._resume(args)
-
-        if command == "last":
-            return self._last()
 
         if command == "trash":
             from micron.tools.builtin import list_trash
@@ -149,38 +204,21 @@ class CommandDispatcher:
         if command == "tree":
             return CommandResult(text=self._tree(args))
 
-        if command == "skill":
-            return self._skill(args)
-
-        if command == "skills":
-            return CommandResult(text=self._skills())
-
         return CommandResult(text=f"Unknown command: {command}. Try /help")
 
     def _help_text(self) -> str:
-        # Show both registry commands and the unmigrated ones, so /help
-        # still describes everything the user can type.
-        return (
-            "Commands:\n"
-            "  /help, /?    Show this help\n"
-            "  /exit, /quit Exit\n"
-            "  /clear       Clear conversation history\n"
-            "  /mem         List recent memories\n"
-            "  /tools       Show available tools\n"
-            "  /model       Show current model info\n"
-            "  /providers   List configured providers\n"
-            "  /unload      Unload model from RAM\n"
-            "  /reload      Reload skills from disk\n"
-            "  /sessions    List recent sessions\n"
-            "  /resume ID   Resume a previous session\n"
-            "  /last        Show last assistant response\n"
-            "  /trash       List deleted files\n"
-            "  /restore F   Restore file from trash\n"
-            "  /purge       Empty trash permanently\n"
-            "  /undo F      Restore from .bak backup\n"
-            "  /tree        Show directory tree\n"
-            "  /skill NAME  Load a procedure skill\n"
-            "  /skills      List procedure skills"
+        # Show registry commands (auto-generated) plus the unmigrated
+        # ones, so /help still describes everything the user can type.
+        return "\n".join(
+            [
+                self.registry.help_text(),
+                "  /exit, /quit   Exit",
+                "  /trash         List deleted files",
+                "  /restore F     Restore file from trash",
+                "  /purge         Empty trash permanently",
+                "  /undo F        Restore from .bak backup",
+                "  /tree          Show directory tree",
+            ]
         )
 
     def _memories(self) -> str:
@@ -225,7 +263,7 @@ class CommandDispatcher:
             lines.append(f"  {name}: {model}{marker}")
         return "\n".join(lines)
 
-    def _sessions(self) -> str:
+    def _sessions_text(self) -> str:
         sessions = self.logger.list_sessions(10)
         if not sessions:
             return "No sessions found."
@@ -233,24 +271,6 @@ class CommandDispatcher:
         for s in sessions:
             lines.append(f"  {s['id']}  {s['turns']} turns  {s['size'] // 1024}KB")
         return "\n".join(lines)
-
-    def _resume(self, args: list[str]) -> CommandResult:
-        if not args:
-            return CommandResult(text="Usage: /resume <session_id>")
-        resumed = self.logger.get_session_context(args[0])
-        if not resumed:
-            return CommandResult(text=f"Session '{args[0]}' not found.")
-        return CommandResult(
-            text=f"Resumed session {args[0]} ({len(resumed)} turns loaded).",
-            resumed_history=resumed,
-        )
-
-    def _last(self) -> CommandResult:
-        history = self.app.conversation_history
-        if not history:
-            return CommandResult(text="No messages yet.")
-        last_msg = history[-1]
-        return CommandResult(text=f"[{last_msg['role']}]: {last_msg['content'][:500]}")
 
     def _tree(self, args: list[str]) -> str:
         from micron.tools.builtin import tree
@@ -266,20 +286,7 @@ class CommandDispatcher:
                 tree_path = arg
         return str(tree(tree_path, max_depth=max_depth, ext=ext))
 
-    def _skill(self, args: list[str]) -> CommandResult:
-        if not args:
-            return CommandResult(text="Usage: /skill <name>")
-        found = self.agent.skills.get(args[0])
-        if not found:
-            return CommandResult(text=f"Skill '{args[0]}' not found.")
-        if not found.procedure:
-            return CommandResult(text=f"'{args[0]}' is a tool skill, not a procedure skill.")
-        return CommandResult(
-            text=f"Loaded: {found.name}\nDescription: {found.description}\nContent: {len(found.content)} chars",
-            loaded_skill=found,
-        )
-
-    def _skills(self) -> str:
+    def _skills_text(self) -> str:
         procedures = [s for s in self.agent.skills.all() if s.procedure]
         if not procedures:
             return "No procedure skills loaded."

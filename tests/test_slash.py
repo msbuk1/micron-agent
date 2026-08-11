@@ -106,7 +106,7 @@ class TestSlashCommandRegistry:
 
 
 class TestCommandDispatcherReadOnlyMigration:
-    """Verify the read-only batch routes through the registry and preserves
+    """Verify the migrated commands route through the registry and preserve
     CommandResult semantics (clear_history, reload_sidebar flags)."""
 
     def _make_dispatcher(self):
@@ -129,9 +129,21 @@ class TestCommandDispatcherReadOnlyMigration:
                     return []
             tools = FakeTools()
 
+            class FakeSkills:
+                def all(self):
+                    return []
+
+                def get(self, name):
+                    return None
+
+            skills = FakeSkills()
+
         class FakeLogger:
             def list_sessions(self, n):
                 return []
+
+            def get_session_context(self, sid):
+                return None
 
         app = FakeApp()
         agent = FakeAgent()
@@ -161,16 +173,11 @@ class TestCommandDispatcherReadOnlyMigration:
         result = d.handle("/not_a_real_command")
         assert "Unknown command" in result.text
 
-    def test_unmigrated_unload_still_works(self):
-        """Confirm unmigrated commands still hit the if/elif ladder."""
-        unloaded = []
+    def test_unmigrated_trash_still_works(self):
+        """Confirm unmigrated file-recovery commands still hit the if/elif ladder."""
         d = self._make_dispatcher()
-
-        # Patch unload_model on the fake agent
-        d.agent.unload_model = lambda: unloaded.append(True)
-        result = d.handle("/unload")
-        assert unloaded == [True]
-        assert "unloaded" in result.text.lower()
+        result = d.handle("/trash")
+        assert "Trash" in result.text
 
     def test_help_lists_everything(self):
         """Auto-generated registry help should be merged into the dispatcher help."""
@@ -183,10 +190,19 @@ class TestCommandDispatcherReadOnlyMigration:
         assert "/tools" in result.text
         assert "/model" in result.text
         assert "/providers" in result.text
-        # unmigrated
         assert "/unload" in result.text
-        assert "/trash" in result.text
+        assert "/reload" in result.text
+        assert "/sessions" in result.text
+        assert "/resume" in result.text
+        assert "/last" in result.text
         assert "/skill" in result.text
+        assert "/skills" in result.text
+        # unmigrated
+        assert "/trash" in result.text
+        assert "/restore" in result.text
+        assert "/purge" in result.text
+        assert "/undo" in result.text
+        assert "/tree" in result.text
 
     def test_help_aliases_work(self):
         d = self._make_dispatcher()
@@ -203,3 +219,47 @@ class TestCommandDispatcherReadOnlyMigration:
 
         result = reg.dispatch("/echo hello world")
         assert result.text == "hello world"
+
+    def test_all_session_commands_registered(self):
+        d = self._make_dispatcher()
+        for name in ("unload", "reload", "sessions", "resume", "last", "skill", "skills"):
+            assert d.registry.get(name) is not None, f"/{name} not in registry"
+
+    def test_unload_calls_agent_and_returns_text(self):
+        unloaded = []
+        d = self._make_dispatcher()
+        d.agent.unload_model = lambda: unloaded.append(True)
+        result = d.handle("/unload")
+        assert unloaded == [True]
+        assert "unloaded" in result.text.lower()
+
+    def test_sessions_empty(self):
+        d = self._make_dispatcher()
+        result = d.handle("/sessions")
+        assert "No sessions found" in result.text
+        assert result.reload_sidebar is True
+
+    def test_resume_requires_arg(self):
+        d = self._make_dispatcher()
+        result = d.handle("/resume")
+        assert "Usage" in result.text
+
+    def test_resume_not_found(self):
+        d = self._make_dispatcher()
+        result = d.handle("/resume missing-id")
+        assert "not found" in result.text
+
+    def test_last_no_messages(self):
+        d = self._make_dispatcher()
+        result = d.handle("/last")
+        assert "No messages yet" in result.text
+
+    def test_skill_requires_arg(self):
+        d = self._make_dispatcher()
+        result = d.handle("/skill")
+        assert "Usage" in result.text
+
+    def test_skills_empty(self):
+        d = self._make_dispatcher()
+        result = d.handle("/skills")
+        assert "No procedure skills loaded" in result.text
