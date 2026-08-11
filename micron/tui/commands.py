@@ -1,13 +1,10 @@
 """Slash command dispatcher for micron TUI.
 
-The read-only batch (/help, /clear, /mem, /tools, /model, /providers)
-and the session-management batch (/unload, /reload, /sessions, /resume,
-/last, /skill, /skills) are handled by
-:class:`micron.slash.SlashCommandRegistry`. The remaining file-recovery
-commands and /exit still live in the if/elif block.
-
-When all commands have migrated, the if/elif block disappears (issue
-#4). The contract step.
+Every /command the TUI understands is registered in a
+:class:`micron.slash.SlashCommandRegistry`; :meth:`CommandDispatcher.handle`
+is now a thin translation layer that dispatches to the registry and maps
+the transport-agnostic :class:`SlashCommandResult` onto the Textual
+:class:`CommandResult` message. There is no if/elif ladder left.
 """
 from __future__ import annotations
 
@@ -41,9 +38,8 @@ class CommandResult(Message):
 class CommandDispatcher:
     """Handles /commands for the TUI.
 
-    Read-only + session-management commands go through ``self.registry``;
-    file-recovery commands and /exit still through the if/elif ladder.
-    Once all commands migrate, the ladder disappears (issue #4).
+    All commands live in ``self.registry``; :meth:`handle` translates a
+    :class:`SlashCommandResult` into a :class:`CommandResult`.
     """
 
     def __init__(self, app, agent, logger, config: dict):
@@ -54,6 +50,7 @@ class CommandDispatcher:
         self.registry = SlashCommandRegistry()
         self._register_readonly_commands()
         self._register_session_commands()
+        self._register_file_commands()
 
     def _register_readonly_commands(self) -> None:
         """Register /help, /clear, /mem, /tools, /model, /providers."""
@@ -158,68 +155,55 @@ class CommandDispatcher:
         def _skills(args: list[str]) -> SlashCommandResult:
             return SlashCommandResult(text=self._skills_text())
 
-    def handle(self, cmd: str) -> CommandResult:
-        parts = cmd[1:].strip().split()
-        if not parts:
-            return CommandResult(text="Empty command.")
-        command = parts[0].lower()
-        args = parts[1:]
+    def _register_file_commands(self) -> None:
+        """Register /exit, /trash, /restore, /purge, /undo, /tree."""
+        reg = self.registry
 
-        # Migrated commands — registry handles them.
-        if self.registry.get(command) is not None:
-            result = self.registry.dispatch(cmd)
-            return CommandResult(
-                text=result.text,
-                clear_history=result.extras.get("clear_history", False),
-                reload_sidebar=result.extras.get("reload_sidebar", False),
-                loaded_skill=result.extras.get("loaded_skill"),
-                resumed_history=result.extras.get("resumed_history"),
-                should_exit=result.extras.get("should_exit", False),
-            )
+        @reg.register("exit", aliases=("quit", "q"), help_text="Exit")
+        def _exit(args: list[str]) -> SlashCommandResult:
+            return SlashCommandResult(extras={"should_exit": True})
 
-        # Unmigrated commands — original if/elif ladder.
-        if command in ("exit", "quit", "q"):
-            return CommandResult(should_exit=True)
-
-        if command == "trash":
+        @reg.register("trash", help_text="List deleted files")
+        def _trash(args: list[str]) -> SlashCommandResult:
             from micron.tools.builtin import list_trash
-            return CommandResult(text=str(list_trash()))
+            return SlashCommandResult(text=str(list_trash()))
 
-        if command == "restore":
+        @reg.register("restore", help_text="Restore file from trash")
+        def _restore(args: list[str]) -> SlashCommandResult:
             if not args:
-                return CommandResult(text="Usage: /restore <filename>")
+                return SlashCommandResult(text="Usage: /restore <filename>")
             from micron.tools.builtin import restore_file
-            return CommandResult(text=str(restore_file(args[0])))
+            return SlashCommandResult(text=str(restore_file(args[0])))
 
-        if command == "purge":
+        @reg.register("purge", help_text="Empty trash permanently")
+        def _purge(args: list[str]) -> SlashCommandResult:
             from micron.tools.builtin import purge_trash
-            return CommandResult(text=str(purge_trash()))
+            return SlashCommandResult(text=str(purge_trash()))
 
-        if command == "undo":
+        @reg.register("undo", help_text="Restore from .bak backup")
+        def _undo(args: list[str]) -> SlashCommandResult:
             if not args:
-                return CommandResult(text="Usage: /undo <filename>")
+                return SlashCommandResult(text="Usage: /undo <filename>")
             from micron.tools.builtin import undo_file
-            return CommandResult(text=str(undo_file(args[0])))
+            return SlashCommandResult(text=str(undo_file(args[0])))
 
-        if command == "tree":
-            return CommandResult(text=self._tree(args))
+        @reg.register("tree", help_text="Show directory tree")
+        def _tree(args: list[str]) -> SlashCommandResult:
+            return SlashCommandResult(text=self._tree(args))
 
-        return CommandResult(text=f"Unknown command: {command}. Try /help")
+    def handle(self, cmd: str) -> CommandResult:
+        result = self.registry.dispatch(cmd)
+        return CommandResult(
+            text=result.text,
+            clear_history=result.extras.get("clear_history", False),
+            reload_sidebar=result.extras.get("reload_sidebar", False),
+            loaded_skill=result.extras.get("loaded_skill"),
+            resumed_history=result.extras.get("resumed_history"),
+            should_exit=result.extras.get("should_exit", False),
+        )
 
     def _help_text(self) -> str:
-        # Show registry commands (auto-generated) plus the unmigrated
-        # ones, so /help still describes everything the user can type.
-        return "\n".join(
-            [
-                self.registry.help_text(),
-                "  /exit, /quit   Exit",
-                "  /trash         List deleted files",
-                "  /restore F     Restore file from trash",
-                "  /purge         Empty trash permanently",
-                "  /undo F        Restore from .bak backup",
-                "  /tree          Show directory tree",
-            ]
-        )
+        return self.registry.help_text()
 
     def _memories(self) -> str:
         memories = self.agent.list_memories(10)

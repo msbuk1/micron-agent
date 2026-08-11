@@ -173,14 +173,26 @@ class TestCommandDispatcherReadOnlyMigration:
         result = d.handle("/not_a_real_command")
         assert "Unknown command" in result.text
 
-    def test_unmigrated_trash_still_works(self):
-        """Confirm unmigrated file-recovery commands still hit the if/elif ladder."""
+    def test_trash_registered_and_works(self):
+        """File-recovery commands route through the registry."""
         d = self._make_dispatcher()
+        assert d.registry.get("trash") is not None
         result = d.handle("/trash")
         assert "Trash" in result.text
 
+    def test_exit_aliases_set_should_exit(self):
+        d = self._make_dispatcher()
+        for cmd in ("/exit", "/quit", "/q"):
+            result = d.handle(cmd)
+            assert result.should_exit is True
+
+    def test_file_commands_registered(self):
+        d = self._make_dispatcher()
+        for name in ("trash", "restore", "purge", "undo", "tree"):
+            assert d.registry.get(name) is not None, f"/{name} not in registry"
+
     def test_help_lists_everything(self):
-        """Auto-generated registry help should be merged into the dispatcher help."""
+        """Auto-generated registry help lists every command."""
         d = self._make_dispatcher()
         result = d.handle("/help")
         # registry-migrated
@@ -197,12 +209,12 @@ class TestCommandDispatcherReadOnlyMigration:
         assert "/last" in result.text
         assert "/skill" in result.text
         assert "/skills" in result.text
-        # unmigrated
         assert "/trash" in result.text
         assert "/restore" in result.text
         assert "/purge" in result.text
         assert "/undo" in result.text
         assert "/tree" in result.text
+        assert "/exit" in result.text
 
     def test_help_aliases_work(self):
         d = self._make_dispatcher()
