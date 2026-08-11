@@ -168,7 +168,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--list-memories", action="store_true", help="List recent memories and exit")
     parser.add_argument("--add-memory", type=str, help="Add a memory and exit")
     parser.add_argument("--search-memory", type=str, help="Search memories and exit")
+    parser.add_argument("--upload", type=str, help="Upload a file to the server's /upload endpoint and exit")
     return parser.parse_args(argv)
+
+
+def _resolve_server_url(config: Config) -> str:
+    """Return the base URL of the micron server."""
+    env = os.environ.get("MICRON_SERVER_URL")
+    if env:
+        return env.rstrip("/")
+    host = config.get("host", "0.0.0.0")
+    if host in ("0.0.0.0", ""):
+        host = "localhost"
+    port = config.get("port", 8000)
+    return f"http://{host}:{port}"
+
+
+def _upload_file(path: Path, server_url: str) -> dict:
+    """POST a file to the server's /upload endpoint. Returns the JSON body."""
+    import requests
+    with path.open("rb") as f:
+        resp = requests.post(
+            f"{server_url}/upload",
+            files={"file": (path.name, f)},
+            timeout=30,
+        )
+    resp.raise_for_status()
+    return resp.json()
 
 
 def main():
@@ -217,6 +243,23 @@ def main():
         results = agent.search_memory(args.search_memory, k=5)
         for r in results:
             print(f"[{r.id[:8]}] score=0 {r.text[:80]}...")
+        return
+
+    if args.upload:
+        path = Path(args.upload)
+        if not path.exists():
+            print(f"File not found: {path}", file=sys.stderr)
+            sys.exit(1)
+        server_url = _resolve_server_url(config)
+        try:
+            data = _upload_file(path, server_url)
+        except Exception as e:
+            print(f"Upload failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        if "error" in data:
+            print(f"Upload failed: {data['error']}", file=sys.stderr)
+            sys.exit(1)
+        print(data["path"])
         return
 
     # Build query

@@ -138,6 +138,11 @@ class TestCommandDispatcherReadOnlyMigration:
 
             skills = FakeSkills()
 
+            class FakeMemory:
+                def delete(self, mid):
+                    return False
+            memory = FakeMemory()
+
         class FakeLogger:
             def list_sessions(self, n):
                 return []
@@ -275,3 +280,49 @@ class TestCommandDispatcherReadOnlyMigration:
         d = self._make_dispatcher()
         result = d.handle("/skills")
         assert "No procedure skills loaded" in result.text
+
+    def test_memory_registered(self):
+        d = self._make_dispatcher()
+        assert d.registry.get("memory") is not None
+
+    def test_memory_no_args(self):
+        d = self._make_dispatcher()
+        result = d.handle("/memory")
+        assert "Usage" in result.text
+
+    def test_memory_delete_calls_agent_memory(self):
+        d = self._make_dispatcher()
+        deleted: list = []
+        d.agent.memory.delete = lambda mid: deleted.append(mid) or True
+        result = d.handle("/memory delete abc123")
+        assert deleted == ["abc123"]
+        assert "Deleted" in result.text
+        assert result.reload_sidebar is True
+
+    def test_memory_delete_not_found(self):
+        d = self._make_dispatcher()
+        d.agent.memory.delete = lambda mid: False
+        result = d.handle("/memory delete missing")
+        assert "not found" in result.text
+        assert result.reload_sidebar is False
+
+    def test_memory_delete_requires_id(self):
+        d = self._make_dispatcher()
+        result = d.handle("/memory delete")
+        assert "Usage" in result.text
+
+    def test_memory_list_uses_memories(self):
+        d = self._make_dispatcher()
+        result = d.handle("/memory list")
+        assert "No memories stored" in result.text
+        assert result.reload_sidebar is True
+
+    def test_memory_unknown_subcommand(self):
+        d = self._make_dispatcher()
+        result = d.handle("/memory frobnicate")
+        assert "Unknown subcommand" in result.text
+
+    def test_memory_appears_in_help(self):
+        d = self._make_dispatcher()
+        result = d.handle("/help")
+        assert "/memory" in result.text

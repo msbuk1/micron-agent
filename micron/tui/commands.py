@@ -53,6 +53,7 @@ class CommandDispatcher:
         self._register_session_commands()
         self._register_file_commands()
         self._register_model_commands()
+        self._register_memory_commands()
 
     def _register_readonly_commands(self) -> None:
         """Register /help, /clear, /mem, /tools, /model, /providers."""
@@ -201,6 +202,14 @@ class CommandDispatcher:
         def _models(args: list[str]) -> SlashCommandResult:
             return self._models(args)
 
+    def _register_memory_commands(self) -> None:
+        """Register /memory: list / delete individual memories."""
+        reg = self.registry
+
+        @reg.register("memory", help_text="Memory ops: delete <id>, list")
+        def _memory(args: list[str]) -> SlashCommandResult:
+            return self._memory(args)
+
     def handle(self, cmd: str) -> CommandResult:
         result = self.registry.dispatch(cmd)
         return CommandResult(
@@ -224,6 +233,29 @@ class CommandDispatcher:
             tags = " ".join(f"#{t}" for t in m.tags) if getattr(m, "tags", None) else ""
             lines.append(f"  [{m.id[:8]}] {m.text[:80]} {tags}")
         return "\n".join(lines)
+
+    def _memory(self, args: list[str]) -> SlashCommandResult:
+        """`/memory delete <id>` and `/memory list`."""
+        if not args:
+            return SlashCommandResult(text="Usage: /memory <delete|list> [args]")
+        sub = args[0].lower()
+        if sub == "delete":
+            if len(args) < 2:
+                return SlashCommandResult(text="Usage: /memory delete <id>")
+            memory_id = args[1]
+            ok = self.agent.memory.delete(memory_id)
+            if ok:
+                return SlashCommandResult(
+                    text=f"Deleted memory {memory_id}.",
+                    extras={"reload_sidebar": True},
+                )
+            return SlashCommandResult(text=f"Memory {memory_id} not found.")
+        if sub == "list":
+            return SlashCommandResult(
+                text=self._memories(),
+                extras={"reload_sidebar": True},
+            )
+        return SlashCommandResult(text=f"Unknown subcommand: {sub}. Usage: /memory <delete|list>")
 
     def _tools(self) -> str:
         tools = self.agent.tools.list()

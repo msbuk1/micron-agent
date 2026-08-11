@@ -25,6 +25,8 @@ Type in the input bar:
 - `/exit` or `/quit` — Exit micron
 - `/clear` — Clear conversation history
 - `/mem` — Refresh memory list
+- `/memory delete <id>` — Delete a single memory by id
+- `/memory list` — List recent memories
 - `/tools` — Show available tools
 - `/model` — Show current model info
 - `/providers` — List configured providers
