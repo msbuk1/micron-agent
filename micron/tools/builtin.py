@@ -75,6 +75,21 @@ def _get_trash_dir() -> Path:
 # Firecrawl config (reads from env var set by CLI/server)
 FIRECRAWL_URL = os.getenv("FIRECRAWL_URL", "http://localhost:3002")
 
+def _verify_write(path: Path, check_fn, description: str = "expected content") -> str | None:
+    """Re-read a file after writing and verify a postcondition holds.
+
+    Returns None on success, or an error message string on failure.
+    """
+    try:
+        actual = path.read_text(encoding="utf-8")
+    except Exception as e:
+        return f"could not re-read {path.name} for verification: {e}"
+    if not check_fn(actual):
+        snippet = actual[:150].replace("\n", "\\n")
+        return f"post-write verification failed ({description}). File now starts with: {snippet}..."
+    return None
+
+
 def _set_command_resource_limits(decision=None):
     """Set resource limits for command execution.
 
@@ -304,8 +319,33 @@ def write_file(path: str, content: str, mode: str = "w") -> str:
     try:
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
+        pre_content = None
+        if mode == "a" and target_path.exists():
+            try:
+                pre_content = target_path.read_text(encoding="utf-8")
+            except Exception:
+                pass
+
         with open(target_path, mode, encoding="utf-8") as f:
             f.write(content)
+
+        if mode == "w":
+            verify_err = _verify_write(
+                target_path,
+                lambda actual: actual == content,
+                "written content matches",
+            )
+        elif pre_content is not None:
+            verify_err = _verify_write(
+                target_path,
+                lambda actual: actual == pre_content + content,
+                "appended content matches",
+            )
+        else:
+            verify_err = None
+
+        if verify_err:
+            return f"Error: {verify_err}"
 
         return f"Success: Wrote {len(content)} characters to {path}"
     except Exception as e:
@@ -340,6 +380,15 @@ def paste_file(content: str, filename: str = None) -> str:
         target.parent.mkdir(parents=True, exist_ok=True)
 
         target.write_text(content, encoding="utf-8")
+
+        verify_err = _verify_write(
+            target,
+            lambda actual: actual == content,
+            "pasted content matches",
+        )
+        if verify_err:
+            return handle_error("paste_file", Exception(verify_err), "while verifying paste")
+
         return success(f"Pasted {len(content)} chars to {filename}")
     except Exception as e:
         return handle_error(
@@ -398,6 +447,16 @@ def patch_file(path: str, patches: list[dict]) -> str:
             )
         
         target.write_text(content, encoding="utf-8")
+
+        # Verify the change landed on disk
+        verify_err = _verify_write(
+            target,
+            lambda actual: actual != original,
+            "content changed",
+        )
+        if verify_err:
+            return handle_error("patch_file", Exception(verify_err), "after writing")
+
         return success(f"Patched {path}: {applied}/{len(patches)} patches applied")
     
     except Exception as e:
@@ -747,6 +806,15 @@ def write_knowledge(title: str, content: str, tags: str = "") -> str:
     content += tag_line
 
     path.write_text(content)
+
+    verify_err = _verify_write(
+        path,
+        lambda actual: actual == content,
+        "knowledge content matches",
+    )
+    if verify_err:
+        return f"Error: {verify_err}"
+
     return f"Saved: {path}"
 
 
@@ -816,7 +884,17 @@ def create_skill(name: str, description: str, parameters: str = "", module: str 
     lines.append("Add your skill instructions here.")
     lines.append("")
 
-    path.write_text("\n".join(lines))
+    written = "\n".join(lines)
+    path.write_text(written)
+
+    verify_err = _verify_write(
+        path,
+        lambda actual: actual == written,
+        "skill content matches",
+    )
+    if verify_err:
+        return f"Error: {verify_err}"
+
     return f"Created skill: {path.relative_to(workdir)}\nRun /reload to activate it."
 
 
@@ -933,7 +1011,21 @@ def delete_file(path: str) -> str:
         
         # Move file to trash
         shutil.move(str(target), str(trash_path))
-        
+
+        # Verify the move actually happened
+        if target.exists():
+            return handle_error(
+                "delete_file",
+                Exception(f"{path} still exists after move"),
+                "deletion may have partially failed"
+            )
+        if not trash_path.exists():
+            return handle_error(
+                "delete_file",
+                Exception(f"{file_name} not found in trash after move"),
+                "file may have been lost"
+            )
+
         return success(f"Deleted {file_name} (recoverable via /restore)")
     except Exception as e:
         return handle_error(
@@ -1152,6 +1244,16 @@ def edit_file(path: str, old_text: str, new_text: str) -> str:
                     )
             except (subprocess.TimeoutExpired, OSError):
                 pass  # Skip validation if subprocess fails (resource limits)
+        else:
+            # Verify the replacement actually landed on disk
+            verify_err = _verify_write(
+                target,
+                lambda actual: new_text in actual,
+                "replacement text present",
+            )
+            if verify_err:
+                shutil.copy2(str(bak_path), str(target))
+                return handle_error("edit_file", Exception(verify_err), "reverting from backup")
         
         return success(f"Edited {path} (replaced {len(old_text)} chars with {len(new_text)} chars)")
     except Exception as e:
