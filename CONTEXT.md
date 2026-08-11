@@ -22,7 +22,7 @@ redefined here.
 | `LLMBackend` | `micron/llm.py` | `stream_chat(messages, tools, temperature, max_tokens) -> Iterator[LLMResponse]`; `is_available()`; `unload()` | Abstract. Adapters: `LlamaCppBackend`, `OllamaBackend`, `OpenAICompatibleBackend`. `LLMResponse.type` ∈ `text / reasoning / tool_call / done / error`. |
 | `OllamaToolAdapter` | `micron/llm.py` | `to_ollama_tools(schemas) / needs_native_tools(model_name)` | Pure functions, not a backend. Format conversion + model detection for Ollama native tool calling. |
 | `PromptBuilder` | `micron/prompt.py` | `build_system_prompt(query) -> str` | Composes persona + memory + knowledge + tools + skill instructions. Reads tool list from the `ToolRegistry` when given one. |
-| `SessionLogger` | `micron/sessions.py` | `start_session / log_turn / end_session / list_sessions / read_session / get_session_context` | JSONL session files at `<context>/sessions/`. **Used by CLI; not used by the web server today.** |
+| `SessionLogger` | `micron/sessions.py` | `start_session / log_turn / end_session / list_sessions / read_session / get_session_context` | JSONL session files at `<context>/sessions/`. Used by the CLI, TUI, and the web server. One session per server lifetime; user turn logged before `chat()`, assistant turn logged after the stream finishes (or after `process_events` for non-streaming). |
 | `process_events` | `micron/events.py` | `process_events(generator, **callbacks) -> EventResult` | Walks an agent generator, dispatches each event to its callback, returns accumulated text and pending writes. |
 | `TextToolCallParser` | `micron/text_tool_parser.py` | `feed(chunk) -> Iterator[dict]`; `flush() -> Iterator[dict]` | Stateful, SAX-style. Owns the streaming buffer the agent used to manage itself. Yields `{"type": "text", ...}` and `{"type": "tool_call", ...}`. Constructed per tool-iteration with the tool schema list. |
 | `strip_tool_call_markup` | `micron/text_tool_parser.py` | `strip_tool_call_markup(text) -> str` | Module-level. Used by the CLI's `_strip_thinking` to remove tool-call-looking syntax before printing. Shares regexes with `TextToolCallParser` so the two never drift. |
@@ -88,8 +88,6 @@ Two flavours:
 
 ## Out-of-band notes
 
-- Web chat is **not** session-persistent. History lives in the browser;
-  CLI uses `SessionLogger`. (Slices 25–27 are the planned alignment.)
 - `micron/static/` has been removed — the server serves the inline
   `HTML_PAGE` from `server.py`.
 - `error_handling.py` defines `handle_error`, `success` — but

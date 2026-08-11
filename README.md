@@ -159,6 +159,10 @@ GET  /memory              # List memories
 POST /memory/search       # Search memories
 DELETE /memory/{id}       # Delete memory
 POST /skills/reload       # Reload skills
+POST /clear               # Clear in-memory history
+GET  /model               # Current provider + model
+GET  /providers           # List configured providers
+POST /unload              # Unload model from RAM
 ```
 
 ```bash

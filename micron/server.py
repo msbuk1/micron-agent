@@ -19,12 +19,15 @@ from collections import deque
 from micron.agent import create_agent, AgentConfig, MicronAgent
 from micron.llm import create_backend
 from micron.config import load_config
+from micron.sessions import SessionLogger
+from micron.tools.builtin import _get_workdir, list_trash, purge_trash, restore_file, undo_file
 
 # Rate limiting storage
 chat_request_times = deque(maxlen=1000)  # Store last 1000 request timestamps
 
 # App state
 agent: MicronAgent | None = None
+session_logger: SessionLogger | None = None
 _config_cache = None
 
 def _get_cached_config():
@@ -85,14 +88,27 @@ def check_rate_limit() -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize agent on startup if not already set (e.g. via run_server)."""
-    global agent
+    global agent, session_logger
 
     # Skip if agent was already injected by run_server()
     if agent is not None:
         print(f"[micron] Using provided agent (LLM: {'available' if agent.llm and agent.llm.is_available() else 'N/A'})")
+        # Session logger may also have been injected by run_server(); create one
+        # from the agent's context_dir if not.
+        if session_logger is None:
+            try:
+                sessions_dir = Path(agent.context_dir) / "sessions"
+                session_logger = SessionLogger(sessions_dir)
+                session_logger.start_session()
+                print(f"[micron] Session logging enabled: {sessions_dir}")
+            except Exception as e:
+                print(f"[micron] Warning: Could not initialize session logger: {e}")
+                session_logger = None
         yield
+        if session_logger is not None:
+            session_logger.end_session()
         return
-    
+
     # Load configuration
     config = load_config()
     rt = config.resolve_runtime()
@@ -123,8 +139,20 @@ async def lifespan(app: FastAPI):
         print(f"[micron] Warning: Could not load LLM backend: {e}")
         print("[micron] Server will run without LLM (tools/memory only)")
 
+    # Initialize session logger — failures are non-fatal so the server still runs.
+    try:
+        sessions_dir = Path(agent.context_dir) / "sessions"
+        session_logger = SessionLogger(sessions_dir)
+        session_logger.start_session()
+        print(f"[micron] Session logging enabled: {sessions_dir}")
+    except Exception as e:
+        print(f"[micron] Warning: Could not initialize session logger: {e}")
+        session_logger = None
+
     yield
     # Cleanup on shutdown
+    if session_logger is not None:
+        session_logger.end_session()
 
 
 app = FastAPI(
@@ -164,10 +192,58 @@ class SearchRequest(BaseModel):
     tags: list[str] | None = None
 
 
+class RestoreRequest(BaseModel):
+    filename: str
+
+
+class UndoRequest(BaseModel):
+    path: str
+
+
+def _recovery_result(result: str, field: str, value: str):
+    if result.startswith("Error"):
+        return {"error": result}
+    return {"status": "restored", field: value, "message": result}
+
+
+@app.get("/trash")
+async def list_trash_files():
+    """List files available for recovery from the trash."""
+    _get_workdir()
+    result = list_trash()
+    files = [line.strip().split()[0] for line in result.splitlines() if line.startswith("  ")]
+    return {"files": files, "message": result}
+
+
+@app.post("/restore")
+async def restore_trash_file(request: RestoreRequest):
+    """Restore a file from the trash."""
+    _get_workdir()
+    return _recovery_result(restore_file(request.filename), "filename", request.filename)
+
+
+@app.post("/purge")
+async def purge_trash_files():
+    """Permanently remove all files from the trash."""
+    _get_workdir()
+    result = purge_trash()
+    if result.startswith("Error"):
+        return {"error": result}
+    return {"status": "purged", "message": result}
+
+
+@app.post("/undo")
+async def undo_backup_file(request: UndoRequest):
+    """Restore a file from its .bak backup."""
+    _get_workdir()
+    return _recovery_result(undo_file(request.path), "path", request.path)
+
+
 async def generate_sse(message, history, confirm=False, pending_writes=None):
     """Generate SSE events from agent response."""
     from micron.agent import ToolCall
     from micron.events import EventType
+    assistant_text = ""
     try:
         calls = None
         if confirm and pending_writes:
@@ -181,18 +257,23 @@ async def generate_sse(message, history, confirm=False, pending_writes=None):
             event_type = chunk.get("type")
             if event_type == EventType.DONE:
                 continue  # handled in finally block
+            if event_type == EventType.TEXT:
+                assistant_text += chunk.get("content", "")
             yield f"data: {json.dumps(chunk)}\n\n"
             await asyncio.sleep(0)
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
     finally:
+        # Persist the full assistant turn once the stream is complete.
+        if session_logger is not None and assistant_text:
+            session_logger.log_turn("assistant", assistant_text)
         yield "data: [DONE]\n\n"
 
 
 @app.post("/chat")
 async def chat(request: ChatRequest, req: Request = None):
     """Chat with the agent. Returns SSE stream or JSON response.
-    
+
     Implements rate limiting and authentication.
     """
     # Check authentication (skip for TestClient which doesn't provide req)
@@ -202,18 +283,23 @@ async def chat(request: ChatRequest, req: Request = None):
                 status_code=401,
                 detail="Unauthorized - API key required"
             )
-        
+
         # Check rate limiting
         if check_rate_limit():
             raise HTTPException(
                 status_code=429,
                 detail="Too Many Requests - Rate limit exceeded"
             )
-    
+
 
     if agent.llm is None:
         return {"error": "LLM backend not configured", "response": "Server is running without LLM. Configure via MICRON_PROVIDER and MICRON_MODEL env vars."}
-    
+
+    # Persist the user turn before processing. Sessions are owned by the
+    # server (one per lifetime), so this appends to the active JSONL file.
+    if session_logger is not None:
+        session_logger.log_turn("user", request.message)
+
     if request.stream:
         return StreamingResponse(
             generate_sse(request.message, request.history, confirm=request.confirm, pending_writes=request.pending_writes),
@@ -227,6 +313,8 @@ async def chat(request: ChatRequest, req: Request = None):
                 agent.run(request.message, history=request.history,
                           confirm=request.confirm, pending_tool_calls=request.pending_writes),
             )
+            if session_logger is not None and result.text:
+                session_logger.log_turn("assistant", result.text)
             return {"response": result.text, "events": []}
         except Exception as e:
             return {"error": str(e), "response": ""}
@@ -250,6 +338,49 @@ async def health():
 async def list_tools():
     """List available tools."""
     return {"tools": agent.tools.list() if agent else []}
+
+
+@app.post("/clear")
+async def clear_history():
+    """Clear the agent's in-memory history."""
+    if agent and hasattr(agent, "_tool_history"):
+        agent._tool_history.clear()
+    return {"status": "cleared"}
+
+
+@app.get("/model")
+async def get_model():
+    """Current model info (provider name + model name)."""
+    if agent is None or agent.config is None:
+        raise HTTPException(status_code=503, detail="Agent not available")
+    return {
+        "provider": agent.config.provider,
+        "model": agent.config.model,
+    }
+
+
+@app.get("/providers")
+async def list_providers():
+    """List configured providers."""
+    config = _get_cached_config()
+    active = os.environ.get("MICRON_PROVIDER", config.get("default_provider", "llamacpp"))
+    providers = [
+        {"name": name, "model": pcfg.get("model", "")}
+        for name, pcfg in config.get("providers", {}).items()
+    ]
+    return {
+        "default": config.get("default_provider", "llamacpp"),
+        "active": active,
+        "providers": providers,
+    }
+
+
+@app.post("/unload")
+async def unload_model():
+    """Unload the model from RAM."""
+    if agent and hasattr(agent, "unload_model"):
+        agent.unload_model()
+    return {"status": "unloaded"}
 
 
 @app.post("/memory")
@@ -573,10 +704,11 @@ async def upload_file(file: UploadFile = File(...)):
     }
 
 
-def run_server(agent_instance, host: str = "0.0.0.0", port: int = 8000):
+def run_server(agent_instance, host: str = "0.0.0.0", port: int = 8000, session_logger_instance: SessionLogger | None = None):
     """Run the FastAPI server with the given agent instance."""
-    global agent
+    global agent, session_logger
     agent = agent_instance
+    session_logger = session_logger_instance
     import uvicorn
     print(f"[micron] Web UI at http://{host}:{port}")
     uvicorn.run(app, host=host, port=port)
