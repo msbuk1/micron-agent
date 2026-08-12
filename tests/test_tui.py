@@ -11,6 +11,7 @@ from textual.widgets import Input
 
 from micron.tui.app import MicronTUI
 from micron.tui.screens.confirm import ConfirmationScreen
+from micron.tui.screens.models import ModelPickerScreen
 from micron.tui.widgets.chat import ChatLog
 from micron.tui.widgets.input_bar import InputBar
 from micron.tui.widgets.sidebar import Sidebar
@@ -288,3 +289,46 @@ async def test_on_confirm_deny_remember_sets_deny(tmp_path):
         app._pending_writes = [{"tool_name": "write_file", "args": {"path": "x"}, "call_id": "c1"}]
         app._on_confirm({"confirm": False, "remember": True})
         assert app._session_confirm_writes == "deny"
+
+
+@pytest.mark.asyncio
+async def test_models_opens_picker_and_switches(tmp_path):
+    """/models opens the picker; selecting a row swaps backend + status bar."""
+    app = MicronTUI(make_factory(tmp_path), thread_workers=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        class Commands:
+            def __init__(self):
+                self.switched = []
+
+            def handle(self, text):
+                from micron.tui.commands import CommandResult
+                return CommandResult(
+                    open_model_picker=True,
+                    model_entries=[
+                        ("ollama", "llama3", {}),
+                        ("openrouter", "gpt-x", {"context_length": 128000}),
+                    ],
+                )
+
+            def switch_model(self, provider, model):
+                self.switched.append((provider, model))
+                return type("R", (), {"text": f"Switched to {provider}/{model}."})()
+
+        app._commands = Commands()
+        app._handle_command("/models")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ModelPickerScreen)
+        assert app.screen._entries[1] == ("openrouter", "gpt-x", {"context_length": 128000})
+
+        # Select the first row → switch runs, picker dismisses.
+        from textual.widgets import ListView
+        lv = app.screen.query_one("#model-list", ListView)
+        lv.index = 0
+        lv.action_select_cursor()
+        await pilot.pause()
+
+        assert app._commands.switched == [("ollama", "llama3")]
+        assert not isinstance(app.screen, ModelPickerScreen)

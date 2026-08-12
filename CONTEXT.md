@@ -31,6 +31,7 @@ redefined here.
 | `CommandPolicy` | `micron/tools/command_policy.py` | `evaluate(args) -> Decision` | Pure computation. Evaluates a shell command argument list against the blocklist and flag-scan rules. Returns `Allow`, `Deny(reason)`, or `Limit(cpu, memory, procs, files)`. Tested with synthetic args, no subprocess. |
 | `SlashCommandRegistry` | `micron/slash.py` | `register / add / get / all / dispatch(query) -> SlashCommandResult / help_text` | Transport-agnostic `/command` dispatcher. Handlers take `list[str]` args, return a `SlashCommandResult` with `text` and an `extras` dict for transport-specific flags. Decorator-style and imperative register both supported. |
 | `CommandDispatcher` | `micron/tui/commands.py` | `handle(cmd) -> CommandResult` | TUI adapter wrapping `SlashCommandRegistry`. All commands route through the registry; `handle` is a thin translation layer mapping `SlashCommandResult.extras` onto Textual `Message` fields. No if/elif ladder (post-issues #2–#4). |
+| `ModelPickerScreen` | `micron/tui/screens/models.py` | `ModelPickerScreen(entries)`, dismisses with `{"provider", "model"}` | Modal opened by `/models`. Renders provider/model/metadata rows as a `ListView`; selecting a row dismisses with the chosen pair, which the app swaps via `CommandDispatcher.switch_model` and reflects in the status bar. |
 
 ## Event vocabulary
 
@@ -81,14 +82,18 @@ Two flavours:
 
 - `micron.yaml` — provider config, rate limits, auth, firecrawl URL,
   write confirmation (`auto_confirm_writes`: `ask` | `allow` | `deny`).
+  **Never holds secrets.**
+- `auth.yaml` — gitignored secrets file merged over `micron.yaml` per
+  provider (see `_deep_merge` in `micron/config.py`). Template in
+  `auth.example.yaml`. Auto-discovered next to `micron.yaml`.
 - `Config` (in `micron/config.py`) — **single loader**: defaults → YAML →
-  env (`MICRON_*`). Exposes `get_rate_limits`, `get_resource_limits`,
-  `get_authentication`, `is_valid_api_key`, `get_provider_config`,
-  `resolve_runtime` (flat dict for agent+backend construction),
-  `_apply_env_vars` (populates `MICRON_WORKDIR` / `MICRON_CONTEXT_DIR` /
-  `MICRON_PROVIDER` / `FIRECRAWL_URL` for tools that read env vars).
-  CLI, TUI, and server all use `Config`. The former `__main__.load_config`
-  parallel loader has been removed.
+  auth.yaml → env (`MICRON_*`). Exposes `get_rate_limits`,
+  `get_resource_limits`, `get_authentication`, `is_valid_api_key`,
+  `get_provider_config`, `resolve_runtime` (flat dict for agent+backend
+  construction), `_apply_env_vars` (populates `MICRON_WORKDIR` /
+  `MICRON_CONTEXT_DIR` / `MICRON_PROVIDER` / `FIRECRAWL_URL` for tools
+  that read env vars). CLI, TUI, and server all use `Config`. The former
+  `__main__.load_config` parallel loader has been removed.
 
 ## Out-of-band notes
 

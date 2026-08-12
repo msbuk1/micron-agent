@@ -18,6 +18,7 @@ from micron.events import EventType
 from micron.tui.commands import CommandDispatcher
 from micron.tui.screens.confirm import ConfirmationScreen
 from micron.tui.screens.help import HelpScreen
+from micron.tui.screens.models import ModelPickerScreen
 from micron.tui.widgets.chat import ChatLog
 from micron.tui.widgets.input_bar import InputBar
 from micron.tui.widgets.sidebar import Sidebar
@@ -133,8 +134,29 @@ class MicronTUI(App):
             self.active_skill = result.loaded_skill
         if result.reload_sidebar:
             self._refresh_sidebar()
+        if result.open_model_picker:
+            self.push_screen(
+                ModelPickerScreen(result.model_entries),
+                callback=self._on_model_picker_result,
+            )
+            return
         if result.text:
             self.query_one("#chat-log", ChatLog).add_system(result.text)
+
+    def _on_model_picker_result(self, result) -> None:
+        """Callback after the model picker dismisses; performs the swap."""
+        if not result:
+            return
+        provider = result.get("provider", "")
+        model = result.get("model", "")
+        if self._commands is None:
+            return
+        outcome = self._commands.switch_model(provider, model)
+        if outcome.text:
+            self.query_one("#chat-log", ChatLog).add_system(outcome.text)
+        # The backend swap may have updated config.model/provider — refresh
+        # the status bar so the new model shows immediately.
+        self._update_status("ready")
 
     def _run_user_message(self, text: str) -> None:
         query = text
@@ -400,7 +422,6 @@ class MicronTUI(App):
     def _menu_actions(self):
         return [
             ("Help", lambda: self.push_screen(HelpScreen())),
-            ("Model info", lambda: self._handle_command("/model")),
             ("Reload skills", lambda: self._handle_command("/reload")),
             ("Unload model", lambda: self._handle_command("/unload")),
             ("Clear history", lambda: self._handle_command("/clear")),

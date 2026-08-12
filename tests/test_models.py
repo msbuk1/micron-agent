@@ -126,6 +126,18 @@ def test_set_backend_rolls_back_when_unavailable():
     assert agent.llm is old
 
 
+def test_set_backend_placeholder_key_hint():
+    """A placeholder key in the failure message points at micron.yaml."""
+    from micron.agent import _availability_hint
+
+    class Backend:
+        api_key = "<your-openrouter-api-key>"
+
+    assert "placeholder" in _availability_hint(Backend(), "openrouter")
+    assert _availability_hint(type("B", (), {"api_key": "sk-real"})(), "openrouter") == ""
+    assert "missing API key" in _availability_hint(type("B", (), {"api_key": ""})(), "openai")
+
+
 def test_set_backend_updates_use_text_tool_format():
     """Switching to llamacpp enables text-tool parsing."""
     import tempfile
@@ -223,6 +235,9 @@ class TestModelsCommand:
         d._fake_providers = providers or {}
         d._switch_log: list = []
 
+        # Keep the config-fallback path hermetic: no live API calls.
+        d._fetch_provider_models = lambda prov_name, prov_cfg: []
+
         def fake_load_config():
             return d._fake_cfg
 
@@ -268,6 +283,8 @@ class TestModelsCommand:
         assert "← active" in result.text
         assert "ollama" in result.text
         assert "llama3" in result.text
+        assert result.open_model_picker is True
+        assert ("ollama", "llama3", {}) in result.model_entries
 
     def test_models_filters_by_provider(self):
         d = self._make_dispatcher({
@@ -281,6 +298,8 @@ class TestModelsCommand:
         assert "ollama" in result.text
         assert "llama3" in result.text
         assert "lmstudio" not in result.text
+        assert result.open_model_picker is True
+        assert result.model_entries == [("ollama", "llama3", {})]
 
     def test_models_unknown_provider(self):
         d = self._make_dispatcher({"lmstudio": {"model": "m1"}})
@@ -375,3 +394,270 @@ class TestModelsCommand:
         finally:
             self._teardown(d)
         assert "/models" in result.text
+
+
+# ──────────────────────────────────────────────────────────────────────
+# live model discovery
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _MockResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class TestProviderModelDiscovery:
+    def _dispatcher(self, providers):
+        from micron.tui.commands import CommandDispatcher
+
+        class FakeApp:
+            conversation_history: list = []
+
+        class FakeAgent:
+            provider = "lmstudio"
+            model = "active-model"
+            llm = object()
+
+        d = CommandDispatcher(FakeApp(), FakeAgent(), object(), {})
+        d._fake_providers = providers
+        return d
+
+    def test_ollama_fetches_from_api_tags(self, monkeypatch):
+        import requests as _requests
+
+        d = self._dispatcher({"ollama": {"base_url": "http://localhost:11434"}})
+        monkeypatch.setattr(
+            _requests,
+            "get",
+            lambda url, **kw: (
+                _MockResponse({
+                    "models": [
+                        {"name": "llama3", "parameter_size": "8B",
+                         "quantization_level": "Q4_K_M"},
+                        {"name": "qwen2.5", "parameter_size": "7B"},
+                    ]
+                })
+                if url.endswith("/api/tags")
+                else _MockResponse({})
+            ),
+        )
+        assert d._fetch_provider_models("ollama", {"base_url": "http://localhost:11434"}) == [
+            {
+                "name": "llama3",
+                "meta": {"parameter_size": "8B", "quantization_level": "Q4_K_M"},
+            },
+            {
+                "name": "qwen2.5",
+                "meta": {"parameter_size": "7B"},
+            },
+        ]
+
+    def test_openai_compatible_fetches_from_models(self, monkeypatch):
+        import requests as _requests
+
+        d = self._dispatcher({"lmstudio": {"base_url": "http://localhost:1234/v1"}})
+        monkeypatch.setattr(
+            _requests,
+            "get",
+            lambda url, **kw: (
+                _MockResponse({
+                    "data": [
+                        {
+                            "id": "gemma",
+                            "pricing": {"prompt": "4e-06", "completion": "1.6e-05"},
+                            "context_length": 128000,
+                        },
+                        {"id": "ministral", "context_length": 256000},
+                    ]
+                })
+                if url.endswith("/models")
+                else _MockResponse({})
+            ),
+        )
+        prov_cfg = {"base_url": "http://localhost:1234/v1", "api_key": "no_key"}
+        assert d._fetch_provider_models("lmstudio", prov_cfg) == [
+            {
+                "name": "gemma",
+                "meta": {
+                    "pricing": {"prompt": "4e-06", "completion": "1.6e-05"},
+                    "context_length": 128000,
+                },
+            },
+            {
+                "name": "ministral",
+                "meta": {"context_length": 256000},
+            },
+        ]
+
+    def test_unknown_provider_returns_empty(self):
+        d = self._dispatcher({})
+        assert d._fetch_provider_models("nope", {"base_url": "http://x"}) == []
+
+    def test_missing_base_url_returns_empty(self):
+        d = self._dispatcher({})
+        assert d._fetch_provider_models("ollama", {}) == []
+
+    def test_fetch_error_falls_back_to_config(self, monkeypatch):
+        import requests as _requests
+
+        d = self._dispatcher({"ollama": {"base_url": "http://localhost:11434"}})
+        monkeypatch.setattr(
+            _requests,
+            "get",
+            lambda url, **kw: _MockResponse({}, status_code=500),
+        )
+        # After the real method (unpatched) fails, config fallback kicks in.
+        from unittest.mock import patch
+
+        class FakeCfg:
+            def get(self, key, default=None):
+                if key == "providers":
+                    return {"ollama": {"model": "llama3"}}
+                return default
+
+        with patch("micron.config.load_config", return_value=FakeCfg()):
+            assert d._all_model_entries() == [("ollama", "llama3", {})]
+
+    def test_format_model_meta_renders_cost_and_context(self):
+        from micron.tui.commands import _format_price
+
+        assert _format_price("4e-06") == "4"
+        assert _format_price("7.5e-08") == "0.075"
+        assert _format_price("3e-07") == "0.3"
+        assert _format_price("0") == "0"
+        assert _format_price(1.6e-05) == "16"
+        assert _format_price("not-a-number") == "not-a-number"
+
+        d = self._dispatcher({})
+        meta = {
+            "pricing": {"prompt": "7.5e-08", "completion": "3e-07"},
+            "context_length": 128000,
+        }
+        detail = d._format_model_meta(meta)
+        assert "$0.075/$0.3 · per M tok" in detail
+        assert "128k ctx" in detail
+
+    def test_format_model_meta_ollama(self):
+        d = self._dispatcher({})
+        detail = d._format_model_meta(
+            {"parameter_size": "8B", "quantization_level": "Q4_K_M"}
+        )
+        assert "8B" in detail
+        assert "Q4_K_M" in detail
+
+    def test_format_model_meta_empty(self):
+        d = self._dispatcher({})
+        assert d._format_model_meta({}) == ""
+
+
+# ──────────────────────────────────────────────────────────────────────
+# OpenAICompatibleBackend credential validation
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestOpenAICompatibleAvailability:
+    def _backend(self, **kw):
+        from micron.llm import OpenAICompatibleBackend
+        return OpenAICompatibleBackend(**kw)
+
+    def test_placeholder_key_is_unavailable(self):
+        b = self._backend(api_key="<your-openrouter-api-key>")
+        assert b.is_available() is False
+
+    def test_empty_key_is_unavailable(self):
+        b = self._backend(api_key="")
+        assert b.is_available() is False
+
+    def test_openrouter_probes_key_endpoint(self, monkeypatch):
+        import requests as _requests
+
+        b = self._backend(api_key="sk-real")
+        calls = []
+        monkeypatch.setattr(
+            _requests,
+            "get",
+            lambda url, **kw: (calls.append(url) or _MockResponse({})),
+        )
+        assert b.is_available() is True
+        assert calls and calls[0].endswith("/key")
+
+    def test_openrouter_bad_key_is_unavailable(self, monkeypatch):
+        import requests as _requests
+
+        b = self._backend(api_key="sk-bad")
+        monkeypatch.setattr(
+            _requests,
+            "get",
+            lambda url, **kw: _MockResponse({}, status_code=401),
+        )
+        assert b.is_available() is False
+
+    def test_non_openrouter_probes_models_endpoint(self, monkeypatch):
+        import requests as _requests
+
+        b = self._backend(api_key="no_key", base_url="http://localhost:1234/v1")
+        calls = []
+        monkeypatch.setattr(
+            _requests,
+            "get",
+            lambda url, **kw: (calls.append(url) or _MockResponse({"data": []})),
+        )
+        assert b.is_available() is True
+        assert calls and calls[0].endswith("/models")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# auth.yaml secrets merge
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_deep_merge_overlays_nested_dicts():
+    from micron.config import _deep_merge
+
+    base = {"providers": {"openrouter": {"api_key": "<placeholder>", "base_url": "https://or"}}}
+    overlay = {"providers": {"openrouter": {"api_key": "sk-real"}}}
+    merged = _deep_merge(base, overlay)
+    assert merged["providers"]["openrouter"]["api_key"] == "sk-real"
+    assert merged["providers"]["openrouter"]["base_url"] == "https://or"
+
+
+def test_deep_merge_scalar_replacement():
+    from micron.config import _deep_merge
+
+    merged = _deep_merge({"a": {"b": 1}}, {"a": {"b": 2}})
+    assert merged["a"]["b"] == 2
+
+
+def test_config_loads_auth_yaml(tmp_path, monkeypatch):
+    """Config merges a sibling auth.yaml over micron.yaml."""
+    import yaml
+    from micron.config import Config
+
+    (tmp_path / "micron.yaml").write_text(yaml.safe_dump({
+        "providers": {"openrouter": {"api_key": "<placeholder>", "base_url": "https://or"}},
+    }))
+    (tmp_path / "auth.yaml").write_text(yaml.safe_dump({
+        "providers": {"openrouter": {"api_key": "sk-real"}},
+    }))
+    cfg = Config(config_path=str(tmp_path / "micron.yaml"))
+    assert cfg.get("providers.openrouter.api_key") == "sk-real"
+    assert cfg.get("providers.openrouter.base_url") == "https://or"
+
+
+def test_config_without_auth_yaml_uses_placeholders(tmp_path):
+    import yaml
+    from micron.config import Config
+
+    (tmp_path / "micron.yaml").write_text(yaml.safe_dump({
+        "providers": {"openrouter": {"api_key": "<placeholder>"}},
+    }))
+    cfg = Config(config_path=str(tmp_path / "micron.yaml"))
+    assert cfg.get("providers.openrouter.api_key") == "<placeholder>"

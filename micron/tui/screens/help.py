@@ -28,9 +28,8 @@ Type in the input bar:
 - `/memory delete <id>` — Delete a single memory by id
 - `/memory list` — List recent memories
 - `/tools` — Show available tools
-- `/model` — Show current model info
 - `/providers` — List configured providers
-- `/models` — List models / switch provider+model
+- `/models` — Open model picker / switch provider+model
 - `/unload` — Unload model from RAM
 - `/reload` — Reload skills from disk
 - `/sessions` — Refresh session list

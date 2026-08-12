@@ -38,6 +38,7 @@ context/sessions/
 
 # Configuration
 micron.yaml
+auth.yaml
 .env
 .env.local
 .env*.local

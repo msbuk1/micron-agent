@@ -102,7 +102,7 @@ MicronTUI
 ## Slash Commands
 
 All existing commands preserved and also reachable via the menu:
-`/help`, `/exit`, `/quit`, `/clear`, `/mem`, `/tools`, `/model`, `/providers`,
+`/help`, `/exit`, `/quit`, `/clear`, `/mem`, `/tools`, `/models`, `/providers`,
 `/unload`, `/reload`, `/sessions`, `/resume`, `/last`, `/trash`, `/restore`,
 `/purge`, `/undo`, `/tree`, `/skill`, `/skills`.
 

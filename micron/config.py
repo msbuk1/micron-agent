@@ -15,6 +15,24 @@ from typing import Optional, Any
 import yaml
 
 
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    """Recursively merge ``overlay`` into ``base`` (overlay wins).
+
+    Unlike ``dict.update``, nested dicts are merged key-by-key so an
+    ``auth.yaml`` containing only ``providers.openrouter.api_key`` doesn't
+    clobber the other provider settings from ``micron.yaml``.
+    """
+    for key, value in overlay.items():
+        if (
+            isinstance(value, dict)
+            and isinstance(base.get(key), dict)
+        ):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
 @dataclass
 class AuthConfig:
     """Authentication configuration."""
@@ -45,6 +63,7 @@ class Config:
         """
         self.env_prefix = env_prefix
         self.config_path = self._resolve_config_path(config_path)
+        self.auth_path = None  # set during _load_all after config_path resolves
 
         # Load from all sources
         self._config = self._load_all()
@@ -69,13 +88,26 @@ class Config:
                 return c
         return None
 
+    def _resolve_auth_path(self, config_path: Optional[Path]) -> Optional[Path]:
+        """Resolve auth.yaml next to micron.yaml (secrets, never committed)."""
+        if config_path:
+            return config_path.parent / "auth.yaml" if (config_path.parent / "auth.yaml").exists() else None
+        candidates = [
+            Path.cwd() / "auth.yaml",
+            Path(__file__).parent.parent / "auth.yaml",
+        ]
+        for c in candidates:
+            if c.exists():
+                return c
+        return None
+
     def _load_all(self) -> dict:
         """Load configuration from all sources."""
         config = {}
-        
+
         # 1. Start with defaults
         config.update(self._get_defaults())
-        
+
         # 2. Load from YAML file if exists
         if self.config_path and self.config_path.exists():
             try:
@@ -84,10 +116,21 @@ class Config:
                 config.update(file_config)
             except Exception as e:
                 print(f"[config] Warning: Could not load {self.config_path}: {e}")
-        
-        # 3. Override with environment variables
+
+        # 3. Merge secrets from auth.yaml (gitignored) over micron.yaml so
+        #    placeholders in the tracked file get replaced by real keys.
+        self.auth_path = self._resolve_auth_path(self.config_path)
+        if self.auth_path and self.auth_path.exists():
+            try:
+                with open(self.auth_path) as f:
+                    auth_config = yaml.safe_load(f) or {}
+                _deep_merge(config, auth_config)
+            except Exception as e:
+                print(f"[config] Warning: Could not load {self.auth_path}: {e}")
+
+        # 4. Override with environment variables
         config.update(self._load_env_vars())
-        
+
         return config
     
     def _get_defaults(self) -> dict:

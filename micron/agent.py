@@ -14,6 +14,16 @@ from micron.text_tool_parser import TextToolCallParser
 from micron.tools.registry import ToolRegistry
 
 
+def _availability_hint(backend, provider: str) -> str:
+    """Suffix for the set_backend failure message when the API key looks wrong."""
+    api_key = getattr(backend, "api_key", "")
+    if provider in ("openrouter", "openai") and not api_key:
+        return " (missing API key — set it in micron.yaml or env)"
+    if api_key.startswith("<") and api_key.endswith(">"):
+        return " (API key is a placeholder — replace it in micron.yaml)"
+    return ""
+
+
 @dataclass
 class ToolCall:
     name: str
@@ -503,6 +513,7 @@ class MicronAgent:
         if not new_llm.is_available():
             raise RuntimeError(
                 f"{provider} backend for {model!r} is not available"
+                f"{_availability_hint(new_llm, provider)}"
             )
 
         # Unload old backend (best-effort; some backends have no unload)

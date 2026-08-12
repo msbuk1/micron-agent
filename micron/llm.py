@@ -370,13 +370,23 @@ class OpenAICompatibleBackend(LLMBackend):
         if not self.api_key:
             self._available = False
             return False
+        # Reject obvious placeholder keys from the config template.
+        if self.api_key.startswith("<") and self.api_key.endswith(">"):
+            self._available = False
+            return False
         try:
             import requests
-            resp = requests.get(
-                f"{self.base_url}/models",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=5,
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            # OpenRouter serves /models publicly (200 even with a bad key),
+            # so it can't validate the credential. The /key endpoint only
+            # answers with a valid token. Other OpenAI-compatible servers
+            # already gate /models on auth, so that stays the probe there.
+            probe = (
+                f"{self.base_url}/key"
+                if "openrouter" in self.base_url.lower()
+                else f"{self.base_url}/models"
             )
+            resp = requests.get(probe, headers=headers, timeout=5)
             self._available = resp.status_code == 200
             return self._available
         except Exception:

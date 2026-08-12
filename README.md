@@ -65,6 +65,16 @@ providers:
     model: openrouter/auto
 ```
 
+API keys live in `auth.yaml` (gitignored) so `micron.yaml` stays shareable.
+It is merged over `micron.yaml` per-provider, so only the key needs to be
+listed. Copy `auth.example.yaml` → `auth.yaml` and fill in the values:
+
+```yaml
+providers:
+  openrouter:
+    api_key: <your-openrouter-api-key>
+```
+
 Override via CLI or env vars:
 ```bash
 ./run.sh --provider openrouter "query"
@@ -103,7 +113,7 @@ MICRON_PROVIDER=lmstudio ./run.sh "query"
 | `/clear` | Clear conversation history |
 | `/mem` | List recent memories |
 | `/tools` | Show available tools |
-| `/model` | Show current model info |
+| `/models` | Open model picker (click to switch) |
 | `/providers` | List configured providers |
 | `/unload` | Unload model from RAM |
 | `/reload` | Reload skills from disk |
@@ -224,7 +234,8 @@ micron/
 │   ├── test_skills.py
 │   ├── test_text_tool_parser.py
 │   └── test_tools.py
-├── micron.yaml        # Provider config
+├── micron.yaml        # Provider config (no secrets)
+├── auth.yaml          # API keys (gitignored — never commit)
 └── pyproject.toml
 ```
 

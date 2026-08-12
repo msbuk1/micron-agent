@@ -166,17 +166,27 @@ HelpScreen {
     align: center middle;
 }
 
-.detail-screen, .menu-screen {
+.detail-screen, .menu-screen, ModelPickerScreen {
     align: center middle;
 }
 
-#help-dialog, #detail-dialog, #menu-dialog {
+#help-dialog, #detail-dialog, #menu-dialog, #model-dialog {
     width: 80;
     height: auto;
     max-height: 80%;
     border: thick $primary;
     padding: 1 2;
     background: $surface;
+}
+
+#model-dialog #model-title {
+    margin-bottom: 1;
+    text-style: bold;
+}
+
+#model-dialog #model-list {
+    width: 100%;
+    max-height: 30;
 }
 
 #detail-dialog Markdown {

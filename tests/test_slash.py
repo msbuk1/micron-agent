@@ -205,7 +205,6 @@ class TestCommandDispatcherReadOnlyMigration:
         assert "/clear" in result.text
         assert "/mem" in result.text
         assert "/tools" in result.text
-        assert "/model" in result.text
         assert "/providers" in result.text
         assert "/unload" in result.text
         assert "/reload" in result.text

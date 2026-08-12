@@ -13,6 +13,24 @@ from textual.message import Message
 from micron.slash import SlashCommandRegistry, SlashCommandResult
 
 
+def _format_price(raw) -> str:
+    """Format a per-token USD price as dollars per million tokens.
+
+    OpenRouter reports prices as string USD per token, e.g. ``"7.5e-08"``.
+    Providers quote per-million-token rates, so we scale by 1e6 and strip
+    trailing zeros: ``"7.5e-08"`` → ``"0.075"``.
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return str(raw)
+    per_m = value * 1e6
+    if per_m == 0:
+        return "0"
+    text = f"{per_m:.6f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
 class CommandResult(Message):
     """Posted by CommandDispatcher after handling a command."""
 
@@ -25,6 +43,8 @@ class CommandResult(Message):
         loaded_skill=None,
         resumed_history: list[dict] | None = None,
         should_exit: bool = False,
+        open_model_picker: bool = False,
+        model_entries: list | None = None,
     ) -> None:
         super().__init__()
         self.text = text
@@ -33,6 +53,8 @@ class CommandResult(Message):
         self.loaded_skill = loaded_skill
         self.resumed_history = resumed_history
         self.should_exit = should_exit
+        self.open_model_picker = open_model_picker
+        self.model_entries = model_entries or []
 
 
 class CommandDispatcher:
@@ -56,7 +78,7 @@ class CommandDispatcher:
         self._register_memory_commands()
 
     def _register_readonly_commands(self) -> None:
-        """Register /help, /clear, /mem, /tools, /model, /providers."""
+        """Register /help, /clear, /mem, /tools, /providers."""
         reg = self.registry
 
         @reg.register("help", aliases=("?", "h"), help_text="Show this help")
@@ -77,10 +99,6 @@ class CommandDispatcher:
         @reg.register("tools", help_text="Show available tools")
         def _tools(args: list[str]) -> SlashCommandResult:
             return SlashCommandResult(text=self._tools())
-
-        @reg.register("model", help_text="Show current model info")
-        def _model(args: list[str]) -> SlashCommandResult:
-            return SlashCommandResult(text=self._model())
 
         @reg.register("providers", help_text="List configured providers")
         def _providers(args: list[str]) -> SlashCommandResult:
@@ -198,7 +216,7 @@ class CommandDispatcher:
         """Register /models: list models and switch active backend."""
         reg = self.registry
 
-        @reg.register("models", help_text="List models / switch provider+model")
+        @reg.register("models", help_text="Open model picker / switch provider+model")
         def _models(args: list[str]) -> SlashCommandResult:
             return self._models(args)
 
@@ -219,6 +237,8 @@ class CommandDispatcher:
             loaded_skill=result.extras.get("loaded_skill"),
             resumed_history=result.extras.get("resumed_history"),
             should_exit=result.extras.get("should_exit", False),
+            open_model_picker=result.extras.get("open_model_picker", False),
+            model_entries=result.extras.get("model_entries", []),
         )
 
     def _help_text(self) -> str:
@@ -265,14 +285,6 @@ class CommandDispatcher:
         for t in tools:
             write_tag = " [write]" if t.get("write", False) else ""
             lines.append(f"  {t['name']}: {t['description']}{write_tag}")
-        return "\n".join(lines)
-
-    def _model(self) -> str:
-        llm = self.agent.llm
-        lines = [f"Provider: {llm.__class__.__name__}"]
-        if hasattr(llm, "_init_kwargs"):
-            import json
-            lines.append(json.dumps(llm._init_kwargs, indent=2, default=str))
         return "\n".join(lines)
 
     def _providers(self) -> str:
@@ -323,33 +335,140 @@ class CommandDispatcher:
 
     # ── /models ──────────────────────────────────────────────────────────
 
-    def _all_model_entries(self) -> list[tuple[str, str]]:
-        """Read every configured (provider, model) pair from micron.yaml.
+    def _fetch_provider_models(self, prov_name: str, prov_cfg: dict) -> list[dict]:
+        """Query a provider's API for the models it currently serves.
 
-        Each provider config may carry a ``models: [list]`` for multi-model
-        support; otherwise the single ``model`` field is used. Returned in
-        the order the providers appear in the config.
+        Ollama exposes ``/api/tags``; the OpenAI-compatible providers
+        (lmstudio, openrouter, openai, vllm) expose ``/models``. Each entry
+        is ``{"name": str, "meta": {...}}`` where meta carries whatever
+        extra metadata the endpoint gives us (pricing, context length,
+        parameter size, …). Returns an empty list when the endpoint can't
+        be reached, so callers fall back to the config's model list.
+        """
+        base_url = prov_cfg.get("base_url")
+        if not base_url:
+            return []
+        try:
+            import requests
+            if prov_name == "ollama":
+                resp = requests.get(f"{base_url}/api/tags", timeout=2)
+                resp.raise_for_status()
+                return [
+                    {
+                        "name": m.get("name", ""),
+                        "meta": {
+                            k: m.get(k)
+                            for k in ("parameter_size", "quantization_level", "size")
+                            if m.get(k) is not None
+                        },
+                    }
+                    for m in resp.json().get("models", [])
+                    if m.get("name")
+                ]
+            headers = {}
+            api_key = prov_cfg.get("api_key")
+            if api_key and api_key != "no_key":
+                headers["Authorization"] = f"Bearer {api_key}"
+            resp = requests.get(f"{base_url}/models", headers=headers, timeout=2)
+            resp.raise_for_status()
+            return [
+                {
+                    "name": m.get("id", ""),
+                    "meta": {
+                        k: m.get(k)
+                        for k in ("pricing", "context_length", "description")
+                        if m.get(k) is not None
+                    },
+                }
+                for m in resp.json().get("data", [])
+                if m.get("id")
+            ]
+        except Exception:
+            return []
+
+    def _all_model_entries(self) -> list[tuple[str, str, dict]]:
+        """Every (provider, model, meta) triple the /models command can switch to.
+
+        Live-queries each provider's API (Ollama ``/api/tags``, OpenAI-
+        compatible ``/models``) for the models it currently serves. When a
+        provider's endpoint is unreachable or doesn't expose one
+        (llamacpp), falls back to the config's ``models:`` list, else the
+        single ``model`` field, with empty meta.
         """
         from micron.config import load_config
         cfg = load_config()
         providers = cfg.get("providers", {}) if cfg else {}
-        entries: list[tuple[str, str]] = []
+        entries: list[tuple[str, str, dict]] = []
         for prov_name, prov_cfg in providers.items():
+            live = self._fetch_provider_models(prov_name, prov_cfg)
+            if live:
+                entries.extend(
+                    (prov_name, m["name"], m.get("meta", {})) for m in live
+                )
+                continue
             models = prov_cfg.get("models")
             if isinstance(models, list) and models:
-                entries.extend((prov_name, m) for m in models)
+                entries.extend((prov_name, m, {}) for m in models)
             elif prov_cfg.get("model"):
-                entries.append((prov_name, prov_cfg["model"]))
+                entries.append((prov_name, prov_cfg["model"], {}))
         return entries
 
-    def _format_model_list(self, entries: list[tuple[str, str]]) -> str:
+    def _format_model_meta_parts(self, meta: dict) -> tuple[str, str]:
+        """Split a model's metadata into (price_str, rest_str).
+
+        The price ("$0.075/$0.3") is split out from the trailing detail
+        ("per M tok · 128k ctx") so the list formatter can right-align the
+        price column and keep every row's detail on the same line.
+        """
+        price = ""
+        rest_parts: list[str] = []
+        pricing = meta.get("pricing")
+        if isinstance(pricing, dict) and pricing.get("prompt") is not None:
+            prompt = _format_price(pricing.get("prompt"))
+            completion = _format_price(pricing.get("completion"))
+            price = f"${prompt}/${completion}"
+            rest_parts.append("per M tok")
+        ctx = meta.get("context_length")
+        if isinstance(ctx, int) and ctx:
+            if ctx >= 1_000_000 and ctx % 1_000_000 == 0:
+                rest_parts.append(f"{ctx // 1_000_000}m ctx")
+            elif ctx % 1000 == 0:
+                rest_parts.append(f"{ctx // 1000}k ctx")
+            else:
+                rest_parts.append(f"{ctx} ctx")
+        params = meta.get("parameter_size")
+        if params:
+            rest_parts.append(str(params))
+        quant = meta.get("quantization_level")
+        if quant:
+            rest_parts.append(str(quant))
+        return price, " · ".join(rest_parts)
+
+    def _format_model_meta(self, meta: dict) -> str:
+        """One-line detail string from a model's metadata dict."""
+        price, rest = self._format_model_meta_parts(meta)
+        return " · ".join(p for p in (price, rest) if p)
+
+    def _format_model_list(self, entries: list[tuple[str, str, dict]]) -> str:
         active = (self.agent.provider, self.agent.model)
+        rows = [
+            (prov, model, *self._format_model_meta_parts(meta))
+            for prov, model, meta in entries
+        ]
         lines = ["Available models:"]
-        if not entries:
+        if not rows:
             lines.append("  (none configured)")
-        for prov, model in entries:
+            lines.append("")
+            lines.append("Use: /models <provider> [<model>]")
+            return "\n".join(lines)
+        model_w = max(len(m) for _, m, _, _ in rows)
+        price_w = max(len(p) for _, _, p, _ in rows)
+        for prov, model, price, rest in rows:
             marker = "  ← active" if (prov, model) == active else ""
-            lines.append(f"  {prov:<11} {model}{marker}")
+            detail = " ".join(
+                part for part in (f"{price:>{price_w}}", rest) if part
+            )
+            lines.append(f"  {prov:<11} {model:<{model_w}}  [{detail}]{marker}")
         lines.append("")
         lines.append("Use: /models <provider> [<model>]")
         return "\n".join(lines)
@@ -357,10 +476,14 @@ class CommandDispatcher:
     def _models(self, args: list[str]) -> SlashCommandResult:
         entries = self._all_model_entries()
 
-        # No args → list everything, remember for numeric selection.
+        # No args → signal the TUI to open the model picker. The text is
+        # still built so non-TUI transports (tests, CLI) keep working.
         if not args:
             self._last_models = entries
-            return SlashCommandResult(text=self._format_model_list(entries))
+            return SlashCommandResult(
+                text=self._format_model_list(entries),
+                extras={"open_model_picker": True, "model_entries": entries},
+            )
 
         first = args[0]
 
@@ -375,22 +498,25 @@ class CommandDispatcher:
                 return SlashCommandResult(
                     text=f"Index {first} out of range (1..{len(self._last_models)})."
                 )
-            prov, model = self._last_models[idx]
+            prov, model, _meta = self._last_models[idx]
             return self._switch_model(prov, model)
 
         # Provider-only → filter list to that provider.
         if len(args) == 1:
             provider = first
-            provider_entries = [(p, m) for (p, m) in entries if p == provider]
+            provider_entries = [e for e in entries if e[0] == provider]
             if not provider_entries:
-                if provider not in {p for (p, _) in entries}:
-                    providers = sorted({p for (p, _) in entries})
+                if provider not in {p for (p, _m, _) in entries}:
+                    providers = sorted({p for (p, _m, _) in entries})
                     return SlashCommandResult(
                         text=f"Unknown provider: {provider}. Known: {', '.join(providers)}"
                     )
                 return SlashCommandResult(text=f"No models for {provider}.")
             self._last_models = provider_entries
-            return SlashCommandResult(text=self._format_model_list(provider_entries))
+            return SlashCommandResult(
+                text=self._format_model_list(provider_entries),
+                extras={"open_model_picker": True, "model_entries": provider_entries},
+            )
 
         # Provider + model → switch.
         provider, model = first, args[1]
@@ -419,5 +545,9 @@ class CommandDispatcher:
 
         return SlashCommandResult(
             text=f"Switched to {provider}/{model}.\n"
-                 f"Use /model to confirm."
+                 f"Use /models to confirm."
         )
+
+    def switch_model(self, provider: str, model: str) -> SlashCommandResult:
+        """Public wrapper around _switch_model for the model picker."""
+        return self._switch_model(provider, model)

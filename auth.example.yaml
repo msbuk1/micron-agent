@@ -1,0 +1,7 @@
+# Template for auth.yaml — copy to auth.yaml (gitignored) and fill in keys.
+# Never commit auth.yaml; it holds secrets.
+providers:
+  openrouter:
+    api_key: <your-openrouter-api-key>
+  # openai:
+  #   api_key: <your-api-key>
