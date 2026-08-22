@@ -56,55 +56,99 @@ def _parse_text(raw: str) -> str:
         parts = txt.split("---", 2)
         if len(parts) >= 3:
             txt = parts[2]
+    # Obsidian wikilinks: ![[embed]] and [[link|alias]] → alias or link
+    txt = re.sub(r"!\[\[([^\]|]+)(?:\|[^\]]+)?\]\]", r"\1", txt)
+    txt = re.sub(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]", lambda m: m.group(2) or m.group(1), txt)
     txt = re.sub(r"^# .*$", "", txt, flags=re.MULTILINE)
     txt = re.sub(r"\s+", " ", txt).strip()
     return txt
 
 
-def _resolve_knowledge_dir(knowledge_dir: Path | str | None) -> Path:
-    if knowledge_dir is not None:
-        return Path(knowledge_dir).resolve()
+def _resolve_context_dir() -> Path:
     env = os.getenv("MICRON_CONTEXT_DIR")
     if env:
-        return (Path(env) / "knowledge").resolve()
+        return Path(env).expanduser().resolve()
     workdir = os.getenv("MICRON_WORKDIR")
     if workdir:
-        return (Path(workdir) / "context" / "knowledge").resolve()
+        return (Path(workdir).expanduser() / "context").resolve()
     try:
         from micron.config import Config
 
         ctx = Config().get("context_dir", "context")
-        p = Path(ctx)
+        p = Path(ctx).expanduser()
         if not p.is_absolute():
             p = Path(__file__).parent.parent / p
-        return (p / "knowledge").resolve()
+        return p.resolve()
     except Exception:
-        return (Path.cwd() / "context" / "knowledge").resolve()
+        return (Path.cwd() / "context").resolve()
+
+
+def _resolve_knowledge_dir(knowledge_dir: Path | str | None) -> Path:
+    if knowledge_dir is not None:
+        return Path(knowledge_dir).expanduser().resolve()
+    kd_env = os.getenv("MICRON_KNOWLEDGE_DIR")
+    if kd_env:
+        return Path(kd_env).expanduser().resolve()
+    return _resolve_context_dir() / "knowledge"
+
+
+def _resolve_cache_dir(knowledge_dir: Path, context_dir: Path | None = None) -> Path:
+    """Cache lives with knowledge if vault is inside context, else in context to avoid polluting external vault."""
+    ctx = Path(context_dir).expanduser().resolve() if context_dir is not None else _resolve_context_dir()
+    try:
+        # Python 3.9+ is_relative_to
+        if knowledge_dir.is_relative_to(ctx):
+            return knowledge_dir
+        # Also handle vault == context/knowledge case already covered; external vault -> ctx
+        return ctx
+    except Exception:
+        # Fallback string prefix check
+        try:
+            if str(knowledge_dir).startswith(str(ctx)):
+                return knowledge_dir
+        except Exception:
+            pass
+        return ctx
 
 
 class KnowledgeIndex:
     """Deep module — discovery + parsing + TF-IDF + budget behind one seam."""
 
-    def __init__(self, knowledge_dir: Path | str | None = None):
+    def __init__(
+        self,
+        knowledge_dir: Path | str | None = None,
+        *,
+        context_dir: Path | str | None = None,
+    ):
         self._dir = _resolve_knowledge_dir(knowledge_dir)
+        # Cache location: keep external vault clean — cache lives in context_dir
+        # Explicit tmp_path in tests (knowledge_dir passed without vault env) keeps cache alongside knowledge
+        if knowledge_dir is not None and context_dir is None and not os.getenv("MICRON_KNOWLEDGE_DIR"):
+            self._cache_dir = self._dir
+        else:
+            cache_ctx = Path(context_dir).expanduser().resolve() if context_dir is not None else None
+            self._cache_dir = _resolve_cache_dir(self._dir, cache_ctx)
         self._index = TFIDFIndex()
         self._docs_parsed: dict[str, str] = {}  # slug -> parsed content (>5 chars)
         self._docs_raw: dict[str, str] = {}  # slug -> raw stripped original
         self._full_raw: dict[str, str] = {}  # slug -> full raw file text for prompt packing (not collapsed snippet)
         self._snapshot: dict[Path, tuple[float, int]] = {}
         self._dirty = True
-        self._index_file = self._dir / ".knowledge_index.json"
-        self._index_md = self._dir / ".knowledge_index.md"
+        self._index_file = self._cache_dir / ".knowledge_index.json"
+        self._index_md = self._cache_dir / ".knowledge_index.md"
 
     def _glob_files(self) -> list[Path]:
         files: list[Path] = []
-        for ext in ("*.md", "*.txt", "*.pdf"):
-            for f in self._dir.glob(ext):
+        for pat in ("*.md", "*.txt", "*.pdf", "**/*.md", "**/*.txt", "**/*.pdf"):
+            for f in self._dir.glob(pat):
                 if f.name.startswith("."):
                     continue
                 if f.name == "index.md":
                     continue
-                files.append(f)
+                if f not in files:
+                    files.append(f)
+        # Also handle recursive via rglob for vault subfolders
+        # (glob ** already covers, but ensure)
         return sorted(files)
 
     def _read_raw(self, f: Path) -> str:
@@ -170,7 +214,7 @@ class KnowledgeIndex:
 
     def _save_persisted(self) -> None:
         try:
-            self._dir.mkdir(parents=True, exist_ok=True)
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
             data = {
                 "snapshot": {str(k): list(v) for k, v in self._snapshot.items()},
                 "docs": self._docs_parsed,
@@ -343,7 +387,13 @@ _knowledge_snap: str | None = None
 
 def get_knowledge_index() -> KnowledgeIndex:
     global _knowledge_singleton, _knowledge_snap
-    snap = os.getenv("MICRON_CONTEXT_DIR") or os.getenv("MICRON_WORKDIR") or ""
+    snap = "|".join(
+        [
+            os.getenv("MICRON_KNOWLEDGE_DIR") or "",
+            os.getenv("MICRON_CONTEXT_DIR") or "",
+            os.getenv("MICRON_WORKDIR") or "",
+        ]
+    )
     if _knowledge_singleton is None or _knowledge_snap != snap:
         _knowledge_singleton = KnowledgeIndex()
         _knowledge_snap = snap

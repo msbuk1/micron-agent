@@ -49,6 +49,9 @@ context/uploads/
 # Knowledge and persona
 context/knowledge/
 context/persona/
+# Knowledge index cache (generated, vault-clean)
+context/.knowledge_index.*
+**/.knowledge_index.*
 
 # Security
 *.key

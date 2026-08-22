@@ -7,6 +7,10 @@ default_provider: lmstudio
 # Context directory (skills, memory, knowledge, persona)
 context_dir: context
 
+# Knowledge directory — Obsidian vault friendly (wikilinks [[link|alias]], ![[embed]], subfolders, symlinks ~/vault)
+# Defaults to <context_dir>/knowledge; override via MICRON_KNOWLEDGE_DIR env or this key.
+# knowledge_dir: ~/vault
+
 # Working directory for file tools (resolve relative paths against this)
 workdir: /home/matt/Documents/sandbox/
 

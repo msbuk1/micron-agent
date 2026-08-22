@@ -53,6 +53,7 @@ class RuntimeConfig:
     max_tool_iterations: int
     workdir: Path
     context_dir: Path
+    knowledge_dir: Path
     firecrawl_url: str | None
     host: str
     port: int
@@ -71,6 +72,7 @@ class RuntimeConfig:
             "max_tool_iterations": self.max_tool_iterations,
             "workdir": str(self.workdir),
             "context_dir": str(self.context_dir),
+            "knowledge_dir": str(self.knowledge_dir),
             "firecrawl_url": self.firecrawl_url,
             "host": self.host,
             "port": self.port,
@@ -117,6 +119,7 @@ class RuntimeConfig:
             max_tool_iterations=10,
             workdir=Path(tmp_path),
             context_dir=Path(tmp_path) / "context",
+            knowledge_dir=Path(tmp_path) / "context" / "knowledge",
             firecrawl_url="http://localhost:3002",
             host="0.0.0.0",
             port=8000,
@@ -130,6 +133,8 @@ class RuntimeConfig:
             base["workdir"] = Path(base["workdir"])
         if isinstance(base["context_dir"], str):
             base["context_dir"] = Path(base["context_dir"])
+        if isinstance(base["knowledge_dir"], str):
+            base["knowledge_dir"] = Path(base["knowledge_dir"])
         return cls(**base)
 
 
@@ -230,6 +235,7 @@ class Config:
         return {
             # Context and working directory
             "context_dir": "context",
+            "knowledge_dir": "context/knowledge",
             "workdir": str(Path.cwd()),
             
             # Provider settings
@@ -292,6 +298,7 @@ class Config:
         env_mappings = {
             "PROVIDER": "default_provider",
             "CONTEXT_DIR": "context_dir",
+            "KNOWLEDGE_DIR": "knowledge_dir",
             "WORKDIR": "workdir",
             "TEMPERATURE": "temperature",
             "MAX_TOKENS": "max_tokens",
@@ -380,6 +387,14 @@ class Config:
             if "MICRON_CONTEXT_DIR" not in os.environ:
                 os.environ["MICRON_CONTEXT_DIR"] = str(ctx_path)
 
+        knowledge_dir = self.get("knowledge_dir")
+        if knowledge_dir:
+            kd_path = Path(knowledge_dir).expanduser()
+            if not kd_path.is_absolute():
+                kd_path = Path(__file__).parent.parent / kd_path
+            if "MICRON_KNOWLEDGE_DIR" not in os.environ:
+                os.environ["MICRON_KNOWLEDGE_DIR"] = str(kd_path)
+
         provider = self.get("default_provider")
         if provider and "MICRON_PROVIDER" not in os.environ:
             os.environ["MICRON_PROVIDER"] = provider
@@ -403,6 +418,12 @@ class Config:
             ctx_path = (Path(__file__).parent.parent / ctx_path).resolve()
         else:
             ctx_path = ctx_path.resolve()
+        kd_raw = self.get("knowledge_dir", str(ctx_path / "knowledge"))
+        kd_path = Path(kd_raw).expanduser()
+        if not kd_path.is_absolute():
+            kd_path = (Path(__file__).parent.parent / kd_path).resolve()
+        else:
+            kd_path = kd_path.resolve()
         return RuntimeConfig(
             provider=provider,
             model=model_override or prov_cfg.get("model"),
@@ -413,6 +434,7 @@ class Config:
             max_tool_iterations=int(self.get("max_tool_iterations", 10)),
             workdir=workdir,
             context_dir=ctx_path,
+            knowledge_dir=kd_path,
             firecrawl_url=self.get("firecrawl_url"),
             host=self.get("host", "0.0.0.0"),
             port=int(self.get("port", 8000)),

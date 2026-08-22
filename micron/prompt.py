@@ -79,9 +79,12 @@ Tool results will be provided in the next message."""
             self.knowledge_index = knowledge
         else:
             from micron.knowledge import KnowledgeIndex
+            import os
 
             try:
-                self.knowledge_index = KnowledgeIndex(self.context_dir / "knowledge")
+                vault = os.getenv("MICRON_KNOWLEDGE_DIR")
+                kd = vault if vault else self.context_dir / "knowledge"
+                self.knowledge_index = KnowledgeIndex(kd, context_dir=self.context_dir)
             except Exception:
                 self.knowledge_index = None
 
