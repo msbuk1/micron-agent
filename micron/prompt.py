@@ -18,8 +18,9 @@ class PromptBuilder:
 CURRENT CONTEXT:
 - Date: {today}
 
-MEMORY (relevant entries):
+MEMORY (facts about the USER, relevant to this query):
 {memory}
+— These are prior facts YOU stored about the USER. When the USER asks "do I like..." or "what do I prefer", answer from here.
 
 KNOWLEDGE (relevant documents):
 {knowledge}
@@ -28,6 +29,9 @@ AVAILABLE TOOLS:
 {tools}
 
 INSTRUCTIONS:
+- **SAVE MEMORY**: When USER says "remember …", "remember that I like …", "remember that I prefer …" — you MUST call save_memory(text="…", importance=5) with the exact fact. Example: USER says "remember I like dogs" → call save_memory(text="User likes dogs", tags=["preference"], importance=5). Do this immediately, no clarification.
+- **MEMORY FIRST**: When USER asks "do I like…", "what do I prefer", "what do you remember about me" — you MUST answer from MEMORY (facts about the USER) above. Example: MEMORY shows "Remember that I like cats" and USER asks "do I like cats or dogs?" → answer "Based on your memory, you like cats." Do NOT say "I don't have preferences" when MEMORY contains the answer. If MEMORY shows "(no relevant memories)" but you suspect memory exists, you MUST call search_memory(query).
+- **DO NOT HALLUCINATE USER PREFERENCES**: Never invent cats/dogs preference — use MEMORY or search_memory only.
 - **KNOWLEDGE FIRST POLICY**: If the answer is in your knowledge base, provide it IMMEDIATELY without using any tools.
 - **TOOLS ONLY WHEN NECESSARY**: Use tools ONLY when:
   - The user explicitly asks for real-time information
@@ -119,6 +123,11 @@ Tool results will be provided in the next message."""
     def _load_memory(self, query: str = "") -> str:
         """Load relevant memory entries."""
         entries = self.memory.search(query, k=5)
+        if not entries and query and query.strip():
+            # Generic "what do you remember" should surface recent, not empty
+            ql = query.lower()
+            if any(t in ql for t in ["what do you remember", "what do you know", "remember", "memory", "memories"]):
+                entries = self.memory.list(n=5)
         if not entries:
             return "(no relevant memories)"
         lines = []
@@ -146,9 +155,13 @@ Tool results will be provided in the next message."""
         return "\n".join(lines)
 
     def _load_knowledge(self, query: str = "") -> str:
-        """Load knowledge files, filtered by query relevance if provided."""
+        """Load knowledge files — now uses tiny index.md, not full docs."""
         if getattr(self, "knowledge_index", None) is not None:
             try:
+                # New path: persisted index.md (small, query-agnostic)
+                # Keeps system prompt light; full docs via search_knowledge tool
+                if hasattr(self.knowledge_index, "index_context"):
+                    return self.knowledge_index.index_context()
                 return self.knowledge_index.prompt_context(query)
             except Exception:
                 pass

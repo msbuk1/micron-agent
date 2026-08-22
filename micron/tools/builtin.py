@@ -200,7 +200,9 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
         fallback = _duckduckgo_search(query, max_results)
         if fallback:
             return fallback
-        return [{"error": str(e)}]
+        # Sanitize for Rich markup (avoid [Errno] causing MarkupError)
+        msg = str(e).replace("[", "(").replace("]", ")")
+        return [{"error": msg}]
 
 
 def _duckduckgo_search(query: str, max_results: int = 5) -> list[dict]:
@@ -601,6 +603,30 @@ def save_memory(text: str, tags: list[str] = None, importance: int = 3) -> str:
         f.write(json.dumps(entry) + "\n")
 
     return f"Saved: {text}"
+
+
+@tool(
+    name="search_memory",
+    description="Search long-term memories by keyword. Returns ranked memories by relevance.",
+    query="Search query for memories",
+    k="Number of results to return (default 5)",
+)
+def search_memory_tool(query: str = "", k: int = 5) -> str:
+    """Search long-term memories."""
+    from micron.memory import Memory
+
+    if not query.strip():
+        return "(no search query)"
+    context_dir = os.getenv("MICRON_CONTEXT_DIR", str(Path(os.getenv("MICRON_WORKDIR", os.getcwd())) / "context"))
+    mem = Memory(Path(context_dir) / "memory")
+    results = mem.search(query, k=k)
+    if not results:
+        return "(no relevant memories)"
+    lines = []
+    for r in results:
+        tags = " ".join(f"#{t}" for t in r.tags) if r.tags else ""
+        lines.append(f"[{r.id}] {r.text} {tags} (importance {r.importance})")
+    return "\n".join(lines)
 
 
 @tool(

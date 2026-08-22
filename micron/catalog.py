@@ -177,14 +177,14 @@ class ModelCatalog:
         lines.append("Use: /models <provider> [<model>]")
         return "\n".join(lines)
 
-    def switch(self, agent, provider: str, model: str) -> str:
-        # Use Config to get provider cfg for kwargs (like CommandDispatcher._switch_model)
+    def switch(self, agent, provider: str, model: str, *, persist: bool = True) -> str:
         try:
             from micron.config import load_config
 
             cfg = load_config()
             prov_cfg = (cfg.get("providers", {}) or {}).get(provider, {})
         except Exception:
+            cfg = None
             prov_cfg = self._providers.get(provider, {})
         if not prov_cfg:
             return f"Unknown provider: {provider}."
@@ -193,6 +193,27 @@ class ModelCatalog:
             agent.set_backend(provider, model, **kwargs)
         except Exception as e:
             return f"Failed to switch to {provider}/{model}: {e}"
+        if persist and cfg is not None and getattr(cfg, "config_path", None):
+            try:
+                import yaml
+
+                path = cfg.config_path
+                data = {}
+                if path.exists():
+                    data = yaml.safe_load(path.read_text()) or {}
+                data["default_provider"] = provider
+                if "providers" not in data:
+                    data["providers"] = {}
+                if provider not in data["providers"]:
+                    data["providers"][provider] = {}
+                data["providers"][provider]["model"] = model
+                path.write_text(yaml.safe_dump(data, sort_keys=False))
+            except Exception:
+                pass
+        # Update in-memory cache so next list shows new active without reload
+        if provider in self._providers:
+            self._providers[provider] = dict(self._providers[provider])
+            self._providers[provider]["model"] = model
         return f"Switched to {provider}/{model}.\nUse /models to confirm."
 
     @property

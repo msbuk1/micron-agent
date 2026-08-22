@@ -107,6 +107,13 @@ class SlashCommandRegistry:
             out.append(cmd)
         return out
 
+    def suggest(self, prefix: str) -> list[SlashCommand]:
+        """Return commands matching prefix (without leading slash)."""
+        p = prefix.lstrip("/").lower()
+        if not p:
+            return self.all()
+        return [c for c in self.all() if c.name.startswith(p) or any(a.startswith(p) for a in c.aliases)]
+
     def dispatch(self, query: str) -> SlashCommandResult:
         """Parse ``/name [args...]`` and invoke the matching handler.
 
@@ -122,8 +129,18 @@ class SlashCommandRegistry:
         parts = query.split()
         name = parts[0][1:].lower()
         args = parts[1:]
+        if not name:
+            return SlashCommandResult(text=self.help_text())
         cmd = self._commands.get(name)
         if cmd is None:
+            # Suggest close matches for unknown prefix
+            sug = self.suggest(name)
+            if sug:
+                lines = [f"Unknown command: /{name}. Did you mean:"]
+                for c in sug[:5]:
+                    lines.append(f"  /{c.name:<12} {c.help_text}")
+                lines.append("Try /help for all commands")
+                return SlashCommandResult(text="\n".join(lines))
             return SlashCommandResult(text=f"Unknown command: /{name}. Try /help")
         return cmd.handler(args) or SlashCommandResult()
 

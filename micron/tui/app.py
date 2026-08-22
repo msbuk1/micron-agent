@@ -11,7 +11,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import Screen
-from textual.widgets import Button, Header, Label, Markdown, Static
+from textual.widgets import Button, Header, Input, Label, Markdown, Static
 
 from micron.agent import ToolCall
 from micron.events import EventType
@@ -79,6 +79,7 @@ class MicronTUI(App):
                 yield Sidebar(id="sidebar")
             yield ToolPanel(id="tool-panel")
             yield InputBar(id="input-bar")
+            yield Static("", id="suggest-bar", classes="hidden")
             yield StatusBar(id="status-bar")
         with Vertical(id="loading-overlay"), Vertical(id="loading-dialog"):
             yield Label("Loading micron...")
@@ -104,12 +105,75 @@ class MicronTUI(App):
 
     def on_input_bar_submitted(self, event: InputBar.Submitted) -> None:
         text = event.text.strip()
+        # hide suggestions on submit
+        try:
+            self.query_one("#suggest-bar", Static).add_class("hidden")
+        except Exception:
+            pass
         if not text:
             return
         if text.startswith("/"):
             self._handle_command(text)
             return
         self._run_user_message(text)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if getattr(event.input, "id", None) != "message-input":
+            return
+        text = event.value or ""
+        try:
+            bar = self.query_one("#suggest-bar", Static)
+        except Exception:
+            return
+        if not text.startswith("/"):
+            bar.add_class("hidden")
+            return
+        if self._commands is None:
+            bar.add_class("hidden")
+            return
+        prefix = text.split()[0] if text.strip().split() else "/"
+        # Only suggest on first token, hide after space with args
+        if " " in text.strip():
+            bar.add_class("hidden")
+            return
+        sug = self._commands.registry.suggest(prefix)
+        if not sug:
+            bar.add_class("hidden")
+            return
+        bar.update("  ".join(f"/{c.name}" for c in sug[:10]))
+        bar.remove_class("hidden")
+
+    def on_key(self, event) -> None:
+        # Tab autocomplete for slash commands
+        if event.key != "tab":
+            return
+        try:
+            inp = self.query_one("#message-input", Input)
+        except Exception:
+            return
+        if not inp.has_focus:
+            return
+        text = inp.value or ""
+        if not text.startswith("/"):
+            return
+        if " " in text.strip():
+            return
+        if self._commands is None:
+            return
+        prefix = text.split()[0] if text.strip().split() else "/"
+        sug = self._commands.registry.suggest(prefix)
+        if not sug:
+            return
+        # Complete with first match
+        first = sug[0].name
+        inp.value = f"/{first} "
+        inp.cursor_position = len(inp.value)
+        try:
+            self.query_one("#suggest-bar", Static).add_class("hidden")
+        except Exception:
+            pass
+        event.prevent_default()
+        event.stop()
 
     def _handle_command(self, text: str) -> None:
         if self._commands is None:
@@ -223,7 +287,7 @@ class MicronTUI(App):
                 chunk["call_id"],
                 error=error,
             )
-            chat_log.add_tool_result(chunk["name"], f"[red]Error: {error}[/red]")
+            chat_log.add_tool_result(chunk["name"], f"Error: {error}")
         elif etype == EventType.ERROR:
             chat_log.add_system(f"[Error] {chunk.get('message', '')}")
         elif etype == EventType.CONFIRMATION_REQUIRED:

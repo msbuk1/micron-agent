@@ -134,7 +134,8 @@ ConfirmationScreen {
 }
 
 #confirm-dialog {
-    width: auto;
+    width: 60;
+    min-width: 50;
     max-width: 70;
     height: auto;
     border: thick $primary;
@@ -172,6 +173,7 @@ HelpScreen {
 
 #help-dialog, #detail-dialog, #menu-dialog, #model-dialog {
     width: 80;
+    min-width: 50;
     height: auto;
     max-height: 80%;
     border: thick $primary;
@@ -193,6 +195,18 @@ HelpScreen {
     width: 100%;
     height: auto;
     max-height: 40;
+}
+
+#suggest-bar {
+    height: 1;
+    width: 100%;
+    background: $primary-darken-1;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+#suggest-bar.hidden {
+    display: none;
 }
 
 #loading-overlay {

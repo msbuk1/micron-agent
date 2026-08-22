@@ -37,7 +37,8 @@ class ChatLog(VerticalScroll):
 
     def add_tool_result(self, name: str, summary: str) -> None:
         icon = "✓"
-        display = f"[dim]{icon} {name}:[/dim] {summary}" if summary else f"[dim]{icon} {name}[/dim]"
+        esc = self._escape(summary) if summary else ""
+        display = f"[dim]{icon} {name}:[/dim] {esc}" if summary else f"[dim]{icon} {name}[/dim]"
         self.mount(Static(display, classes="tool-result"))
         self.scroll_end()
 

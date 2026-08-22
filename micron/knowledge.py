@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import json
+
 from micron.search import TFIDFIndex
 
 
@@ -91,6 +93,38 @@ class KnowledgeIndex:
         self._full_raw: dict[str, str] = {}  # slug -> full raw file text for prompt packing (not collapsed snippet)
         self._snapshot: dict[Path, tuple[float, int]] = {}
         self._dirty = True
+        self._index_file = self._dir / ".knowledge_index.json"
+        self._index_md = self._dir / ".knowledge_index.md"
+
+    def _glob_files(self) -> list[Path]:
+        files: list[Path] = []
+        for ext in ("*.md", "*.txt", "*.pdf"):
+            for f in self._dir.glob(ext):
+                if f.name.startswith("."):
+                    continue
+                if f.name == "index.md":
+                    continue
+                files.append(f)
+        return sorted(files)
+
+    def _read_raw(self, f: Path) -> str:
+        if f.suffix.lower() == ".pdf":
+            try:
+                import pymupdf  # type: ignore
+
+                doc = pymupdf.open(str(f))
+                parts: list[str] = []
+                for page in doc:
+                    parts.append(page.get_text())
+                doc.close()
+                return "\n".join(parts).strip()
+            except Exception:
+                # Fallback to read as text (will be binary)
+                try:
+                    return f.read_text(errors="replace").strip()
+                except Exception:
+                    return ""
+        return f.read_text(errors="replace").strip()
 
     def _is_stale(self) -> bool:
         if self._dirty:
@@ -98,7 +132,7 @@ class KnowledgeIndex:
         if not self._dir.exists():
             return bool(self._docs_parsed)
         try:
-            current = {p: (p.stat().st_mtime, p.stat().st_size) for p in self._dir.glob("*.md")}
+            current = {p: (p.stat().st_mtime, p.stat().st_size) for p in self._glob_files()}
         except Exception:
             return True
         return current != self._snapshot
@@ -108,45 +142,140 @@ class KnowledgeIndex:
             return
         self.reload()
 
+    def _load_persisted(self, current_snapshot: dict[Path, tuple[float, int]]) -> bool:
+        try:
+            if not self._index_file.exists():
+                return False
+            data = json.loads(self._index_file.read_text())
+            saved_snap = {Path(k): tuple(v) for k, v in data.get("snapshot", {}).items()}
+            if saved_snap != current_snapshot:
+                return False
+            docs = data.get("docs", {})
+            if not docs:
+                return False
+            self._index.clear()
+            self._docs_parsed.clear()
+            self._docs_raw.clear()
+            self._full_raw.clear()
+            for slug, parsed in docs.items():
+                self._docs_parsed[slug] = parsed
+                self._docs_raw[slug] = parsed
+                # full_raw not persisted to keep index small; search uses parsed
+                self._index.add(slug, parsed)
+            self._snapshot = current_snapshot
+            self._dirty = False
+            return True
+        except Exception:
+            return False
+
+    def _save_persisted(self) -> None:
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            data = {
+                "snapshot": {str(k): list(v) for k, v in self._snapshot.items()},
+                "docs": self._docs_parsed,
+            }
+            self._index_file.write_text(json.dumps(data))
+        except Exception:
+            pass
+
+    def _generate_index_md(self) -> None:
+        try:
+            if not self._docs_parsed:
+                if self._index_md.exists():
+                    self._index_md.unlink()
+                return
+            lines = ["# Knowledge Index", "", f"Updated: {__import__('datetime').datetime.now().isoformat()}", f"Docs: {len(self._docs_parsed)}", "", "| slug | chars | snippet |", "| --- | --- | --- |"]
+            for slug in sorted(self._docs_parsed.keys()):
+                parsed = self._docs_parsed[slug]
+                snippet = parsed[:200].replace("|", "/").replace("\n", " ").strip()
+                lines.append(f"| {slug} | {len(parsed)} | {snippet}… |")
+            lines.append("")
+            lines.append("_Full docs via search_knowledge tool_")
+            self._index_md.write_text("\n".join(lines))
+        except Exception:
+            pass
+
+    def index_context(self, budget: int = 8000) -> str:
+        """Tiny index.md for system prompt — not full docs. Fast-path avoids TFIDF rebuild."""
+        # Fast path: if .knowledge_index.md exists and is newer than all source files, read it directly
+        try:
+            if self._index_md.exists():
+                md_mtime = self._index_md.stat().st_mtime
+                files = self._glob_files()
+                if files and all(f.stat().st_mtime < md_mtime for f in files):
+                    txt = self._index_md.read_text().strip()
+                    if txt:
+                        if len(txt) > budget:
+                            txt = txt[:budget] + "\n… [truncated]"
+                        return txt
+                elif not files:
+                    return "(no knowledge files loaded)"
+        except Exception:
+            pass
+        self._ensure_fresh()
+        if not self._docs_parsed:
+            return "(no knowledge files loaded)"
+        try:
+            if self._index_md.exists():
+                txt = self._index_md.read_text().strip()
+                if txt:
+                    if len(txt) > budget:
+                        txt = txt[:budget] + "\n… [truncated]"
+                    return txt
+        except Exception:
+            pass
+        lines = [f"- {slug} ({len(p)} chars)" for slug, p in sorted(self._docs_parsed.items())]
+        txt = "\n".join(lines)
+        if len(txt) > budget:
+            txt = txt[:budget] + "\n… [truncated]"
+        return txt or "(no knowledge files loaded)"
+
     def reload(self) -> None:
+        if not self._dir.exists():
+            self._index.clear()
+            self._docs_parsed.clear()
+            self._docs_raw.clear()
+            self._full_raw.clear()
+            self._snapshot = {}
+            self._dirty = False
+            return
+        files = self._glob_files()
+        current_snapshot: dict[Path, tuple[float, int]] = {}
+        for f in files:
+            try:
+                current_snapshot[f] = (f.stat().st_mtime, f.stat().st_size)
+            except Exception:
+                continue
+        # Fast path: load persisted if snapshot matches
+        if not self._dirty and self._load_persisted(current_snapshot):
+            return
+        # Also try persisted even when dirty (cold start)
+        if self._dirty and self._load_persisted(current_snapshot):
+            return
+        # Rebuild from scratch (extract PDFs)
         self._index.clear()
         self._docs_parsed.clear()
         self._docs_raw.clear()
         self._full_raw.clear()
-        if not self._dir.exists():
-            self._snapshot = {}
-            self._dirty = False
-            return
-        files = sorted(self._dir.glob("*.md"))
-        snapshot: dict[Path, tuple[float, int]] = {}
         for f in files:
             try:
-                snapshot[f] = (f.stat().st_mtime, f.stat().st_size)
-            except Exception:
-                continue
-            try:
-                raw_full = f.read_text(errors="replace").strip()
+                raw_full = self._read_raw(f)
                 if not raw_full:
                     continue
-                # Keep full raw for prompt packing (like old PromptBuilder which joined raw content)
-                # But also need parsed for index
                 parsed = _parse_text(raw_full)
                 if parsed and len(parsed) > 5:
                     slug = f.stem
-                    # parsed for TFIDF
                     self._docs_parsed[slug] = parsed
-                    # raw collapsed 300 snippet source? Use parsed collapsed for snippet
-                    # Keep parsed as raw for hit content, full raw separately
                     self._docs_raw[slug] = parsed
                     self._full_raw[slug] = raw_full
                     self._index.add(slug, parsed)
-                elif not parsed:
-                    # empty after parse — skip
-                    continue
             except Exception:
                 continue
-        self._snapshot = snapshot
+        self._snapshot = current_snapshot
         self._dirty = False
+        self._save_persisted()
+        self._generate_index_md()
 
     # 80% path for PromptBuilder
     def prompt_context(self, query: str, *, k: int = 5, budget: int = 8000) -> str:

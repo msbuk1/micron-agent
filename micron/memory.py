@@ -31,7 +31,7 @@ class Memory:
     def __init__(
         self,
         store_path: str | Path,
-        time_decay_lambda: float = 0.01,
+        time_decay_lambda: float = 0.005,
         max_results: int = 10,
     ):
         self.store_path = Path(store_path)
@@ -44,6 +44,7 @@ class Memory:
         # entry is added alongside its text via `add(id, text, doc=entry)`.
         self._index = TFIDFIndex()
         self._dirty = True
+        self._snapshot: tuple[float, int] | None = None
 
     def _load(self) -> list[MemoryEntry]:
         if not self.memories_file.exists():
@@ -64,14 +65,29 @@ class Memory:
             "\n".join(json.dumps(e.__dict__) for e in entries) + "\n"
         )
 
+    def _snapshot_current(self) -> tuple[float, int] | None:
+        try:
+            if not self.memories_file.exists():
+                return None
+            st = self.memories_file.stat()
+            return (st.st_mtime, st.st_size)
+        except Exception:
+            return None
+
     def _rebuild_index(self):
         self._index.clear()
         for entry in self._load():
             self._index.add(entry.id, entry.text, doc=entry)
+        self._snapshot = self._snapshot_current()
         self._dirty = False
 
     def _all(self) -> dict[str, MemoryEntry]:
         """Return all entries keyed by id (the index is the sole store)."""
+        # Detect external writes (e.g., save_memory tool bypassing Memory.add)
+        if not self._dirty:
+            cur = self._snapshot_current()
+            if cur != self._snapshot:
+                self._dirty = True
         if self._dirty:
             self._rebuild_index()
         return self._index.docs()
@@ -90,8 +106,8 @@ class Memory:
         except (ValueError, OverflowError):
             time_factor = 1.0
 
-        # Importance boost
-        imp_factor = 1.0 + (doc.importance - 3) * 0.15
+        # Importance boost — 0.25 keeps prefs alive longer
+        imp_factor = 1.0 + (doc.importance - 3) * 0.25
 
         return score * time_factor * imp_factor
 
