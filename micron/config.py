@@ -41,6 +41,98 @@ class AuthConfig:
     api_key_env_var: str = "MICRON_API_KEY"
 
 
+@dataclass(frozen=True)
+class RuntimeConfig:
+    """Typed viewport over Config — replaces untyped resolve_runtime dict."""
+    provider: str
+    model: str | None
+    api_key: str | None
+    base_url: str | None
+    temperature: float
+    max_tokens: int
+    max_tool_iterations: int
+    workdir: Path
+    context_dir: Path
+    firecrawl_url: str | None
+    host: str
+    port: int
+    n_threads: int
+    n_ctx: int
+    n_gpu_layers: int
+
+    def as_dict(self) -> dict:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "api_key": self.api_key,
+            "base_url": self.base_url,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "max_tool_iterations": self.max_tool_iterations,
+            "workdir": str(self.workdir),
+            "context_dir": str(self.context_dir),
+            "firecrawl_url": self.firecrawl_url,
+            "host": self.host,
+            "port": self.port,
+            "n_threads": self.n_threads,
+            "n_ctx": self.n_ctx,
+            "n_gpu_layers": self.n_gpu_layers,
+        }
+
+    def for_agent(self) -> dict:
+        return {
+            "context_dir": str(self.context_dir),
+            "provider": self.provider,
+            "model": self.model,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "max_tool_iterations": self.max_tool_iterations,
+        }
+
+    def for_backend(self) -> dict:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "api_key": self.api_key,
+            "base_url": self.base_url,
+            "n_threads": self.n_threads,
+            "n_gpu_layers": self.n_gpu_layers,
+            "n_ctx": self.n_ctx,
+        }
+
+    def replace(self, **overrides) -> "RuntimeConfig":
+        import dataclasses
+
+        return dataclasses.replace(self, **overrides)
+
+    @classmethod
+    def fake(cls, tmp_path: Path, **overrides) -> "RuntimeConfig":
+        base = dict(
+            provider="fake",
+            model="fake-model",
+            api_key=None,
+            base_url=None,
+            temperature=0.1,
+            max_tokens=10000,
+            max_tool_iterations=10,
+            workdir=Path(tmp_path),
+            context_dir=Path(tmp_path) / "context",
+            firecrawl_url="http://localhost:3002",
+            host="0.0.0.0",
+            port=8000,
+            n_threads=8,
+            n_ctx=8192,
+            n_gpu_layers=0,
+        )
+        base.update(overrides)
+        # coerce Path
+        if isinstance(base["workdir"], str):
+            base["workdir"] = Path(base["workdir"])
+        if isinstance(base["context_dir"], str):
+            base["context_dir"] = Path(base["context_dir"])
+        return cls(**base)
+
+
 class Config:
     """Unified configuration for micron agent."""
     
@@ -296,6 +388,39 @@ class Config:
         if firecrawl and "FIRECRAWL_URL" not in os.environ:
             os.environ["FIRECRAWL_URL"] = firecrawl
 
+    def runtime(
+        self,
+        provider_override: Optional[str] = None,
+        model_override: Optional[str] = None,
+    ) -> RuntimeConfig:
+        """Typed viewport over Config — hides dict hoisting."""
+        provider = provider_override or self.get("default_provider")
+        prov_cfg = self.get_provider_config(provider)
+        workdir = Path(self.get("workdir", str(Path.cwd()))).resolve()
+        ctx_raw = self.get("context_dir", "context")
+        ctx_path = Path(ctx_raw)
+        if not ctx_path.is_absolute():
+            ctx_path = (Path(__file__).parent.parent / ctx_path).resolve()
+        else:
+            ctx_path = ctx_path.resolve()
+        return RuntimeConfig(
+            provider=provider,
+            model=model_override or prov_cfg.get("model"),
+            api_key=prov_cfg.get("api_key"),
+            base_url=prov_cfg.get("base_url"),
+            temperature=float(self.get("temperature", 0.1)),
+            max_tokens=int(self.get("max_tokens", 10000)),
+            max_tool_iterations=int(self.get("max_tool_iterations", 10)),
+            workdir=workdir,
+            context_dir=ctx_path,
+            firecrawl_url=self.get("firecrawl_url"),
+            host=self.get("host", "0.0.0.0"),
+            port=int(self.get("port", 8000)),
+            n_threads=int(prov_cfg.get("n_threads", 8)),
+            n_gpu_layers=int(prov_cfg.get("n_gpu_layers", 0)),
+            n_ctx=int(prov_cfg.get("n_ctx", 8192)),
+        )
+
     def resolve_runtime(
         self,
         provider_override: Optional[str] = None,
@@ -306,26 +431,9 @@ class Config:
         Hoists the selected provider's config (model, api_key, base_url,
         n_threads, …) to the top level so ``create_agent_and_logger`` can
         read everything without knowing about the providers dict.
+        Kept for compat — delegates to runtime().as_dict().
         """
-        provider = provider_override or self.get("default_provider")
-        prov_cfg = self.get_provider_config(provider)
-        return {
-            "context_dir": self.get("context_dir", "context"),
-            "provider": provider,
-            "model": model_override or prov_cfg.get("model"),
-            "api_key": prov_cfg.get("api_key"),
-            "base_url": prov_cfg.get("base_url"),
-            "temperature": self.get("temperature", 0.1),
-            "max_tokens": self.get("max_tokens", 10000),
-            "max_tool_iterations": self.get("max_tool_iterations", 10),
-            "n_threads": prov_cfg.get("n_threads", 8),
-            "n_gpu_layers": prov_cfg.get("n_gpu_layers", 0),
-            "n_ctx": prov_cfg.get("n_ctx", 8192),
-            "workdir": self.get("workdir"),
-            "firecrawl_url": self.get("firecrawl_url"),
-            "host": self.get("host"),
-            "port": self.get("port"),
-        }
+        return self.runtime(provider_override, model_override).as_dict()
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value by key.
@@ -419,6 +527,12 @@ class Config:
         import hmac
         return hmac.compare_digest(provided_key, expected_key)
     
+    def to_dict(self) -> dict:
+        """Return raw config dict (copy)."""
+        import copy
+
+        return copy.deepcopy(self._config)
+
     def __getitem__(self, key: str) -> Any:
         """Allow dictionary-style access."""
         return self.get(key)

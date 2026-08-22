@@ -67,9 +67,33 @@ TIMESTAMP_FMT = "%Y%m%d_%H%M%S"
 
 def _get_trash_dir() -> Path:
     """Get (and create) the .trash directory under the working directory."""
-    trash_dir = _get_workdir() / ".trash"
-    trash_dir.mkdir(exist_ok=True)
-    return trash_dir
+    # Delegates to WorkspaceFS for locality, but keeps the same observable contract
+    # for tests that import _get_trash_dir directly.
+    from micron.workspace import WorkspaceFS
+
+    ws = _ws() if "_ws" in globals() else WorkspaceFS(root=_get_workdir())
+    d = ws.root / ".trash"
+    d.mkdir(exist_ok=True)
+    return d
+
+
+# ── WorkspaceFS singleton — adapters delegate here ─────────────────────
+_workspace_singleton = None
+_workspace_env_snapshot = None
+
+
+def _ws():
+    """Return singleton WorkspaceFS bound to current MICRON_WORKDIR."""
+    global _workspace_singleton, _workspace_env_snapshot
+    # Use _get_workdir() as source of truth (handles env + Config fallback + cache)
+    wd = _get_workdir()
+    snap = str(wd)
+    if _workspace_singleton is None or _workspace_env_snapshot != snap:
+        from micron.workspace import WorkspaceFS
+
+        _workspace_singleton = WorkspaceFS(root=wd)
+        _workspace_env_snapshot = snap
+    return _workspace_singleton
 
 
 # Firecrawl config (reads from env var set by CLI/server)
@@ -236,69 +260,20 @@ def read_file(path: str, start_line: int = 0, end_line: int = 0) -> str:
     """Read and return the text content of a file from the working directory.
     Optionally read specific line range (1-indexed).
     Supports PDF extraction via pymupdf when available."""
-    target_path = _resolve_path(path, must_exist=True)
-    if isinstance(target_path, str):
-        return target_path
-
-    # PDF extraction
-    if str(target_path).lower().endswith(".pdf"):
-        try:
-            import pymupdf
-            doc = pymupdf.open(str(target_path))
-            total_pages = len(doc)
-            lines = []
-            for i, page in enumerate(doc):
-                lines.append(f"--- Page {i+1}/{total_pages} ---")
-                lines.append(page.get_text())
-                lines.append("")
-            doc.close()
-            text = "\n".join(lines)
-            # Apply line range if specified
-            if start_line or end_line:
-                all_lines = text.splitlines(keepends=True)
-                start = max(0, (start_line or 1) - 1)
-                end = end_line if end_line else len(all_lines)
-                return f"--- {path} (PDF, pages {start+1}-{min(end, len(all_lines))} of {len(all_lines)}) ---\n" + "".join(all_lines[start:end])
-            # Auto-truncate large PDFs
-            if len(lines) > 500:
-                return f"--- {path} (PDF, {total_pages} pages, showing first 250 + last 50 lines) ---\n" + "\n".join(lines[:250]) + f"\n... ({len(lines) - 300} lines omitted) ...\n" + "\n".join(lines[-50:])
-            return text
-        except ImportError:
-            return f"Error: PDF extraction requires pymupdf. Install with: pip install pymupdf"
-        except Exception as e:
-            return f"Error reading PDF: {e}"
-
     try:
-        with open(target_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-
-        total = len(lines)
-
-        if start_line or end_line:
-            start = max(0, (start_line or 1) - 1)
-            end = end_line if end_line else total
-            selected = lines[start:end]
-            header = f"--- {path} (lines {start+1}-{min(end, total)} of {total}) ---\n"
-            return header + "".join(selected)
-
-        # Auto-truncate large files
-        if total > 500:
-            head = lines[:250]
-            tail = lines[-50:]
-            header = f"--- {path} ({total} lines, showing first 250 + last 50) ---\n"
-            return header + "".join(head) + f"\n... ({total - 300} lines omitted) ...\n" + "".join(tail)
-
-        return "".join(lines)
-    except UnicodeDecodeError:
-        # Try binary file — read as bytes and return size info
-        try:
-            with open(target_path, "rb") as f:
-                data = f.read()
-            return f"--- {path} (binary file, {len(data)} bytes) ---\n[Binary content — cannot display as text]"
-        except Exception as e2:
-            return f"Error reading file: {e2}"
+        return _ws().read(path, start_line=start_line, end_line=end_line)
     except Exception as e:
-        return f"Error reading file: {e}"
+        # Preserve legacy error string shapes for callers/tests that match "Error"
+        msg = str(e)
+        if "escapes" in msg.lower():
+            return f"Error: Path '{path}' escapes the working directory."
+        if "does not exist" in msg.lower() or isinstance(e, FileNotFoundError):
+            return f"Error: Path '{path}' does not exist."
+        if "pymupdf" in msg.lower():
+            return f"Error: PDF extraction requires pymupdf. Install with: pip install pymupdf"
+        if msg.startswith("Error"):
+            return msg
+        return f"Error reading file: {msg}"
 
 @tool(
     name="write_file",
@@ -312,44 +287,16 @@ def write_file(path: str, content: str, mode: str = "w") -> str:
     """Write or append content to a text file."""
     if len(content) > 1_048_576:  # 1MB limit
         return f"Error: Content too large ({len(content)} chars, max 1048576)."
-    target_path = _resolve_path(path)
-    if isinstance(target_path, str):
-        return target_path
-
     try:
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-
-        pre_content = None
-        if mode == "a" and target_path.exists():
-            try:
-                pre_content = target_path.read_text(encoding="utf-8")
-            except Exception:
-                pass
-
-        with open(target_path, mode, encoding="utf-8") as f:
-            f.write(content)
-
-        if mode == "w":
-            verify_err = _verify_write(
-                target_path,
-                lambda actual: actual == content,
-                "written content matches",
-            )
-        elif pre_content is not None:
-            verify_err = _verify_write(
-                target_path,
-                lambda actual: actual == pre_content + content,
-                "appended content matches",
-            )
-        else:
-            verify_err = None
-
-        if verify_err:
-            return f"Error: {verify_err}"
-
+        _ws().write(path, content, mode=mode, verify=True)
         return f"Success: Wrote {len(content)} characters to {path}"
     except Exception as e:
-        return f"Error writing file: {e}"
+        msg = str(e)
+        if "escapes" in msg.lower():
+            return f"Error: Path '{path}' escapes the working directory."
+        if msg.startswith("Error"):
+            return msg
+        return f"Error writing file: {msg}"
 
 
 @tool(
@@ -376,19 +323,8 @@ def paste_file(content: str, filename: str = None) -> str:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"paste_{ts}.txt"
 
-        target = _get_workdir() / "context" / "uploads" / filename
-        target.parent.mkdir(parents=True, exist_ok=True)
-
-        target.write_text(content, encoding="utf-8")
-
-        verify_err = _verify_write(
-            target,
-            lambda actual: actual == content,
-            "pasted content matches",
-        )
-        if verify_err:
-            return handle_error("paste_file", Exception(verify_err), "while verifying paste")
-
+        ws = _ws()
+        ws.write(f"context/uploads/{filename}", content, verify=True)
         return success(f"Pasted {len(content)} chars to {filename}")
     except Exception as e:
         return handle_error(
@@ -418,48 +354,21 @@ def patch_file(path: str, patches: list[dict]) -> str:
         Success message or error
     """
     from micron.tools.error_handling import handle_error, success
-    
-    target = _resolve_path(path, must_exist=True)
-    if isinstance(target, str):
-        return target
-    
+
     try:
-        content = target.read_text(encoding="utf-8")
-        original = content
-        applied = 0
-        
-        for patch in patches:
-            old_text = patch.get("old", "")
-            new_text = patch.get("new", "")
-            
-            if not old_text:
-                continue
-            
-            if old_text in content:
-                content = content.replace(old_text, new_text, 1)
-                applied += 1
-        
-        if applied == 0:
+        ws = _ws()
+        applied = ws.patch(path, patches)
+        return success(f"Patched {path}: {applied}/{len(patches)} patches applied")
+    except Exception as e:
+        msg = str(e)
+        if "No patches" in msg or "none of the" in msg.lower():
             return handle_error(
                 "patch_file",
                 Exception("No patches applied"),
                 "none of the 'old' texts were found in the file"
             )
-        
-        target.write_text(content, encoding="utf-8")
-
-        # Verify the change landed on disk
-        verify_err = _verify_write(
-            target,
-            lambda actual: actual != original,
-            "content changed",
-        )
-        if verify_err:
-            return handle_error("patch_file", Exception(verify_err), "after writing")
-
-        return success(f"Patched {path}: {applied}/{len(patches)} patches applied")
-    
-    except Exception as e:
+        if "escapes" in msg.lower():
+            return f"Error: Path '{path}' escapes the working directory."
         return handle_error(
             "patch_file",
             e,
@@ -474,15 +383,20 @@ def patch_file(path: str, patches: list[dict]) -> str:
 )
 def list_files(path: str = ".") -> str:
     """List files and directories in the specified path."""
-    target_path = _resolve_path(path, must_exist=True)
-    if isinstance(target_path, str):
-        return target_path
-
     try:
-        items = sorted(os.listdir(target_path))
-        return "\n".join(items) if items else "Directory is empty."
+        entries = _ws().list(path)
+        if not entries:
+            return "Directory is empty."
+        return "\n".join(e.name for e in entries)
     except Exception as e:
-        return f"Error listing directory: {e}"
+        msg = str(e)
+        if "escapes" in msg.lower():
+            return f"Error: Path '{path}' escapes the working directory."
+        if "does not exist" in msg.lower():
+            return f"Error: Path '{path}' does not exist."
+        if msg.startswith("Error"):
+            return msg
+        return f"Error listing directory: {msg}"
 
 
 @tool(
@@ -505,45 +419,17 @@ def tree(path: str = ".", max_depth: int = 3, show_files: bool = True, ext: str 
     Returns:
         Tree representation of directory
     """
-    from pathlib import Path
-    
-    target = _resolve_path(path, must_exist=True)
-    if isinstance(target, str):
-        return target
-    
-    def build_tree(dir_path: Path, prefix: str = "", depth: int = 0) -> list[str]:
-        if depth >= max_depth:
-            return []
-        
-        lines = []
-        try:
-            entries = sorted(dir_path.iterdir(), key=lambda x: (x.is_file(), x.name))
-        except PermissionError:
-            return [f"{prefix}[Permission Denied]"]
-        
-        # Filter entries
-        if not show_files:
-            entries = [e for e in entries if e.is_dir()]
-        if ext is not None:
-            ext_dot = ext if ext.startswith('.') else f'.{ext}'
-            entries = [e for e in entries if e.is_dir() or e.suffix == ext_dot]
-        
-        for i, entry in enumerate(entries):
-            is_last = i == len(entries) - 1
-            connector = "└── " if is_last else "├── "
-            
-            if entry.is_dir():
-                lines.append(f"{prefix}{connector}{entry.name}/")
-                extension = "    " if is_last else "│   "
-                lines.extend(build_tree(entry, prefix + extension, depth + 1))
-            else:
-                lines.append(f"{prefix}{connector}{entry.name}")
-        
-        return lines
-    
-    result = [target.name + "/"]
-    result.extend(build_tree(target))
-    return "\n".join(result)
+    try:
+        return _ws().tree(path, max_depth=max_depth, show_files=show_files, ext=ext)
+    except Exception as e:
+        msg = str(e)
+        if "escapes" in msg.lower():
+            return f"Error: Path '{path}' escapes the working directory."
+        if "does not exist" in msg.lower():
+            return f"Error: Path '{path}' does not exist."
+        if msg.startswith("Error"):
+            return msg
+        return f"Error: {msg}"
 
 
 @tool(
@@ -725,55 +611,36 @@ def save_memory(text: str, tags: list[str] = None, importance: int = 3) -> str:
 )
 def search_knowledge(query: str = "", k: int = 5) -> str:
     """Search knowledge documents using TF-IDF scoring. Returns ranked markdown snippets."""
+    import os
     from pathlib import Path
-    import os, re
-    from micron.search import TFIDFIndex
 
+    from micron.knowledge import KnowledgeIndex
+
+    # Preserve sentinel order: dir missing -> no docs -> no search query (matches old)
     workdir = Path(os.getenv("MICRON_WORKDIR", os.getcwd()))
     knowledge_dir = workdir / "context" / "knowledge"
+    ctx_env = os.getenv("MICRON_CONTEXT_DIR")
+    if ctx_env:
+        alt = Path(ctx_env) / "knowledge"
+        if alt.exists():
+            knowledge_dir = alt
+        # Also check alt for existence when workdir missing
+        if not knowledge_dir.exists() and alt.exists():
+            knowledge_dir = alt
     if not knowledge_dir.exists():
         return "(knowledge directory not found)"
-
-    # Load all markdown files
-    texts: list[tuple[str, str]] = []
-    for f in sorted(knowledge_dir.glob("*.md")):
-        txt = f.read_text(errors="replace").strip()
-        # Strip YAML frontmatter
-        if txt.startswith("---"):
-            parts = txt.split("---", 2)
-            if len(parts) >= 3:
-                txt = parts[2]
-        # Remove title line
-        txt = re.sub(r"^# .*$", "", txt, flags=re.MULTILINE)
-        # Collapse whitespace + trim
-        txt = re.sub(r"\s+", " ", txt).strip()
-        if txt and len(txt) > 5:
-            texts.append((f.stem, txt))
-
-    if not texts:
+    ki_probe = KnowledgeIndex(knowledge_dir)
+    if ki_probe.size == 0:
         return "(no knowledge documents)"
-
     if not query.strip():
         return "(no search query)"
-
-    # Build TF-IDF index using shared class
-    index = TFIDFIndex()
-    for slug, text in texts:
-        index.add(slug, text)
-
-    # Search
-    results = index.search(query, k=k)
-    if not results:
+    # Non-empty query: delegate to KnowledgeIndex (reuse probe)
+    hits = ki_probe.search(query, k=k)
+    if not hits:
         return "(no relevant knowledge)"
-
-    # Format output
     out = []
-    for slug, score in results:
-        # Find matching snippet from the original text
-        _, full = next(((s, t) for (ss, t) in texts if ss == slug), ("", ""))
-        snippet = full[:300].replace("\n", " ").strip()
-        out.append(f"[{slug}] (score: {score:.2f}) {snippet}...")
-
+    for h in hits:
+        out.append(f"[{h.slug}] (score: {h.score:.2f}) {h.snippet}...")
     return "\n".join(out)
 
 @tool(
@@ -984,50 +851,22 @@ def delete_file(path: str) -> str:
         Success message or error
     """
     from micron.tools.error_handling import handle_error, success
-    import shutil
-    from datetime import datetime
-    
-    target = _resolve_path(path, must_exist=True)
-    if isinstance(target, str):
-        return target
-    
+
     try:
-        # Prevent deletion of directories
-        if target.is_dir():
+        entry = _ws().delete(path)
+        return success(f"Deleted {entry.original} (recoverable via /restore)")
+    except Exception as e:
+        msg = str(e)
+        if "Cannot delete directory" in msg or "is a directory" in msg.lower():
             return handle_error(
                 "delete_file",
                 Exception(f"Cannot delete directory '{path}'"),
                 "use run_command with rm -rf to delete directories"
             )
-        
-        # Create .trash directory if it doesn't exist
-        trash_dir = _get_trash_dir()
-        
-        # Generate unique trash name with timestamp
-        timestamp = datetime.now().strftime(TIMESTAMP_FMT)
-        file_name = target.name
-        trash_name = f"{file_name}.{timestamp}"
-        trash_path = trash_dir / trash_name
-        
-        # Move file to trash
-        shutil.move(str(target), str(trash_path))
-
-        # Verify the move actually happened
-        if target.exists():
-            return handle_error(
-                "delete_file",
-                Exception(f"{path} still exists after move"),
-                "deletion may have partially failed"
-            )
-        if not trash_path.exists():
-            return handle_error(
-                "delete_file",
-                Exception(f"{file_name} not found in trash after move"),
-                "file may have been lost"
-            )
-
-        return success(f"Deleted {file_name} (recoverable via /restore)")
-    except Exception as e:
+        if "escapes" in msg.lower():
+            return f"Error: Path '{path}' escapes the working directory."
+        if "does not exist" in msg.lower():
+            return f"Error: Path '{path}' does not exist."
         return handle_error(
             "delete_file",
             e,
@@ -1051,57 +890,24 @@ def restore_file(filename: str) -> str:
         Success message or error
     """
     from micron.tools.error_handling import handle_error, success
-    import shutil
-    
-    trash_dir = _get_trash_dir()
-    workdir = trash_dir.parent
-    
-    if not trash_dir.exists():
-        return handle_error(
-            "restore_file",
-            Exception("No trash directory found"),
-            "no files have been deleted yet"
-        )
-    
-    # Find the file in trash
-    trash_path = trash_dir / filename
-    if not trash_path.exists():
-        # Try to find by original name (partial match)
-        matches = list(trash_dir.glob(f"{filename}.*"))
-        if len(matches) == 1:
-            trash_path = matches[0]
-        elif len(matches) > 1:
-            # Multiple matches — list them
-            names = [m.name for m in matches]
-            return handle_error(
-                "restore_file",
-                Exception(f"Multiple files match '{filename}'"),
-                f"found: {', '.join(names[:5])} — specify full name"
-            )
-        else:
+
+    try:
+        restored = _ws().restore(filename)
+        return success(f"Restored to {restored.name}")
+    except Exception as e:
+        msg = str(e)
+        if "not found in trash" in msg.lower() or "no trash directory" in msg.lower():
             return handle_error(
                 "restore_file",
                 Exception(f"File '{filename}' not found in trash"),
                 "use /trash to see available files"
             )
-    
-    # Determine restore location (original name without timestamp)
-    original_name = trash_path.stem  # Remove .timestamp suffix
-    restore_path = workdir / original_name
-    
-    # Handle name collision
-    if restore_path.exists():
-        # Add (1), (2), etc.
-        counter = 1
-        while restore_path.exists():
-            stem = trash_path.stem.rsplit(".", 1)[0] if "." in trash_path.stem else trash_path.stem
-            restore_path = workdir / f"{stem}({counter}){trash_path.suffix}"
-            counter += 1
-    
-    try:
-        shutil.move(str(trash_path), str(restore_path))
-        return success(f"Restored to {restore_path.name}")
-    except Exception as e:
+        if "multiple files match" in msg.lower():
+            return handle_error(
+                "restore_file",
+                Exception(f"Multiple files match '{filename}'"),
+                msg
+            )
         return handle_error(
             "restore_file",
             e,
@@ -1121,35 +927,20 @@ def list_trash() -> str:
     """
     from micron.tools.error_handling import success
     from datetime import datetime
-    
-    trash_dir = _get_trash_dir()
-    
+
+    ws = _ws()
+    trash_dir = ws.root / ".trash"
     if not trash_dir.exists():
         return success("Trash is empty (no files deleted yet)")
-    
-    files = sorted(trash_dir.iterdir())
-    if not files:
+
+    entries = ws.trash()
+    if not entries:
         return success("Trash is empty")
-    
+
     lines = ["🗑️ Trash:"]
-    for f in files:
-        if f.is_file():
-            # Extract timestamp from filename (format: name.YYYYMMDD_HHMMSS)
-            parts = f.name.rsplit(".", 1)
-            ts_len = len(datetime.now().strftime(TIMESTAMP_FMT))
-            if len(parts) == 2 and len(parts[1]) == ts_len:
-                original_name = parts[0]
-                timestamp = parts[1]
-                # Format timestamp nicely
-                try:
-                    dt = datetime.strptime(timestamp, TIMESTAMP_FMT)
-                    time_str = dt.strftime("%Y-%m-%d %H:%M")
-                except ValueError:
-                    time_str = timestamp
-                lines.append(f"  {f.name}  ({original_name}, deleted {time_str})")
-            else:
-                lines.append(f"  {f.name}")
-    
+    for e in entries:
+        time_str = e.trashed_at.strftime("%Y-%m-%d %H:%M")
+        lines.append(f"  {e.name}  ({e.original}, deleted {time_str})")
     return "\n".join(lines)
 
 
@@ -1175,88 +966,37 @@ def edit_file(path: str, old_text: str, new_text: str) -> str:
         Success message or error
     """
     from micron.tools.error_handling import handle_error, success
-    import subprocess
-    import shutil
-    
-    target = _resolve_path(path, must_exist=True)
-    if isinstance(target, str):
-        return target
-    
-    try:
-        # Validate syntax before editing (best-effort — skip if subprocess unavailable)
-        if path.endswith('.py'):
-            try:
-                compile_result = subprocess.run(
-                    ["python3", "-m", "py_compile", str(target)],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                if compile_result.returncode != 0 and compile_result.stderr:
-                    return handle_error(
-                        "edit_file",
-                        Exception(f"Syntax error in {path}"),
-                        f"before editing: {compile_result.stderr}"
-                    )
-            except (subprocess.TimeoutExpired, OSError):
-                pass  # Skip validation if subprocess fails (resource limits)
-        
-        content = target.read_text(encoding="utf-8")
-        
-        # Check if old_text exists in file
-        if old_text not in content:
-            return handle_error(
-                "edit_file",
-                Exception(f"Text not found in {path}"),
-                "the specified text to replace was not found"
-            )
-        
-        # Auto-cleanup old .bak files (>7 days) before creating new backup
-        import time
-        bak_dir = target.parent
-        for old_bak in bak_dir.glob(f"{target.name}.bak"):
-            if old_bak.exists() and (time.time() - old_bak.stat().st_mtime) > 7 * 86400:
-                old_bak.unlink()
 
-        # Create backup before editing
-        bak_path = target.with_suffix(target.suffix + ".bak")
-        shutil.copy2(str(target), str(bak_path))
-        
-        new_content = content.replace(old_text, new_text)
-        target.write_text(new_content, encoding="utf-8")
-        
-        # Validate syntax after editing (best-effort — skip if subprocess unavailable)
-        if path.endswith('.py'):
-            try:
-                compile_result = subprocess.run(
-                    ["python3", "-m", "py_compile", str(target)],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
+    try:
+        ws = _ws()
+        # Pre-check for missing text to keep legacy error shape ("Text not found")
+        try:
+            exists = ws.exists(path)
+            if not exists:
+                return f"Error: Path '{path}' does not exist."
+            # Peek content for not-found case to preserve message
+            current = ws.read(path)
+            if old_text not in current:
+                return handle_error(
+                    "edit_file",
+                    Exception(f"Text not found in {path}"),
+                    "the specified text to replace was not found"
                 )
-                if compile_result.returncode != 0 and compile_result.stderr:
-                    # Revert the edit if syntax error
-                    shutil.copy2(str(bak_path), str(target))
-                    return handle_error(
-                        "edit_file",
-                        Exception(f"Syntax error after editing {path}"),
-                        compile_result.stderr
-                    )
-            except (subprocess.TimeoutExpired, OSError):
-                pass  # Skip validation if subprocess fails (resource limits)
-        else:
-            # Verify the replacement actually landed on disk
-            verify_err = _verify_write(
-                target,
-                lambda actual: new_text in actual,
-                "replacement text present",
-            )
-            if verify_err:
-                shutil.copy2(str(bak_path), str(target))
-                return handle_error("edit_file", Exception(verify_err), "reverting from backup")
-        
+        except Exception as pe:
+            msg = str(pe)
+            if "escapes" in msg.lower():
+                return f"Error: Path '{path}' escapes the working directory."
+            if "does not exist" in msg.lower():
+                return f"Error: Path '{path}' does not exist."
+        # Delegate — WorkspaceFS handles .bak, syntax validation, verification
+        ws.edit(path, old_text, new_text)
         return success(f"Edited {path} (replaced {len(old_text)} chars with {len(new_text)} chars)")
     except Exception as e:
+        msg = str(e)
+        if "Syntax error" in msg:
+            return handle_error("edit_file", e, msg)
+        if "escapes" in msg.lower():
+            return f"Error: Path '{path}' escapes the working directory."
         return handle_error(
             "edit_file",
             e,
@@ -1280,28 +1020,18 @@ def undo_file(path: str) -> str:
         Success message or error
     """
     from micron.tools.error_handling import handle_error, success
-    import shutil
-    
-    target = _resolve_path(path, must_exist=False)
-    if isinstance(target, str):
-        # File doesn't exist, try to find .bak
-        target = _get_workdir() / path
-    
-    bak_path = target.with_suffix(target.suffix + ".bak")
-    
-    if not bak_path.exists():
-        return handle_error(
-            "undo_file",
-            Exception(f"No backup found for {path}"),
-            "edit_file creates .bak backups automatically"
-        )
-    
+
     try:
-        shutil.copy2(str(bak_path), str(target))
-        # Remove the backup after successful restore
-        bak_path.unlink()
+        _ws().undo(path)
         return success(f"Restored {path} from backup")
     except Exception as e:
+        msg = str(e)
+        if "No backup" in msg or "not found" in msg.lower():
+            return handle_error(
+                "undo_file",
+                Exception(f"No backup found for {path}"),
+                "edit_file creates .bak backups automatically"
+            )
         return handle_error(
             "undo_file",
             e,
@@ -1371,11 +1101,8 @@ def search_skill_library(query: str = "", text: str = "") -> str:
 def purge_trash() -> str:
     """Permanently delete all files in .trash/."""
     from micron.tools.error_handling import success
-    import shutil
-    trash_dir = _get_trash_dir()
-    files = list(trash_dir.iterdir())
-    if not files:
+
+    count = _ws().purge_trash()
+    if count == 0:
         return success("Trash is already empty.")
-    count = len(files)
-    shutil.rmtree(str(trash_dir))
     return success(f"Purged {count} file(s) from trash.")

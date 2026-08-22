@@ -44,41 +44,188 @@ class AgentConfig:
     llm_kwargs: dict = field(default_factory=dict)
 
 
-class MicronAgent:
-    """Lightweight AI agent with file-based memory, skills, and tool calling."""
+# ── internal modules (not part of external seam) ───────────────────────
 
-    def __init__(self, config: AgentConfig | None = None, **kwargs):
-        if config is None:
-            config = AgentConfig(**kwargs)
+class _HistoryCompactor:
+    """Pure history compression — mirrors previous _compress_history."""
+
+    def __init__(self, keep_recent: int = 8):
+        self.keep_recent = keep_recent
+
+    def compress(self, history: list[dict], keep_recent: int | None = None) -> list[dict]:
+        keep = keep_recent if keep_recent is not None else self.keep_recent
+        if len(history) <= keep:
+            return history
+        old = history[:-keep]
+        recent = history[-keep:]
+        parts: list[str] = []
+        for msg in old:
+            role = msg["role"]
+            content = msg.get("content", "")
+            tool_calls = msg.get("tool_calls")
+            tool_call_id = msg.get("tool_call_id")
+            if tool_calls:
+                content = f"[used tools: {', '.join(tc['function']['name'] for tc in tool_calls)}]"
+            elif tool_call_id:
+                content = f"[tool result] {content[:100]}"
+            elif len(content) > 200:
+                content = content[:200] + "..."
+            parts.append(f"{role}: {content}")
+        summary = "Previous conversation summary:\n" + "\n".join(parts)
+        return [{"role": "user", "content": summary}] + recent
+
+    def should_compress(self, history: list[dict] | None) -> bool:
+        return bool(history and len(history) > 12)
+
+
+class _LoopController:
+    """Owns tool-loop state: iteration count, failure pivot, loop detection."""
+
+    def __init__(self, max_iterations: int = 8):
+        self.max_iterations = max_iterations
+        self.tool_history: list[tuple[str, frozenset]] = []
+        self.consecutive_failures: int = 0
+
+    def reset(self, max_iterations: int | None = None) -> None:
+        if max_iterations is not None:
+            self.max_iterations = max_iterations
+        self.tool_history.clear()
+        self.consecutive_failures = 0
+
+    def detect_loop(self, calls: list["ToolCall"]) -> bool:
+        fingerprints: list[tuple[str, frozenset]] = []
+        for tc in calls:
+            args_frozen = frozenset((k, str(v)) for k, v in sorted(tc.args.items()))
+            fingerprints.append((tc.name, args_frozen))
+        if len(fingerprints) != len(set(fingerprints)):
+            return True
+        self.tool_history.extend(fingerprints)
+        if len(self.tool_history) >= 6:
+            last6 = self.tool_history[-6:]
+            if len(set(last6)) <= 2:
+                return True
+        return False
+
+    def record_result(self, has_errors: bool) -> str | None:
+        if has_errors:
+            self.consecutive_failures += 1
+        else:
+            self.consecutive_failures = 0
+        if self.consecutive_failures >= 3:
+            self.consecutive_failures = 0
+            return (
+                "You have failed 3 times in a row. STOP and think differently. "
+                "Your current approach is not working. Try a completely different strategy "
+                "or tell the user you cannot complete this task."
+            )
+        return None
+
+
+class MicronAgent:
+    """Lightweight AI agent with file-based memory, skills, and tool calling.
+
+    Deep module — external seam is small (run/ask + injected backend). Loop
+    control lives in internal _LoopController/_HistoryCompactor, not at the
+    seam. Accepts dependencies, doesn't create them when the caller injects
+    them (local-substitutable Memory/SkillLoader/ToolRegistry via tmp_path
+    in tests, Remote-but-owned LLMBackend port with FakeLLM adapter).
+    """
+
+    def __init__(
+        self,
+        config: AgentConfig | LLMBackend | None = None,
+        *args,
+        backend: LLMBackend | None = None,
+        memory: Memory | None = None,
+        skills: SkillLoader | None = None,
+        tools: ToolRegistry | None = None,
+        prompt: PromptBuilder | None = None,
+        **kwargs,
+    ):
+        # ── ergonomic C compat: MicronAgent(backend=FakeLLM, config=..., memory=...)
+        #    and legacy MicronAgent(AgentConfig(...)) both work
+        if isinstance(config, LLMBackend) and backend is None and not args:
+            # MicronAgent(fake_backend) positional
+            backend = config
+            config = None
+        elif args and isinstance(args[0], LLMBackend) and backend is None:
+            backend = args[0]
+        # Detect legacy backend= via llm_kwargs
+        legacy_backend = None
+        if config is not None and isinstance(config, AgentConfig) and "backend" in config.llm_kwargs:
+            legacy_backend = config.llm_kwargs.get("backend")
+        if backend is None:
+            backend = legacy_backend
+        # Build/normalize AgentConfig
+        if config is None or isinstance(config, LLMBackend):
+            # case: MicronAgent(backend=...) without config, or MicronAgent(fake) handled above
+            if isinstance(config, LLMBackend):
+                config = None
+            config = AgentConfig(**kwargs) if isinstance(config, type(None)) else config
+            # kwargs may contain context_dir etc when called as MicronAgent(backend, context_dir=...)
+            if kwargs and isinstance(config, AgentConfig):
+                # merge any leftover kwargs into config (e.g. context_dir from ergonomic call)
+                for k, v in list(kwargs.items()):
+                    if hasattr(config, k):
+                        # frozen dataclass — rebuild
+                        d = dict(config.__dict__)
+                        d.update({k: v for k, v in kwargs.items() if k in d})
+                        config = AgentConfig(**d)
+                        break
+        elif isinstance(config, dict):
+            config = AgentConfig(**config)
+        elif not isinstance(config, AgentConfig):
+            # config is something else (e.g. LLMBackend handled)
+            config = AgentConfig(**kwargs) if kwargs else AgentConfig()
+        # If backend was also passed as llm_kwargs backend, prefer explicit backend param
+        if backend is not None and isinstance(config, AgentConfig) and "backend" in config.llm_kwargs:
+            # pop to avoid double-create; explicit wins
+            try:
+                config = AgentConfig(
+                    context_dir=config.context_dir,
+                    provider=config.provider,
+                    model=config.model,
+                    temperature=config.temperature,
+                    max_tokens=config.max_tokens,
+                    max_tool_iterations=config.max_tool_iterations,
+                    use_text_tool_parsing=config.use_text_tool_parsing,
+                    llm_kwargs={k: v for k, v in config.llm_kwargs.items() if k != "backend"},
+                )
+            except Exception:
+                pass
         self.config = config
 
         self.context_dir = Path(config.context_dir)
         self.context_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory = Memory(self.context_dir / "memory")
-        self.skills = SkillLoader(self.context_dir / "skills")
-        self.tools = ToolRegistry()
-        # Seed the registry from the shared @tool decorator registry (built-ins
-        # defined in code are the authoritative source; see _register_skill_tools
-        # for the code-wins dedup rule during the Skills/Tools migration).
-        from micron.tools.decorator import _registry
-        for td in _registry:
-            self.tools.register(
-                name=td.name, func=td.func, description=td.description,
-                parameters=td.parameters, write=td.write,
-            )
-        # Use pre-built backend if provided, otherwise create one
-        if "backend" in config.llm_kwargs:
-            self.llm = config.llm_kwargs.pop("backend")
+        # Local-substitutable — inject or create
+        self.memory = memory if memory is not None else Memory(self.context_dir / "memory")
+        self.skills = skills if skills is not None else SkillLoader(self.context_dir / "skills")
+        self.tools = tools if tools is not None else ToolRegistry()
+        if tools is None:
+            from micron.tools.decorator import _registry
+            for td in _registry:
+                self.tools.register(
+                    name=td.name, func=td.func, description=td.description,
+                    parameters=td.parameters, write=td.write,
+                )
+        # LLMBackend port — inject or create
+        if backend is not None:
+            self.llm = backend
+        elif "backend" in getattr(config, "llm_kwargs", {}):
+            self.llm = config.llm_kwargs.pop("backend")  # type: ignore[attr-defined]
         else:
             self.llm = create_backend(config.provider, config.model, **config.llm_kwargs)
         # Default to text-tool format for local models, off for API backends.
         provider = getattr(config, "provider", "llamacpp").lower()
-        self.use_text_tool_format = config.llm_kwargs.get("use_text_tool_format", provider in ("llamacpp", "ollama"))
+        # honour explicit use_text_tool_parsing or llm_kwargs flag
+        self.use_text_tool_format = getattr(config, "use_text_tool_parsing", False) or config.llm_kwargs.get(
+            "use_text_tool_format", provider in ("llamacpp", "ollama")
+        )
         self.provider = provider
         self.model = config.model
 
-        self.prompt_builder = PromptBuilder(
+        self.prompt_builder = prompt if prompt is not None else PromptBuilder(
             self.context_dir, self.memory, self.skills,
             use_text_tool_format=self.use_text_tool_format,
             tools=self.tools,
@@ -87,8 +234,27 @@ class MicronAgent:
         self.skills.load_all()
         self._register_skill_tools()
         self._load_plugins()
-        self._tool_history: list[tuple[str, frozenset]] = []
-        self._consecutive_failures = 0
+        # Internal modules — not part of external seam
+        self._loop = _LoopController(max_iterations=config.max_tool_iterations)
+        self._compactor = _HistoryCompactor(keep_recent=8)
+
+    # Backward-compat shims: tests access agent._tool_history / _consecutive_failures directly
+    # These proxy to _loop so both views stay in sync.
+    @property
+    def _tool_history(self):  # type: ignore[no-redef]
+        return self._loop.tool_history
+
+    @_tool_history.setter
+    def _tool_history(self, value):  # type: ignore[no-redef]
+        self._loop.tool_history = value
+
+    @property
+    def _consecutive_failures(self):  # type: ignore[no-redef]
+        return self._loop.consecutive_failures
+
+    @_consecutive_failures.setter
+    def _consecutive_failures(self, value):  # type: ignore[no-redef]
+        self._loop.consecutive_failures = value
 
     def _register_skill_tools(self):
         """No longer registers tools from `.md` skill files.
@@ -150,8 +316,8 @@ class MicronAgent:
                 system_prompt = self.prompt_builder.build_system_prompt(message)
                 messages = [{"role": "system", "content": system_prompt}]
                 if history:
-                    if len(history) > 12:
-                        history = self._compress_history(history)
+                    if self._compactor.should_compress(history):
+                        history = self._compactor.compress(history)
                     for msg in history[-20:]:
                         messages.append(msg)
                 # Add the user message and tool results
@@ -162,14 +328,13 @@ class MicronAgent:
                 yield from self._run_with_messages(messages, skip_write_confirm=True)
             return
 
-        self._consecutive_failures = 0
-        self._tool_history.clear()
+        self._loop.reset(max_iterations=self.config.max_tool_iterations)
         system_prompt = self.prompt_builder.build_system_prompt(message)
         messages = [{"role": "system", "content": system_prompt}]
 
         # Compress history if too long (summarize old turns)
-        if history and len(history) > 12:
-            history = self._compress_history(history)
+        if self._compactor.should_compress(history):
+            history = self._compactor.compress(history)
 
         if history:
             for msg in history[-20:]:
@@ -246,7 +411,7 @@ class MicronAgent:
                 yield {"type": "done"}
                 return
 
-            if self._detect_loop(pending_calls):
+            if self._loop.detect_loop(pending_calls):
                 yield {"type": "error", "message": "Loop detected. Stopping."}
                 yield {"type": "done"}
                 return
@@ -299,19 +464,9 @@ class MicronAgent:
                         })
                         yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": friendly}
 
-                if has_errors:
-                    self._consecutive_failures += 1
-                else:
-                    self._consecutive_failures = 0
-
-                if self._consecutive_failures >= 3:
-                    pivot = (
-                        "You have failed 3 times in a row. STOP and think differently. "
-                        "Your current approach is not working. Try a completely different strategy "
-                        "or tell the user you cannot complete this task."
-                    )
+                pivot = self._loop.record_result(has_errors)
+                if pivot:
                     messages.append({"role": "user", "content": pivot})
-                    self._consecutive_failures = 0
 
                 tool_iterations += 1
                 continue
@@ -373,23 +528,11 @@ class MicronAgent:
 
     def _friendly_error(self, tool_name: str, error: Exception) -> str:
         """Convert a tool error into a user-friendly message."""
-        msg = str(error)
-        # Common error patterns
-        if isinstance(error, FileNotFoundError):
-            return f"File not found. Check the path and try again."
-        elif isinstance(error, PermissionError):
-            return f"Permission denied. You don't have access to that file."
-        elif isinstance(error, TimeoutError):
-            return f"Operation timed out. Try again or use a shorter query."
-        elif "connection" in msg.lower():
-            return f"Connection error. The service may be down or unreachable."
-        elif "timeout" in msg.lower():
-            return f"Request timed out. Try again later."
-        elif "not found" in msg.lower():
-            return f"Not found: {msg[:80]}"
-        elif "invalid" in msg.lower() or "bad" in msg.lower():
-            return f"Invalid input: {msg[:80]}"
-        return f"{tool_name} failed: {msg[:120]}"
+        from micron.error_format import format_error
+
+        # format_error prefixes "Error: "; agent loop strips it for tool_error event
+        msg = format_error(error, tool=tool_name)
+        return msg.removeprefix("Error: ").lstrip()
 
     def _summarize_result(self, result: Any, max_len: int = 1000) -> str:
         if isinstance(result, (dict, list)):
@@ -433,44 +576,11 @@ class MicronAgent:
         return self.tools.is_write(name)
 
     def _detect_loop(self, calls: list[ToolCall]) -> bool:
-        fingerprints = []
-        for tc in calls:
-            args_frozen = frozenset((k, str(v)) for k, v in sorted(tc.args.items()))
-            fingerprints.append((tc.name, args_frozen))
-        if len(fingerprints) != len(set(fingerprints)):
-            return True
-        self._tool_history.extend(fingerprints)
-        if len(self._tool_history) >= 6:
-            last6 = self._tool_history[-6:]
-            if len(set(last6)) <= 2:
-                return True
-        return False
+        return self._loop.detect_loop(calls)
 
     def _compress_history(self, history: list[dict], keep_recent: int = 8) -> list[dict]:
         """Compress old history by summarizing tool results into a single summary turn."""
-        if len(history) <= keep_recent:
-            return history
-
-        old = history[:-keep_recent]
-        recent = history[-keep_recent:]
-
-        # Summarize old turns, preserving assistant/tool message pairs
-        parts = []
-        for msg in old:
-            role = msg["role"]
-            content = msg.get("content", "")
-            tool_calls = msg.get("tool_calls")
-            tool_call_id = msg.get("tool_call_id")
-            if tool_calls:
-                content = f"[used tools: {', '.join(tc['function']['name'] for tc in tool_calls)}]"
-            elif tool_call_id:
-                content = f"[tool result] {content[:100]}"
-            elif len(content) > 200:
-                content = content[:200] + "..."
-            parts.append(f"{role}: {content}")
-
-        summary = "Previous conversation summary:\n" + "\n".join(parts)
-        return [{"role": "user", "content": summary}] + recent
+        return self._compactor.compress(history, keep_recent=keep_recent)
 
     def _continue_conversation(self, user_message: str, history: list[dict] | None = None) -> Generator[dict, None, None]:
         yield from self.run(user_message, history=history)
@@ -492,6 +602,48 @@ class MicronAgent:
         """Unload the LLM model from memory."""
         if hasattr(self.llm, 'unload'):
             self.llm.unload()
+
+    # — ergonomic C aliases — progressive disclosure, not on first screen
+    def close(self) -> None:
+        """Ergonomic alias for unload_model."""
+        self.unload_model()
+
+    def ask(self, query: str, history: list[dict] | None = None) -> str:
+        """One-liner for the 80% non-streaming case: run + collect text.
+
+        Hides process_events behind the seam so CLI/server non-stream branches
+        collapse to a single call. Still yields tool errors as part of text.
+        """
+        from micron.events import process_events
+
+        result = process_events(self.run(query, history=history))
+        return result.text
+
+    def confirm(
+        self,
+        writes: list[dict],
+        *,
+        query: str = "",
+        history: list[dict] | None = None,
+    ) -> Generator[dict, None, None]:
+        """Resume after a confirmation_required event.
+
+        Thin wrapper around run(confirm=True, pending_tool_calls=...).
+        """
+        calls = [
+            ToolCall(
+                name=w["tool_name"],
+                args=w.get("args", {}),
+                call_id=w.get("call_id", f"confirm_{i}"),
+                is_write=True,
+            )
+            for i, w in enumerate(writes)
+        ]
+        yield from self.run(query, history=history, confirm=True, pending_tool_calls=calls)
+
+    def reconfigure(self, provider: str, model: str, **kwargs) -> None:
+        """Ergonomic alias for set_backend."""
+        self.set_backend(provider, model, **kwargs)
 
     def set_backend(self, provider: str, model: str, **kwargs) -> None:
         """Switch to a new LLM provider/model at runtime.
@@ -541,4 +693,15 @@ class MicronAgent:
 
 
 def create_agent(**kwargs) -> MicronAgent:
+    # Ergonomic factory — supports both legacy AgentConfig(**kwargs) and
+    # direct injection: create_agent(backend=fake, memory=..., tools=...)
+    # Extract injectable seams if provided as kwargs.
+    inject_keys = {"backend", "memory", "skills", "tools", "prompt"}
+    injected = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k in inject_keys}
+    # Also handle llm_kwargs backend passed via Config-style call
+    if "backend" not in injected and "llm_kwargs" in kwargs and isinstance(kwargs["llm_kwargs"], dict) and "backend" in kwargs["llm_kwargs"]:
+        injected["backend"] = kwargs["llm_kwargs"].pop("backend")
+    if injected:
+        cfg = AgentConfig(**kwargs) if kwargs else AgentConfig()
+        return MicronAgent(cfg, **injected)
     return MicronAgent(AgentConfig(**kwargs))

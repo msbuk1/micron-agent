@@ -12,7 +12,7 @@ redefined here.
 
 | Name | Lives in | Interface (what callers must know) | Notes |
 |---|---|---|---|
-| `MicronAgent` | `micron/agent.py` | `run(message, history, stream, confirm, pending_tool_calls) -> Iterator[Event]`; `set_backend(provider, model, **kwargs)`; `unload_model()` | Composes memory, skills, tools, llm, prompt. Yields typed events; event names are the `EventType` constants in `micron/events.py`. `set_backend` swaps the active LLM at runtime via `create_backend`, updates `provider`/`model`/`use_text_tool_format` and rebuilds `prompt_builder`. |
+| `MicronAgent` | `micron/agent.py` | `run(query, history) -> Iterator[Event]` (80% path); `ask(query, history) -> str` (run + process_events); `confirm(writes, *, query, history) -> Iterator[Event]` (resume after `confirmation_required`); `reconfigure/provider,model`/`set_backend`/`unload_model`/`close()` | Deep module — external seam is `MicronAgent(backend, *, config, memory, skills, tools, prompt)` (accepts dependencies). Internal modules `_LoopController` (iteration, `_detect_loop`, 3-strike pivot) and `_HistoryCompactor` (`should_compress`/`compress`) hide loop state. `create_agent(**kwargs, backend, memory, ...)` factory wires `WorkspaceFS`-style local deps. Yields `EventType` events; `set_backend`/`reconfigure` swaps LLM via `create_backend`. |
 | `Memory` | `micron/memory.py` | `add / search / get / delete / tag / list / __len__` | JSONL file at `<context>/memory/memories.jsonl`. Sole document store is `TFIDFIndex`; time-decay + importance boost applied in `Memory._score`. |
 | `TFIDFIndex` | `micron/search.py` | `add / score / search / docs / get_doc / clear` | Pure-Python TF-IDF. Used by `Memory` and by the `search_knowledge` tool via the shared `search.py`. |
 | `ToolDescriptor` | `micron/tools/decorator.py` | `name, description, func, parameters, write` | One descriptor per `@tool`-decorated function. The decorator's global `_registry` is populated on import. |
@@ -32,6 +32,14 @@ redefined here.
 | `SlashCommandRegistry` | `micron/slash.py` | `register / add / get / all / dispatch(query) -> SlashCommandResult / help_text` | Transport-agnostic `/command` dispatcher. Handlers take `list[str]` args, return a `SlashCommandResult` with `text` and an `extras` dict for transport-specific flags. Decorator-style and imperative register both supported. |
 | `CommandDispatcher` | `micron/tui/commands.py` | `handle(cmd) -> CommandResult` | TUI adapter wrapping `SlashCommandRegistry`. All commands route through the registry; `handle` is a thin translation layer mapping `SlashCommandResult.extras` onto Textual `Message` fields. No if/elif ladder (post-issues #2–#4). |
 | `ModelPickerScreen` | `micron/tui/screens/models.py` | `ModelPickerScreen(entries)`, dismisses with `{"provider", "model"}` | Modal opened by `/models`. Renders provider/model/metadata rows as a `ListView`; selecting a row dismisses with the chosen pair, which the app swaps via `CommandDispatcher.switch_model` and reflects in the status bar. |
+| `WorkspaceFS` | `micron/workspace.py` | `read(path, *, offset, limit, max_bytes) -> str`; `write(path, content, *, create_dirs, mode, verify) -> Path`; `edit(path, old, new) -> int`; `patch(path, patches) -> int`; `delete(path) -> TrashEntry`; `trash() -> list[TrashEntry]`; `restore(name) -> Path`; `undo(path) -> Path`; `list(path) -> list[DirEntry]`; `tree(path, max_depth, show_files, ext) -> str` | Deep module owning workdir containment (`_resolve`), atomic verified writes (`_verify`), `.trash`/`.bak` lifecycle, truncation and directory enumeration. Single external seam `WorkspaceFS(root)` — injected `Path` in tests (`tmp_path`), otherwise `MICRON_WORKDIR`/`Config`. `micron/tools/builtin.py` tool functions are thin adapters delegating to a singleton `WorkspaceFS`; `_get_trash_dir`/`TIMESTAMP_FMT` remain as compat shims. |
+| `KnowledgeIndex` | `micron/knowledge.py` | `prompt_context(query, *, k=5, budget=8000) -> str`; `search(query, *, k=5) -> list[KnowledgeHit]`; `get/docs/reload/size` | Deep module owning knowledge discovery, YAML/title/whitespace parse, `TFIDFIndex` lifecycle, mtime snapshot + budget packing. `TFIDFIndex` internally. `PromptBuilder` + `search_knowledge` are thin adapters. Single seam `KnowledgeIndex(knowledge_dir: Path|None)` injectable via `tmp_path`. |
+| `RuntimeConfig` | `micron/config.py` | `Config.runtime() -> RuntimeConfig`; `as_dict()/for_agent()/for_backend()/replace()/fake()` | Typed viewport over `Config` — hides `providers` dict hoisting. `resolve_runtime()` kept as shim. Frozen dataclass. |
+| `RateLimiter` / `AuthPolicy` | `micron/policy.py` | `RateLimiter.from_config()->allow()/check()->RateLimited`; `AuthPolicy.from_config()->is_valid()/allows()/check()` | In-process gate policies hiding deque window + `hmac.compare_digest`. `clock` injectable for tests. |
+| `ErrorFormat` | `micron/error_format.py` | `format_error(exc, hint="", *, tool="")->str`; `ok(msg)->str`; `is_error(str)->bool` | Pure string table hiding `isinstance` + substring precedence + truncation. Single seam for `builtin` adapters and `MicronAgent._friendly_error`; `tools/error_handling.py` is shim. |
+| `ServerRuntime` | `micron/server_runtime.py` | `ServerRuntime(config, *, agent, sessions, limiter, auth)`; `load(path,**overrides)` | Ergonomic wrapper hiding `RuntimeConfig`→`create_agent`/`SessionLogger` wiring + `RateLimiter`/`AuthPolicy` globals. Local-substitutable via `tmp_path`/`FakeClock`. |
+| `ModelCatalog` | `micron/catalog.py` | `list(provider=None)->list[ModelEntry]`; `text(entries, active)->str`; `switch(agent, provider, model)->str` | Deep module owning live fetch (`/api/tags` vs `/models`), fallback chain, price/meta formatting, switch validation. Port `ModelSource.fetch(provider,cfg)->list[dict]` (Http vs Fake). `CommandDispatcher` + `ModelPickerScreen` are thin adapters. |
+| `budget_join` | `micron/knowledge.py` | `budget_join(chunks, *, budget=8000, label="items", sep)->str` | Pure helper hiding budget + sentinel; used by `KnowledgeIndex.prompt_context` and `PromptBuilder._load_skill_instructions` (no new module). |
 
 ## Event vocabulary
 
@@ -115,6 +123,12 @@ architecture reviews should not re-litigate them.
 | ADR | Subject | Status |
 |---|---|---|
 | [0001](docs/adr/0001-text-tool-call-parser.md) | Stateful incremental parser for text-format tool calls | Accepted |
+| [0002](docs/adr/0002-workspacefs.md) | WorkspaceFS deep module | Accepted |
+| [0003](docs/adr/0003-micron-agent.md) | MicronAgent injected seam + LoopController / HistoryCompactor | Accepted |
+| [0004](docs/adr/0004-knowledge-index.md) | KnowledgeIndex deep module | Accepted |
+| [0005](docs/adr/0005-runtime-gate.md) | RuntimeConfig + RateLimiter / AuthPolicy | Accepted |
+| [0006](docs/adr/0006-error-format.md) | ErrorFormat deep module | Accepted |
+| [0007](docs/adr/0007-server-runtime.md) | ServerRuntime deep module | Accepted |
 
 Add a row here when a new ADR is accepted. Don't list draft / rejected
 proposals — only those that have shaped the current code.

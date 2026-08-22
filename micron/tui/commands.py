@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from textual.message import Message
 
+from micron.catalog import ModelCatalog
 from micron.slash import SlashCommandRegistry, SlashCommandResult
 
 
@@ -64,13 +65,14 @@ class CommandDispatcher:
     :class:`SlashCommandResult` into a :class:`CommandResult`.
     """
 
-    def __init__(self, app, agent, logger, config: dict):
+    def __init__(self, app, agent, logger, config: dict, *, catalog: ModelCatalog | None = None):
         self.app = app
         self.agent = agent
         self.logger = logger
         self.config = config
         self.registry = SlashCommandRegistry()
-        self._last_models: list[tuple[str, str]] = []
+        self.catalog = catalog or ModelCatalog()
+        self._last_models: list = []
         self._register_readonly_commands()
         self._register_session_commands()
         self._register_file_commands()
@@ -336,75 +338,18 @@ class CommandDispatcher:
     # ── /models ──────────────────────────────────────────────────────────
 
     def _fetch_provider_models(self, prov_name: str, prov_cfg: dict) -> list[dict]:
-        """Query a provider's API for the models it currently serves.
-
-        Ollama exposes ``/api/tags``; the OpenAI-compatible providers
-        (lmstudio, openrouter, openai, vllm) expose ``/models``. Each entry
-        is ``{"name": str, "meta": {...}}`` where meta carries whatever
-        extra metadata the endpoint gives us (pricing, context length,
-        parameter size, …). Returns an empty list when the endpoint can't
-        be reached, so callers fall back to the config's model list.
-        """
-        base_url = prov_cfg.get("base_url")
-        if not base_url:
-            return []
-        try:
-            import requests
-            if prov_name == "ollama":
-                resp = requests.get(f"{base_url}/api/tags", timeout=2)
-                resp.raise_for_status()
-                return [
-                    {
-                        "name": m.get("name", ""),
-                        "meta": {
-                            k: m.get(k)
-                            for k in ("parameter_size", "quantization_level", "size")
-                            if m.get(k) is not None
-                        },
-                    }
-                    for m in resp.json().get("models", [])
-                    if m.get("name")
-                ]
-            headers = {}
-            api_key = prov_cfg.get("api_key")
-            if api_key and api_key != "no_key":
-                headers["Authorization"] = f"Bearer {api_key}"
-            resp = requests.get(f"{base_url}/models", headers=headers, timeout=2)
-            resp.raise_for_status()
-            return [
-                {
-                    "name": m.get("id", ""),
-                    "meta": {
-                        k: m.get(k)
-                        for k in ("pricing", "context_length", "description")
-                        if m.get(k) is not None
-                    },
-                }
-                for m in resp.json().get("data", [])
-                if m.get("id")
-            ]
-        except Exception:
-            return []
+        return self.catalog._source.fetch(prov_name, prov_cfg)
 
     def _all_model_entries(self) -> list[tuple[str, str, dict]]:
-        """Every (provider, model, meta) triple the /models command can switch to.
-
-        Live-queries each provider's API (Ollama ``/api/tags``, OpenAI-
-        compatible ``/models``) for the models it currently serves. When a
-        provider's endpoint is unreachable or doesn't expose one
-        (llamacpp), falls back to the config's ``models:`` list, else the
-        single ``model`` field, with empty meta.
-        """
         from micron.config import load_config
+
         cfg = load_config()
         providers = cfg.get("providers", {}) if cfg else {}
         entries: list[tuple[str, str, dict]] = []
         for prov_name, prov_cfg in providers.items():
             live = self._fetch_provider_models(prov_name, prov_cfg)
             if live:
-                entries.extend(
-                    (prov_name, m["name"], m.get("meta", {})) for m in live
-                )
+                entries.extend((prov_name, m["name"], m.get("meta", {})) for m in live)
                 continue
             models = prov_cfg.get("models")
             if isinstance(models, list) and models:
@@ -414,139 +359,77 @@ class CommandDispatcher:
         return entries
 
     def _format_model_meta_parts(self, meta: dict) -> tuple[str, str]:
-        """Split a model's metadata into (price_str, rest_str).
+        from micron.catalog import ModelEntry
 
-        The price ("$0.075/$0.3") is split out from the trailing detail
-        ("per M tok · 128k ctx") so the list formatter can right-align the
-        price column and keep every row's detail on the same line.
-        """
-        price = ""
-        rest_parts: list[str] = []
-        pricing = meta.get("pricing")
-        if isinstance(pricing, dict) and pricing.get("prompt") is not None:
-            prompt = _format_price(pricing.get("prompt"))
-            completion = _format_price(pricing.get("completion"))
-            price = f"${prompt}/${completion}"
-            rest_parts.append("per M tok")
-        ctx = meta.get("context_length")
-        if isinstance(ctx, int) and ctx:
-            if ctx >= 1_000_000 and ctx % 1_000_000 == 0:
-                rest_parts.append(f"{ctx // 1_000_000}m ctx")
-            elif ctx % 1000 == 0:
-                rest_parts.append(f"{ctx // 1000}k ctx")
-            else:
-                rest_parts.append(f"{ctx} ctx")
-        params = meta.get("parameter_size")
-        if params:
-            rest_parts.append(str(params))
-        quant = meta.get("quantization_level")
-        if quant:
-            rest_parts.append(str(quant))
-        return price, " · ".join(rest_parts)
+        e = ModelEntry(provider="", name="", meta=meta)
+        return e.price, e.rest
 
     def _format_model_meta(self, meta: dict) -> str:
-        """One-line detail string from a model's metadata dict."""
-        price, rest = self._format_model_meta_parts(meta)
-        return " · ".join(p for p in (price, rest) if p)
+        from micron.catalog import ModelEntry
+
+        return ModelEntry(provider="", name="", meta=meta).detail
 
     def _format_model_list(self, entries: list[tuple[str, str, dict]]) -> str:
-        active = (self.agent.provider, self.agent.model)
-        rows = [
-            (prov, model, *self._format_model_meta_parts(meta))
-            for prov, model, meta in entries
-        ]
-        lines = ["Available models:"]
-        if not rows:
-            lines.append("  (none configured)")
-            lines.append("")
-            lines.append("Use: /models <provider> [<model>]")
-            return "\n".join(lines)
-        model_w = max(len(m) for _, m, _, _ in rows)
-        price_w = max(len(p) for _, _, p, _ in rows)
-        for prov, model, price, rest in rows:
-            marker = "  ← active" if (prov, model) == active else ""
-            detail = " ".join(
-                part for part in (f"{price:>{price_w}}", rest) if part
-            )
-            lines.append(f"  {prov:<11} {model:<{model_w}}  [{detail}]{marker}")
-        lines.append("")
-        lines.append("Use: /models <provider> [<model>]")
-        return "\n".join(lines)
+        from micron.catalog import ModelEntry
+
+        # Support both tuple entries (legacy) and ModelEntry
+        if entries and isinstance(entries[0], ModelEntry):
+            return self.catalog.text(entries, active=(self.agent.provider, self.agent.model))
+        # Convert tuple -> ModelEntry for catalog.text
+        model_entries = [ModelEntry(provider=p, name=m, meta=meta) for p, m, meta in entries]
+        return self.catalog.text(model_entries, active=(self.agent.provider, self.agent.model))
 
     def _models(self, args: list[str]) -> SlashCommandResult:
         entries = self._all_model_entries()
 
-        # No args → signal the TUI to open the model picker. The text is
-        # still built so non-TUI transports (tests, CLI) keep working.
         if not args:
             self._last_models = entries
+            # Convert to ModelEntry for catalog.text
+            from micron.catalog import ModelEntry
+
+            model_entries = [ModelEntry(provider=p, name=m, meta=meta) for p, m, meta in entries]
             return SlashCommandResult(
-                text=self._format_model_list(entries),
+                text=self.catalog.text(model_entries, active=(self.agent.provider, self.agent.model)),
                 extras={"open_model_picker": True, "model_entries": entries},
             )
 
         first = args[0]
 
-        # Numeric selection → pick from the last list.
         if first.isdigit():
             if not self._last_models:
-                return SlashCommandResult(
-                    text="No model list yet — run /models first."
-                )
+                return SlashCommandResult(text="No model list yet — run /models first.")
             idx = int(first) - 1
             if idx < 0 or idx >= len(self._last_models):
-                return SlashCommandResult(
-                    text=f"Index {first} out of range (1..{len(self._last_models)})."
-                )
+                return SlashCommandResult(text=f"Index {first} out of range (1..{len(self._last_models)}).")
             prov, model, _meta = self._last_models[idx]
             return self._switch_model(prov, model)
 
-        # Provider-only → filter list to that provider.
         if len(args) == 1:
             provider = first
             provider_entries = [e for e in entries if e[0] == provider]
             if not provider_entries:
                 if provider not in {p for (p, _m, _) in entries}:
                     providers = sorted({p for (p, _m, _) in entries})
-                    return SlashCommandResult(
-                        text=f"Unknown provider: {provider}. Known: {', '.join(providers)}"
-                    )
+                    return SlashCommandResult(text=f"Unknown provider: {provider}. Known: {', '.join(providers)}")
                 return SlashCommandResult(text=f"No models for {provider}.")
             self._last_models = provider_entries
+            from micron.catalog import ModelEntry
+
+            model_entries = [ModelEntry(provider=p, name=m, meta=meta) for p, m, meta in provider_entries]
             return SlashCommandResult(
-                text=self._format_model_list(provider_entries),
+                text=self.catalog.text(model_entries, active=(self.agent.provider, self.agent.model)),
                 extras={"open_model_picker": True, "model_entries": provider_entries},
             )
 
-        # Provider + model → switch.
         provider, model = first, args[1]
         return self._switch_model(provider, model)
 
     def _switch_model(self, provider: str, model: str) -> SlashCommandResult:
-        from micron.config import load_config
-        cfg = load_config()
-        prov_cfg = (cfg.get("providers", {}) or {}).get(provider, {})
-        if not prov_cfg:
-            return SlashCommandResult(text=f"Unknown provider: {provider}.")
-
-        # Pass through all provider config keys except the model itself
-        # (and the optional `models` list) as backend kwargs.
-        kwargs = {
-            k: v for k, v in prov_cfg.items()
-            if k not in ("model", "models")
-        }
-
-        try:
-            self.agent.set_backend(provider, model, **kwargs)
-        except Exception as e:
-            return SlashCommandResult(
-                text=f"Failed to switch to {provider}/{model}: {e}"
-            )
-
-        return SlashCommandResult(
-            text=f"Switched to {provider}/{model}.\n"
-                 f"Use /models to confirm."
-        )
+        msg = self.catalog.switch(self.agent, provider, model)
+        # Map catalog string to SlashCommandResult (status already encoded)
+        if msg.startswith("Unknown provider") or msg.startswith("Failed"):
+            return SlashCommandResult(text=msg)
+        return SlashCommandResult(text=msg)
 
     def switch_model(self, provider: str, model: str) -> SlashCommandResult:
         """Public wrapper around _switch_model for the model picker."""

@@ -23,65 +23,71 @@ from micron.config import load_config
 from micron.sessions import SessionLogger
 from micron.tools.builtin import _get_workdir, list_trash, purge_trash, restore_file, undo_file
 
-# Rate limiting storage
-chat_request_times = deque(maxlen=1000)  # Store last 1000 request timestamps
+# App state — now owned by ServerRuntime (deep module)
+# chat_request_times kept as shim (delegates to RateLimiter), globals kept for compat
+chat_request_times = deque(maxlen=1000)  # shim: synced from RateLimiter for tests that inspect it
+_runtime = None  # ServerRuntime instance
 
-# App state
 agent: MicronAgent | None = None
 session_logger: SessionLogger | None = None
 _config_cache = None
 
 def _get_cached_config():
-    global _config_cache
+    global _config_cache, _runtime
+    if _runtime is not None and getattr(_runtime, "_config", None) is not None:
+        return _runtime._config
     if _config_cache is None:
         _config_cache = load_config()
     return _config_cache
 
 
-def check_authentication(request: Request) -> bool:
-    """Check if API key is valid.
-    
-    Args:
-        request: FastAPI request object
-        
-    Returns:
-        True if authenticated or auth disabled, False otherwise
-    """
-    config = _get_cached_config()
+def _get_runtime():
+    global _runtime, agent, session_logger, _config_cache
+    if _runtime is None:
+        from micron.server_runtime import ServerRuntime
 
-    # Get API key from header or query parameter
+        if agent is not None:
+            _runtime = ServerRuntime(agent=agent, sessions=session_logger)
+        else:
+            _runtime = ServerRuntime.load()
+            agent = _runtime.agent
+            session_logger = _runtime.sessions
+            _config_cache = _runtime._config
+        if _runtime.agent is not None:
+            agent = _runtime.agent
+        if _runtime.sessions is not None:
+            session_logger = _runtime.sessions
+        if getattr(_runtime, "_config", None) is not None:
+            _config_cache = _runtime._config
+    else:
+        if _runtime.agent is not None and agent is not _runtime.agent:
+            agent = _runtime.agent
+        if _runtime.sessions is not None and session_logger is not _runtime.sessions:
+            session_logger = _runtime.sessions
+    return _runtime
+
+
+def check_authentication(request: Request) -> bool:
+    """Check if API key is valid."""
+    config = _get_cached_config()
     api_key = request.headers.get("X-API-KEY")
     if not api_key:
         api_key = request.query_params.get("api_key")
-    
-    # Use Config's is_valid_api_key method (constant-time comparison)
     return config.is_valid_api_key(api_key)
 
-# Rate limiting function
+
 def check_rate_limit() -> bool:
-    """Check if rate limit has been exceeded.
-    
-    Returns:
-        True if rate limit exceeded, False otherwise
-    """
+    """Check if rate limit has been exceeded."""
     config = _get_cached_config()
     rate_limits = config.get_rate_limits()
-    
     if not rate_limits.get("enabled", False):
-        return False  # Rate limiting disabled
-    
+        return False
     max_requests = rate_limits.get("chat_requests_per_minute", 60)
-    
-    # Remove requests older than 60 seconds
     current_time = time.time()
     while chat_request_times and current_time - chat_request_times[0] > 60:
         chat_request_times.popleft()
-    
-    # Check if limit exceeded
     if len(chat_request_times) >= max_requests:
         return True
-    
-    # Add current request
     chat_request_times.append(current_time)
     return False
 
@@ -89,66 +95,41 @@ def check_rate_limit() -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize agent on startup if not already set (e.g. via run_server)."""
-    global agent, session_logger
+    global agent, session_logger, _runtime, _config_cache
 
-    # Skip if agent was already injected by run_server()
-    if agent is not None:
+    if agent is not None and _runtime is None:
+        # Agent injected via run_server() — wrap in ServerRuntime for gates
+        from micron.server_runtime import ServerRuntime
+
+        _runtime = ServerRuntime(agent=agent, sessions=session_logger)
+        agent = _runtime.agent
+        session_logger = _runtime.sessions
+        _config_cache = _runtime._config
         print(f"[micron] Using provided agent (LLM: {'available' if agent.llm and agent.llm.is_available() else 'N/A'})")
-        # Session logger may also have been injected by run_server(); create one
-        # from the agent's context_dir if not.
         if session_logger is None:
             try:
                 sessions_dir = Path(agent.context_dir) / "sessions"
                 session_logger = SessionLogger(sessions_dir)
                 session_logger.start_session()
+                _runtime.sessions = session_logger
                 print(f"[micron] Session logging enabled: {sessions_dir}")
             except Exception as e:
                 print(f"[micron] Warning: Could not initialize session logger: {e}")
-                session_logger = None
         yield
         if session_logger is not None:
             session_logger.end_session()
         return
 
-    # Load configuration
-    config = load_config()
-    rt = config.resolve_runtime()
+    # Cold start — via ServerRuntime (deep module, hides wiring)
+    from micron.server_runtime import ServerRuntime
 
-    # Create agent
-    agent = create_agent(
-        context_dir=rt["context_dir"],
-        temperature=rt["temperature"],
-        max_tokens=rt["max_tokens"],
-        max_tool_iterations=rt["max_tool_iterations"],
-        provider=rt["provider"],
-        model=rt["model"],
-    )
-
-    # Create and attach LLM backend
-    try:
-        backend = create_backend(
-            provider=rt["provider"],
-            model=rt["model"],
-            n_threads=rt["n_threads"],
-            n_gpu_layers=rt["n_gpu_layers"],
-            api_key=rt.get("api_key"),
-            base_url=rt.get("base_url"),
-        )
-        agent.llm = backend
-        print(f"[micron] Loaded {rt['provider']} backend with model: {rt['model']}")
-    except Exception as e:
-        print(f"[micron] Warning: Could not load LLM backend: {e}")
-        print("[micron] Server will run without LLM (tools/memory only)")
-
-    # Initialize session logger — failures are non-fatal so the server still runs.
-    try:
-        sessions_dir = Path(agent.context_dir) / "sessions"
-        session_logger = SessionLogger(sessions_dir)
-        session_logger.start_session()
-        print(f"[micron] Session logging enabled: {sessions_dir}")
-    except Exception as e:
-        print(f"[micron] Warning: Could not initialize session logger: {e}")
-        session_logger = None
+    _runtime = ServerRuntime.load()
+    agent = _runtime.agent
+    session_logger = _runtime.sessions
+    _config_cache = _runtime._config
+    print(f"[micron] Loaded {_runtime.runtime.provider} backend with model: {_runtime.runtime.model}")
+    if session_logger is not None:
+        print(f"[micron] Session logging enabled: {Path(_runtime.runtime.context_dir) / 'sessions'}")
 
     yield
     # Cleanup on shutdown
@@ -531,9 +512,13 @@ async def upload_file(file: UploadFile = File(...)):
 
 def run_server(agent_instance, host: str = "0.0.0.0", port: int = 8000, session_logger_instance: SessionLogger | None = None):
     """Run the FastAPI server with the given agent instance."""
-    global agent, session_logger
-    agent = agent_instance
-    session_logger = session_logger_instance
+    global agent, session_logger, _runtime, _config_cache
+    from micron.server_runtime import ServerRuntime
+
+    _runtime = ServerRuntime(agent=agent_instance, sessions=session_logger_instance)
+    agent = _runtime.agent
+    session_logger = _runtime.sessions
+    _config_cache = _runtime._config
     import uvicorn
     print(f"[micron] Web UI at http://{host}:{port}")
     uvicorn.run(app, host=host, port=port)

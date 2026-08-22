@@ -60,6 +60,7 @@ Tool results will be provided in the next message."""
         user: str = "user",
         use_text_tool_format: bool = False,
         tools=None,
+        knowledge=None,
     ):
         self.context_dir = Path(context_dir)
         self.memory = memory
@@ -69,6 +70,16 @@ Tool results will be provided in the next message."""
         # Optional ToolRegistry — when provided it is the source of truth for
         # the tool list rendered into the prompt (Skills/Tools split).
         self.tools = tools
+        # Deep module — KnowledgeIndex owns discovery/TF-IDF/budget (P2)
+        if knowledge is not None:
+            self.knowledge_index = knowledge
+        else:
+            from micron.knowledge import KnowledgeIndex
+
+            try:
+                self.knowledge_index = KnowledgeIndex(self.context_dir / "knowledge")
+            except Exception:
+                self.knowledge_index = None
 
     def build_system_prompt(self, query: str) -> str:
         """Build the complete system prompt for a query."""
@@ -136,15 +147,18 @@ Tool results will be provided in the next message."""
 
     def _load_knowledge(self, query: str = "") -> str:
         """Load knowledge files, filtered by query relevance if provided."""
+        if getattr(self, "knowledge_index", None) is not None:
+            try:
+                return self.knowledge_index.prompt_context(query)
+            except Exception:
+                pass
+        # Fallback to legacy path (should not happen)
         knowledge_dir = self.context_dir / "knowledge"
         if not knowledge_dir.exists():
             return "(no knowledge files loaded)"
-
         files = sorted(knowledge_dir.glob("*.md"))
         if not files:
             return "(no knowledge files loaded)"
-
-        # If query provided, score and filter files
         if query:
             query_words = set(query.lower().split())
             scored = []
@@ -164,14 +178,11 @@ Tool results will be provided in the next message."""
                 return "(no relevant knowledge)"
         else:
             files_with_content = [(f, f.read_text().strip()) for f in files if f.read_text().strip()]
-
         if not files_with_content:
             return "(no relevant knowledge)"
-
         parts = []
         total_chars = 0
         max_chars = 8000
-
         for f, content in files_with_content:
             if not content:
                 continue
@@ -182,7 +193,6 @@ Tool results will be provided in the next message."""
                 break
             parts.append(content)
             total_chars += len(content)
-
         return "\n\n---\n\n".join(parts) if parts else "(no knowledge files loaded)"
 
     def _load_skill_instructions(self, query: str = "") -> str:
@@ -190,16 +200,13 @@ Tool results will be provided in the next message."""
 
         Procedure skills are loaded on-demand via the /skill command.
         """
-        parts = []
-        total_chars = 0
-        max_chars = 8000
+        from micron.knowledge import budget_join
 
-        for skill in self.skills.all():
-            if skill.module or skill.procedure or not skill.content:
-                continue
-            if total_chars + len(skill.content) > max_chars:
-                break
-            parts.append(f"## {skill.name}\n{skill.description}\n\n{skill.content}")
-            total_chars += len(skill.content)
-
-        return "\n\n---\n\n".join(parts) if parts else ""
+        chunks = [
+            f"## {skill.name}\n{skill.description}\n\n{skill.content}"
+            for skill in self.skills.all()
+            if not skill.module and not skill.procedure and skill.content
+        ]
+        if not chunks:
+            return ""
+        return budget_join(chunks, budget=8000, label="skills")
