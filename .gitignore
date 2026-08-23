@@ -32,9 +32,10 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# User data (memory, sessions)
+# User data (memory, sessions, history)
 context/memory/
 context/sessions/
+context/input_history.jsonl
 
 # Configuration
 micron.yaml

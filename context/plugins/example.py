@@ -19,9 +19,12 @@ def roll_dice(count: int = 1, sides: int = 6) -> str:
     return f"Rolled {count}d{sides}: [{', '.join(str(r) for r in results)}] total={total}"
 
 
-@tool(name="reverse_text", description="Reverse a string of text")
+@tool(
+    name="reverse_text",
+    description="Reverse a string of text — ONLY use when the user explicitly asks to reverse text, e.g. 'reverse hello' or 'reverse this sentence'. Do not use for jokes, stories, or normal replies.",
+)
 def reverse_text(text: str = "") -> str:
-    """Reverse the input text."""
+    """Reverse the input text — only when explicitly requested."""
     if not text:
         return "Error: no text provided"
     return text[::-1]
