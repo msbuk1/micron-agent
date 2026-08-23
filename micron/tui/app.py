@@ -507,6 +507,10 @@ class MicronTUI(App):
 
     def _finalize_turn(self) -> None:
         if self._pending_writes:
+            # Guard against double-push: on_agent_event(DONE) and on_agent_done
+            # both fire for the same run and would otherwise push two screens
+            if isinstance(self.screen, ConfirmationScreen):
+                return
             policy = self._resolve_confirm()
             if policy == "allow":
                 self._execute_confirmed_writes()
@@ -723,7 +727,8 @@ class MicronTUI(App):
             try:
                 from micron.config import Config
 
-                n_ctx = Config().runtime().n_ctx
+                # Use active provider so ctx updates immediately after /model switch
+                n_ctx = Config().runtime(provider_override=provider).n_ctx
             except Exception:
                 n_ctx = None
         history_len = len(self.conversation_history) if isinstance(self.conversation_history, list) else 0
