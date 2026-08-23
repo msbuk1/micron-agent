@@ -91,7 +91,7 @@ class Sidebar(Vertical):
             name = self._format_session_name(sid)
             turns = s.get("turns", 0)
             size = s.get("size", 0) // 1024
-            label = f"[bold]{esc(name)}[/bold]  [dim]{turns} turns  {size}KB[/dim]"
+            label = f"[bold]{esc(name)}[/bold]  [dim]{esc(sid)}  {turns} turns  {size}KB[/dim]"
             lv.append(ListItem(Static(label)))
 
     @staticmethod

@@ -34,8 +34,8 @@ HELP_TEXT = """
 - `/model` — Open model picker / switch provider+model (alias: `/models`)
 - `/unload` — Unload model from RAM
 - `/reload` — Reload skills from disk
-- `/sessions` — Refresh session list
-- `/resume ID` — Resume a previous session
+- `/sessions` — List recent sessions (shows IDs for `/resume`)
+- `/resume ID` — Resume a previous session (IDs from `/sessions` or click Sessions tab)
 - `/last` — Show last assistant response
 - `/trash` — List recoverable files
 - `/restore F` — Restore a file from trash

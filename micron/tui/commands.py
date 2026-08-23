@@ -125,17 +125,17 @@ class CommandDispatcher:
                 extras={"reload_sidebar": True},
             )
 
-        @reg.register("sessions", help_text="List recent sessions")
+        @reg.register("sessions", help_text="List recent sessions (for /resume)")
         def _sessions(args: list[str]) -> SlashCommandResult:
             return SlashCommandResult(
                 text=self._sessions_text(),
                 extras={"reload_sidebar": True},
             )
 
-        @reg.register("resume", help_text="Resume a previous session")
+        @reg.register("resume", help_text="Resume a previous session (see /sessions for IDs)")
         def _resume(args: list[str]) -> SlashCommandResult:
             if not args:
-                return SlashCommandResult(text="Usage: /resume <session_id>")
+                return SlashCommandResult(text="Usage: /resume <session_id>  (see /sessions or Sessions tab for IDs)")
             resumed = self.logger.get_session_context(args[0])
             if not resumed:
                 return SlashCommandResult(text=f"Session '{args[0]}' not found.")
@@ -307,7 +307,7 @@ class CommandDispatcher:
         sessions = self.logger.list_sessions(10)
         if not sessions:
             return "No sessions found."
-        lines = ["Recent sessions:"]
+        lines = ["Recent sessions (use /resume <id> or click in sidebar):"]
         for s in sessions:
             lines.append(f"  {s['id']}  {s['turns']} turns  {s['size'] // 1024}KB")
         return "\n".join(lines)
