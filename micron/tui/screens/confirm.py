@@ -3,7 +3,7 @@ from typing import ClassVar
 
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Button, Checkbox, Static
+from textual.widgets import Button, Static
 
 from micron.tui._markup import esc
 
@@ -58,20 +58,25 @@ class ConfirmationScreen(Screen):
     def compose(self):
         with Vertical(id="confirm-dialog"):
             yield Static(self._summarize(), id="confirm-summary")
-            yield Checkbox("Remember for this session", id="confirm-remember")
             with Horizontal(classes="confirm-buttons"):
                 yield Button("No", id="confirm-no")
                 yield Button("Yes", id="confirm-yes", variant="success")
+                yield Button("Yes for Session", id="confirm-session", variant="success")
 
     def on_mount(self):
         self.query_one("#confirm-no", Button).focus()
 
-    def _dismiss_with(self, confirmed: bool) -> None:
-        remember = self.query_one("#confirm-remember", Checkbox).value
+    def _dismiss_with(self, confirmed: bool, remember: bool = False) -> None:
         self.dismiss({"confirm": confirmed, "remember": remember})
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        self._dismiss_with(event.button.id == "confirm-yes")
+        bid = event.button.id
+        if bid == "confirm-yes":
+            self._dismiss_with(True, False)
+        elif bid == "confirm-session":
+            self._dismiss_with(True, True)
+        else:
+            self._dismiss_with(False, False)
 
     def action_decline(self) -> None:
-        self._dismiss_with(False)
+        self._dismiss_with(False, False)

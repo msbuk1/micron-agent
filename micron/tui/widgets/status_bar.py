@@ -26,6 +26,8 @@ class StatusBar(Horizontal):
         knowledge_count: int = 0,
         skill_count: int = 0,
         status: str = "",
+        n_ctx: int | None = None,
+        history_len: int = 0,
     ) -> None:
         left = self.query_one("#status-left", Static)
         right = self.query_one("#status-right", Static)
@@ -45,6 +47,13 @@ class StatusBar(Horizontal):
         left.update(f"{beacon} {session}  {model_part}")
 
         counts = f"mems={memory_count}  kb={knowledge_count}  skills={skill_count}"
+        if n_ctx:
+            # show as 8k / 128k etc., with current history turns if any
+            ctx_label = f"{n_ctx // 1000}k" if n_ctx >= 1000 and n_ctx % 1000 == 0 else str(n_ctx)
+            if history_len:
+                counts += f"  ctx={history_len}/{ctx_label}"
+            else:
+                counts += f"  ctx={ctx_label}"
         status_text = self._status_text(status)
         right.update(f"[dim]{counts}[/dim]  {status_text}")
 

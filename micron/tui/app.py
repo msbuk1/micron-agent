@@ -709,6 +709,24 @@ class MicronTUI(App):
             skill_count = 0
         model = getattr(self._agent.config, "model", "") or ""
         provider = getattr(self._agent.config, "provider", "") or ""
+        # model context window (n_ctx) and current window usage
+        n_ctx = None
+        try:
+            n_ctx = getattr(self._agent.config, "n_ctx", None)
+            if n_ctx is None:
+                n_ctx = self._agent.config.llm_kwargs.get("n_ctx")  # type: ignore[attr-defined]
+            if n_ctx is not None:
+                n_ctx = int(n_ctx)
+        except Exception:
+            n_ctx = None
+        if n_ctx is None:
+            try:
+                from micron.config import Config
+
+                n_ctx = Config().runtime().n_ctx
+            except Exception:
+                n_ctx = None
+        history_len = len(self.conversation_history) if isinstance(self.conversation_history, list) else 0
         bar.update_status(
             session_id=self._session_id,
             provider=provider,
@@ -717,6 +735,8 @@ class MicronTUI(App):
             knowledge_count=knowledge_count,
             skill_count=skill_count,
             status=status,
+            n_ctx=n_ctx,
+            history_len=history_len,
         )
 
 
