@@ -339,6 +339,16 @@ class MicronTUI(App):
             self.active_skill = result.loaded_skill
         if result.reload_sidebar:
             self._refresh_sidebar()
+        if result.activate_tab:
+            try:
+                from textual.widgets import TabbedContent
+
+                sidebar = self.query_one("#sidebar", Sidebar)
+                sidebar.display = True
+                tc = sidebar.query_one(TabbedContent)
+                tc.active = f"tab-{result.activate_tab}"
+            except Exception:
+                pass
         if result.open_model_picker:
             self.push_screen(
                 ModelPickerScreen(result.model_entries),

@@ -46,6 +46,7 @@ class CommandResult(Message):
         should_exit: bool = False,
         open_model_picker: bool = False,
         model_entries: list | None = None,
+        activate_tab: str | None = None,
     ) -> None:
         super().__init__()
         self.text = text
@@ -56,6 +57,7 @@ class CommandResult(Message):
         self.should_exit = should_exit
         self.open_model_picker = open_model_picker
         self.model_entries = model_entries or []
+        self.activate_tab = activate_tab
 
 
 class CommandDispatcher:
@@ -129,7 +131,7 @@ class CommandDispatcher:
         def _sessions(args: list[str]) -> SlashCommandResult:
             return SlashCommandResult(
                 text=self._sessions_text(),
-                extras={"reload_sidebar": True},
+                extras={"reload_sidebar": True, "activate_tab": "sessions"},
             )
 
         @reg.register("resume", help_text="Resume a previous session (see /sessions for IDs)")
@@ -241,6 +243,7 @@ class CommandDispatcher:
             should_exit=result.extras.get("should_exit", False),
             open_model_picker=result.extras.get("open_model_picker", False),
             model_entries=result.extras.get("model_entries", []),
+            activate_tab=result.extras.get("activate_tab"),
         )
 
     def _help_text(self) -> str:
