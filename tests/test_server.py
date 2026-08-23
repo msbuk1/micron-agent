@@ -22,9 +22,9 @@ from micron.sessions import SessionLogger
 
 
 @pytest.fixture(scope="module")
-async def client():
+async def client(tmp_path_factory):
     """Create an AsyncClient for testing, with a real agent, bypassing lifespan."""
-    context_dir = Path(__file__).parent.parent / "context"
+    context_dir = tmp_path_factory.mktemp("context")
     (context_dir / "memory").mkdir(exist_ok=True)
     (context_dir / "sessions").mkdir(exist_ok=True)
 
