@@ -714,11 +714,33 @@ class MicronTUI(App):
         model = getattr(self._agent.config, "model", "") or ""
         provider = getattr(self._agent.config, "provider", "") or ""
         # model context window (n_ctx) and current window usage
+        # Prefer live value from the running backend/model, then config
         n_ctx = None
         try:
-            n_ctx = getattr(self._agent.config, "n_ctx", None)
+            # 1. live backend (llamacpp knows its n_ctx)
+            llm = getattr(self._agent, "llm", None)
+            if llm is not None:
+                if hasattr(llm, "_init_kwargs") and isinstance(llm._init_kwargs, dict):
+                    n_ctx = llm._init_kwargs.get("n_ctx")
+                if n_ctx is None and hasattr(llm, "n_ctx"):
+                    n_ctx = getattr(llm, "n_ctx")
+            # 2. catalog live fetch for current provider/model (openrouter/openai context_length)
             if n_ctx is None:
-                n_ctx = self._agent.config.llm_kwargs.get("n_ctx")  # type: ignore[attr-defined]
+                try:
+                    from micron.catalog import ModelCatalog
+
+                    cat = ModelCatalog()
+                    for e in cat.list(provider=provider):
+                        if e.name == model and e.meta.get("context_length"):
+                            n_ctx = int(e.meta["context_length"])
+                            break
+                except Exception:
+                    pass
+            # 3. config (agent llm_kwargs / provider config)
+            if n_ctx is None:
+                n_ctx = getattr(self._agent.config, "n_ctx", None)
+                if n_ctx is None:
+                    n_ctx = self._agent.config.llm_kwargs.get("n_ctx")  # type: ignore[attr-defined]
             if n_ctx is not None:
                 n_ctx = int(n_ctx)
         except Exception:
@@ -727,7 +749,6 @@ class MicronTUI(App):
             try:
                 from micron.config import Config
 
-                # Use active provider so ctx updates immediately after /model switch
                 n_ctx = Config().runtime(provider_override=provider).n_ctx
             except Exception:
                 n_ctx = None
