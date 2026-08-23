@@ -307,9 +307,16 @@ class CommandDispatcher:
         sessions = self.logger.list_sessions(10)
         if not sessions:
             return "No sessions found."
-        lines = ["Recent sessions (use /resume <id> or click in sidebar):"]
+        lines = [
+            "Recent sessions — copy the ID for /resume (or click in sidebar Sessions tab):",
+            "  ID                        Turns  Size",
+            "  ──                        ─────  ────",
+        ]
         for s in sessions:
-            lines.append(f"  {s['id']}  {s['turns']} turns  {s['size'] // 1024}KB")
+            # ID is the timestamp like 2026-08-23_203714 — show it verbatim
+            lines.append(f"  {s['id']:<24}  {s['turns']:>2}      {s['size'] // 1024}KB")
+        lines.append("")
+        lines.append("Example: /resume 2026-08-23_202756")
         return "\n".join(lines)
 
     def _tree(self, args: list[str]) -> str:
