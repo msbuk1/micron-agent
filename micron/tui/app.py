@@ -422,7 +422,7 @@ class MicronTUI(App):
             chat_log.append_thinking(chunk["content"])
         elif etype == EventType.TOOL_START:
             chat_log.remove_thinking_indicator()
-            tool_panel.add_call(chunk["call_id"], chunk["name"], {})
+            tool_panel.add_call(chunk["call_id"], chunk["name"], chunk.get("args", {}))
             self._update_status(f"tool: {chunk['name']}")
         elif etype == EventType.TOOL_RESULT:
             summary = chunk.get("summary", "")

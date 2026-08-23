@@ -393,7 +393,7 @@ class MicronAgent:
                         call_id=response.tool_call_id or f"call_{len(pending_calls)}",
                         is_write=self._is_write_tool(response.tool_name),
                     ))
-                    yield {"type": "tool_start", "name": response.tool_name, "call_id": pending_calls[-1].call_id}
+                    yield {"type": "tool_start", "name": response.tool_name, "call_id": pending_calls[-1].call_id, "args": response.tool_args or {}}
                 elif response.type == "done":
                     if text_parser:
                         yield from self._consume_parser_events(
@@ -492,7 +492,7 @@ class MicronAgent:
                 
                 # Add tool_start events for consistency
                 for tc in write_calls:
-                    yield {"type": "tool_start", "name": tc.name, "call_id": tc.call_id}
+                    yield {"type": "tool_start", "name": tc.name, "call_id": tc.call_id, "args": tc.args}
 
                 tool_iterations += 1
                 yield {"type": "done"}
