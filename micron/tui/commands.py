@@ -215,10 +215,10 @@ class CommandDispatcher:
             return SlashCommandResult(text=self._tree(args))
 
     def _register_model_commands(self) -> None:
-        """Register /models: list models and switch active backend."""
+        """Register /model: list models and switch active backend."""
         reg = self.registry
 
-        @reg.register("models", help_text="Open model picker / switch provider+model")
+        @reg.register("model", aliases=("models",), help_text="Open model picker / switch provider+model")
         def _models(args: list[str]) -> SlashCommandResult:
             return self._models(args)
 
@@ -335,7 +335,7 @@ class CommandDispatcher:
             lines.append(f"  {s.name:30s} {s.description[:60]}")
         return "\n".join(lines)
 
-    # ── /models ──────────────────────────────────────────────────────────
+    # ── /model (alias /models) ─────────────────────────────────────────
 
     def _fetch_provider_models(self, prov_name: str, prov_cfg: dict) -> list[dict]:
         return self.catalog._source.fetch(prov_name, prov_cfg)
@@ -397,7 +397,7 @@ class CommandDispatcher:
 
         if first.isdigit():
             if not self._last_models:
-                return SlashCommandResult(text="No model list yet — run /models first.")
+                return SlashCommandResult(text="No model list yet — run /model first.")
             idx = int(first) - 1
             if idx < 0 or idx >= len(self._last_models):
                 return SlashCommandResult(text=f"Index {first} out of range (1..{len(self._last_models)}).")

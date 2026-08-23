@@ -113,7 +113,7 @@ MICRON_PROVIDER=lmstudio ./run.sh "query"
 | `/clear` | Clear conversation history |
 | `/mem` | List recent memories |
 | `/tools` | Show available tools |
-| `/models` | Open model picker (click to switch) |
+| `/model` | Open model picker (click to switch) — alias `/models` |
 | `/providers` | List configured providers |
 | `/unload` | Unload model from RAM |
 | `/reload` | Reload skills from disk |

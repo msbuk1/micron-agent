@@ -165,7 +165,7 @@ class ModelCatalog:
         if not rows:
             lines.append("  (none configured)")
             lines.append("")
-            lines.append("Use: /models <provider> [<model>]")
+            lines.append("Use: /model <provider> [<model>]  (alias: /models)")
             return "\n".join(lines)
         model_w = max(len(m) for _, m, _, _ in rows)
         price_w = max(len(p) for _, _, p, _ in rows)
@@ -174,7 +174,7 @@ class ModelCatalog:
             detail = " ".join(part for part in (f"{price:>{price_w}}", rest) if part)
             lines.append(f"  {prov:<11} {model:<{model_w}}  [{detail}]{marker}")
         lines.append("")
-        lines.append("Use: /models <provider> [<model>]")
+        lines.append("Use: /model <provider> [<model>]  (alias: /models)")
         return "\n".join(lines)
 
     def switch(self, agent, provider: str, model: str, *, persist: bool = True) -> str:
@@ -214,7 +214,7 @@ class ModelCatalog:
         if provider in self._providers:
             self._providers[provider] = dict(self._providers[provider])
             self._providers[provider]["model"] = model
-        return f"Switched to {provider}/{model}.\nUse /models to confirm."
+        return f"Switched to {provider}/{model}.\nUse /model to confirm."
 
     @property
     def providers(self) -> list[str]:

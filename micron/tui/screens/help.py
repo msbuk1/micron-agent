@@ -31,7 +31,7 @@ HELP_TEXT = """
 - `/memory list` — List recent memories
 - `/tools` — Show available tools
 - `/providers` — List configured providers
-- `/models` — Open model picker / switch provider+model
+- `/model` — Open model picker / switch provider+model (alias: `/models`)
 - `/unload` — Unload model from RAM
 - `/reload` — Reload skills from disk
 - `/sessions` — Refresh session list
