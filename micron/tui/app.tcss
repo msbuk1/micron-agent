@@ -1,8 +1,36 @@
-/* Custom Textual theme for micron TUI */
+/* Precision-instrument theme for micron TUI */
 
+/* ── Palette ───────────────────────────────────────────────────────────── */
+$micron-bg: #1a1b1e;
+$micron-surface: #23252a;
+$micron-surface-light: #2a2d33;
+$micron-text: #c9ccd3;
+$micron-muted: #6b7280;
+$micron-border: #3f4450;
+$micron-accent: #f59e1b;
+$micron-success: #10b981;
+$micron-error: #ef4444;
+
+/* ── Global chrome ─────────────────────────────────────────────────────── */
 Screen {
-    background: $surface-darken-1;
-    color: $text;
+    background: $micron-bg;
+    color: $micron-text;
+}
+
+Header {
+    background: $micron-surface;
+    color: $micron-muted;
+    height: 1;
+    border-bottom: solid $micron-border;
+}
+
+Header .header_title {
+    color: $micron-accent;
+    text-style: bold;
+}
+
+Header .header_icon {
+    color: $micron-accent;
 }
 
 #main {
@@ -13,93 +41,85 @@ Screen {
 
 #top {
     layout: horizontal;
-    height: 6fr;
+    height: 7fr;
     width: 100%;
 }
 
+/* ── Chat ──────────────────────────────────────────────────────────────── */
 #chat-container {
     width: 3fr;
     height: 100%;
-    border: solid $primary;
-    padding: 0 1;
-}
-
-#sidebar {
-    width: 1fr;
-    height: 100%;
-    border: solid $primary;
-    padding: 0 1;
-}
-
-#tool-panel {
-    height: 1fr;
-    width: 100%;
-    border: solid $primary;
-    padding: 0 1;
-}
-
-#input-bar {
-    height: auto;
-    width: 100%;
+    border: none;
     padding: 0 1;
 }
 
 ChatLog {
     width: 100%;
     height: 100%;
+    background: $micron-bg;
 }
 
-ChatLog .user-message {
-    color: $text;
-    margin: 1 0;
-}
-
-ChatLog .assistant-message {
-    color: $text;
-    background: $surface-darken-2;
-    margin: 1 0;
+ChatLog > .user-message {
+    color: $micron-text;
+    text-style: bold;
+    margin: 1 0 0 4;
+    text-align: right;
+    height: auto;
     padding: 0 1;
 }
 
-ChatLog .thinking-block {
-    color: $text-muted;
-    text-style: italic;
-    margin: 1 0;
-}
-
-ChatLog .thinking-indicator {
-    color: $warning;
-    text-style: italic;
-    margin: 1 0;
-}
-
-ChatLog .tool-result {
-    color: $text-muted;
-    margin: 0 0;
+ChatLog > .assistant-message {
+    color: $micron-text;
+    background: $micron-surface;
+    border-left: solid $micron-accent;
+    margin: 1 4 0 0;
     padding: 0 1;
+    height: auto;
 }
 
-ChatLog .system-message {
-    color: $text-muted;
+ChatLog > .thinking-block {
+    color: $micron-muted;
+    text-style: italic;
+    margin: 1 4 0 1;
+    padding: 0 1;
+    height: auto;
+}
+
+ChatLog > .thinking-indicator {
+    color: $micron-accent;
+    text-style: bold;
+    margin: 1 0;
+    height: auto;
+    transition: opacity 0.6s;
+    opacity: 1;
+}
+
+ChatLog > .thinking-indicator.dimmed {
+    opacity: 0.35;
+}
+
+ChatLog > .tool-result {
+    color: $micron-muted;
+    margin: 0 4 0 1;
+    padding: 0 1;
+    height: auto;
+}
+
+ChatLog > .system-message {
+    color: $micron-muted;
     text-style: dim;
     margin: 1 0;
+    padding: 0 1;
+    height: auto;
 }
 
-ToolPanel {
-    width: 100%;
+/* ── Sidebar ───────────────────────────────────────────────────────────── */
+#sidebar {
+    width: 1fr;
     height: 100%;
-}
-
-ToolPanel .tool-running {
-    color: $warning;
-}
-
-ToolPanel .tool-done {
-    color: $success;
-}
-
-ToolPanel .tool-error {
-    color: $error;
+    border-left: solid $micron-border;
+    padding: 0 0;
+    background: $micron-surface;
 }
 
 Sidebar {
@@ -107,50 +127,311 @@ Sidebar {
     height: 100%;
 }
 
-InputBar {
-    layout: horizontal;
+Sidebar TabbedContent {
+    width: 100%;
+    height: 100%;
+}
+
+Sidebar Tabs {
+    background: $micron-surface;
+    border-bottom: solid $micron-border;
+    height: 1;
+}
+
+Sidebar Tab {
+    color: $micron-muted;
+    background: $micron-surface;
+    border-bottom: tall $micron-surface;
+    padding: 0 1;
+}
+
+Sidebar Tab:hover {
+    color: $micron-text;
+    background: $micron-surface-light;
+}
+
+Sidebar Tab:focus {
+    color: $micron-text;
+    text-style: underline;
+}
+
+Sidebar Tab.-active {
+    color: $micron-accent;
+    background: $micron-surface;
+    text-style: bold;
+    border-bottom: tall $micron-accent;
+}
+
+Sidebar Tab.-active:hover {
+    background: $micron-surface-light;
+}
+
+Sidebar Input {
+    margin: 0 1;
+    border: none;
+    border-bottom: solid $micron-border;
+    background: $micron-surface;
+    height: 1;
+}
+
+Sidebar Input:focus {
+    border-bottom: solid $micron-accent;
+}
+
+Sidebar ListView {
+    background: $micron-surface;
+    border: none;
+    padding: 0;
+}
+
+Sidebar ListView > ListItem {
+    background: $micron-surface;
+    color: $micron-text;
+    height: auto;
+    padding: 0 1;
+}
+
+Sidebar ListView > ListItem:hover {
+    background: $micron-surface-light;
+}
+
+Sidebar ListView > ListItem:focus {
+    background: $micron-surface-light;
+    color: $micron-accent;
+}
+
+Sidebar ListView > ListItem.-selected {
+    background: $micron-surface-light;
+}
+
+Sidebar .empty-hint {
+    color: $micron-muted;
+    padding: 1 1;
+    text-style: italic;
+}
+
+/* ── Tool panel ────────────────────────────────────────────────────────── */
+#tool-panel {
+    height: 1fr;
+    width: 100%;
+    border-top: solid $micron-border;
+    padding: 0 1;
+    background: $micron-bg;
+}
+
+ToolPanel {
+    width: 100%;
+    height: 100%;
+}
+
+ToolPanel #tool-header {
+    color: $micron-muted;
+    text-style: bold;
+    height: 1;
+    margin: 0 0 0 0;
+    padding: 0 0;
+}
+
+ToolPanel #tool-list {
+    width: 100%;
+    height: 1fr;
+    border: none;
+    background: $micron-bg;
+}
+
+ToolPanel #tool-list > ListItem {
+    background: $micron-bg;
+    color: $micron-text;
+    height: 1;
+    padding: 0 1;
+}
+
+ToolPanel #tool-list > ListItem:hover {
+    background: $micron-surface;
+}
+
+ToolPanel #tool-list > ListItem:focus {
+    background: $micron-surface;
+    color: $micron-accent;
+}
+
+ToolPanel #tool-list > ListItem.-selected {
+    background: $micron-surface;
+}
+
+/* ── Input bar ─────────────────────────────────────────────────────────── */
+#input-bar {
     height: auto;
     width: 100%;
+    padding: 0 1;
+    background: $micron-surface;
+    border-top: solid $micron-border;
+}
+
+InputBar {
+    layout: horizontal;
+    height: 1;
+    width: 100%;
+}
+
+InputBar #input-prompt {
+    width: auto;
+    color: $micron-accent;
+    text-style: bold;
+    content-align: center middle;
+    padding: 0 1 0 0;
+    height: 1;
 }
 
 InputBar Input {
     width: 1fr;
+    border: none;
+    background: $micron-surface;
+    color: $micron-text;
+    height: 1;
+}
+
+InputBar Input:focus {
+    border: none;
+}
+
+InputBar Input.-disabled {
+    color: $micron-muted;
 }
 
 InputBar Button {
     margin-left: 1;
+    background: $micron-surface-light;
+    border: solid $micron-border;
+    color: $micron-text;
+    min-width: 3;
+    height: 1;
+}
+
+InputBar Button:focus {
+    border: solid $micron-accent;
+    background: $micron-surface-light;
+    color: $micron-accent;
+}
+
+InputBar Button:hover {
+    background: $micron-border;
+}
+
+InputBar Button.-disabled {
+    background: $micron-surface;
+    color: $micron-muted;
+    border: solid $micron-border;
+}
+
+/* ── Status bar ────────────────────────────────────────────────────────── */
+#status-bar {
+    height: 1;
+    width: 100%;
+    background: $micron-surface;
+    color: $micron-text;
 }
 
 StatusBar {
+    layout: horizontal;
     height: 1;
     width: 100%;
-    background: $primary-darken-2;
-    color: $text;
-    content-align: center middle;
 }
 
-ConfirmationScreen {
+StatusBar #status-left {
+    width: 1fr;
+    height: 1;
+    content-align: left middle;
+    padding: 0 1;
+    color: $micron-text;
+    transition: opacity 0.7s;
+    opacity: 1;
+}
+
+StatusBar #status-left.beacon-dimmed {
+    opacity: 0.4;
+}
+
+StatusBar #status-right {
+    width: 1fr;
+    height: 1;
+    content-align: right middle;
+    padding: 0 1;
+    color: $micron-muted;
+}
+
+/* ── Suggestion bar ────────────────────────────────────────────────────── */
+#suggest-bar {
+    height: 1;
+    width: 100%;
+    background: $micron-surface;
+    color: $micron-muted;
+    padding: 0 1;
+}
+
+#suggest-bar.hidden {
+    display: none;
+}
+
+/* ── Loading overlay ───────────────────────────────────────────────────── */
+#loading-overlay {
     align: center middle;
+    background: $micron-bg 80%;
 }
 
-#confirm-dialog {
-    width: 60;
-    min-width: 50;
-    max-width: 70;
+#loading-dialog {
+    width: auto;
     height: auto;
-    border: thick $primary;
+    padding: 2 4;
+    border: thick $micron-accent;
+    background: $micron-surface;
+}
+
+#loading-dialog Label {
+    color: $micron-text;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+LoadingIndicator {
+    color: $micron-accent;
+}
+
+/* ── Modal screens ─────────────────────────────────────────────────────── */
+ConfirmationScreen,
+HelpScreen,
+ModelPickerScreen,
+.detail-screen,
+.menu-screen {
+    align: center middle;
+    background: $micron-bg 70%;
+}
+
+#confirm-dialog,
+#help-dialog,
+#detail-dialog,
+#menu-dialog,
+#model-dialog {
+    width: 80;
+    min-width: 50;
+    height: auto;
+    max-height: 80%;
+    border: thick $micron-accent;
     padding: 1 2;
-    background: $surface;
+    background: $micron-surface;
 }
 
 #confirm-dialog #confirm-summary {
     width: 100%;
     margin-bottom: 1;
+    color: $micron-text;
 }
 
 #confirm-dialog #confirm-remember {
     width: 100%;
     margin-bottom: 1;
+    color: $micron-text;
+    background: $micron-surface;
 }
 
 #confirm-dialog .confirm-buttons {
@@ -161,63 +442,72 @@ ConfirmationScreen {
 
 #confirm-dialog Button {
     margin: 0 1;
+    min-width: 8;
 }
 
-HelpScreen {
-    align: center middle;
-}
-
-.detail-screen, .menu-screen, ModelPickerScreen {
-    align: center middle;
-}
-
-#help-dialog, #detail-dialog, #menu-dialog, #model-dialog {
-    width: 80;
-    min-width: 50;
-    height: auto;
-    max-height: 80%;
-    border: thick $primary;
-    padding: 1 2;
-    background: $surface;
-}
-
-#model-dialog #model-title {
-    margin-bottom: 1;
-    text-style: bold;
-}
-
-#model-dialog #model-list {
+#help-dialog Markdown {
     width: 100%;
-    max-height: 30;
+    height: auto;
+    max-height: 40;
+    background: $micron-surface;
+    color: $micron-text;
 }
 
 #detail-dialog Markdown {
     width: 100%;
     height: auto;
     max-height: 40;
+    background: $micron-surface;
+    color: $micron-text;
 }
 
-#suggest-bar {
-    height: 1;
+#menu-dialog {
+    width: 40;
+    min-width: 30;
+}
+
+#menu-dialog Button {
     width: 100%;
-    background: $primary-darken-1;
-    color: $text-muted;
+    margin: 0 0 1 0;
+    background: $micron-surface-light;
+    border: solid $micron-border;
+    color: $micron-text;
+}
+
+#menu-dialog Button:focus {
+    border: solid $micron-accent;
+    color: $micron-accent;
+}
+
+#model-dialog #model-title {
+    margin-bottom: 1;
+    color: $micron-accent;
+    text-style: bold;
+}
+
+#model-dialog #model-list {
+    width: 100%;
+    max-height: 30;
+    border: none;
+    background: $micron-surface;
+}
+
+#model-dialog #model-list > ListItem {
+    background: $micron-surface;
+    color: $micron-text;
+    height: auto;
     padding: 0 1;
 }
 
-#suggest-bar.hidden {
-    display: none;
+#model-dialog #model-list > ListItem:hover {
+    background: $micron-surface-light;
 }
 
-#loading-overlay {
-    align: center middle;
-    background: $surface 80%;
+#model-dialog #model-list > ListItem:focus {
+    background: $micron-surface-light;
+    color: $micron-accent;
 }
 
-#loading-dialog {
-    width: auto;
-    height: auto;
-    padding: 2 4;
-    border: thick $primary;
-    background: $surface;
+#model-dialog #model-list > ListItem.-selected {
+    background: $micron-surface-light;
 }

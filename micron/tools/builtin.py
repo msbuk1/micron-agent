@@ -97,7 +97,13 @@ def _ws():
 
 
 # Firecrawl config (reads from env var set by CLI/server)
+# Keep for backwards-compat but read dynamically in web_search to pick up
+# Config._apply_env_vars() which runs AFTER this module is imported.
 FIRECRAWL_URL = os.getenv("FIRECRAWL_URL", "http://localhost:3002")
+
+
+def _firecrawl_url() -> str:
+    return os.getenv("FIRECRAWL_URL", "http://localhost:3002").rstrip("/")
 
 def _verify_write(path: Path, check_fn, description: str = "expected content") -> str | None:
     """Re-read a file after writing and verify a postcondition holds.
@@ -178,7 +184,7 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
     """Search the web using Firecrawl."""
     try:
         resp = requests.post(
-            f"{FIRECRAWL_URL}/v1/search",
+            f"{_firecrawl_url()}/v1/search",
             json={"query": query, "limit": max_results},
             timeout=15,
         )

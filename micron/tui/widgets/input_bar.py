@@ -1,20 +1,21 @@
 """Input bar widget for micron TUI."""
 from textual.containers import Horizontal
 from textual.message import Message
-from textual.widgets import Button, Input
+from textual.widgets import Button, Input, Static
 
 
 class InputBar(Horizontal):
-    """Input area with send button and menu trigger."""
+    """Input area with prompt glyph, send button and menu trigger."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._pending = False
 
     def compose(self):
+        yield Static("›", id="input-prompt")
         yield Input(placeholder="Type a message or /command...", id="message-input")
-        yield Button("Send", id="send-btn", variant="primary")
-        yield Button("Menu", id="menu-btn")
+        yield Button("⏎", id="send-btn", variant="primary")
+        yield Button("≡", id="menu-btn")
 
     def on_mount(self):
         self.query_one("#message-input", Input).focus()
@@ -24,8 +25,10 @@ class InputBar(Horizontal):
         self._pending = pending
         inp = self.query_one("#message-input", Input)
         send = self.query_one("#send-btn", Button)
+        menu = self.query_one("#menu-btn", Button)
         inp.disabled = pending
         send.disabled = pending
+        menu.disabled = pending
         if not pending:
             inp.focus()
 

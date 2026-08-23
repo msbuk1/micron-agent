@@ -5,6 +5,8 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Static
 
+from micron.tui._markup import esc
+
 _VERB = {
     "write_file": "write",
     "write_knowledge": "knowledge",
@@ -29,27 +31,28 @@ class ConfirmationScreen(Screen):
     def _summarize(self) -> str:
         n = len(self.pending_writes)
         noun = "operation" if n == 1 else "operations"
-        parts = [f"{n} write {noun}:"]
+        parts = [f"[bold]{n} write {noun}[/bold]"]
         for w in self.pending_writes:
             name = w.get("tool_name", "?")
             args = w.get("args", {})
             verb = _VERB.get(name, name)
+            detail = "?"
             if name == "write_file":
-                parts.append(f"  {verb} {args.get('path', '?')}")
+                detail = args.get("path", "?")
             elif name == "write_knowledge":
-                parts.append(f"  {verb} {args.get('title', '?')}")
+                detail = args.get("title", "?")
             elif name == "create_skill":
-                parts.append(f"  {verb} {args.get('name', '?')}")
+                detail = args.get("name", "?")
             elif name == "delete_file":
-                parts.append(f"  {verb} {args.get('path', '?')}")
+                detail = args.get("path", "?")
             elif name in ("edit_file", "patch_file"):
-                parts.append(f"  {verb} {args.get('path', '?')}")
+                detail = args.get("path", "?")
             elif name == "run_command":
-                parts.append(f"  {verb} {args.get('cmd', '?')}")
+                detail = args.get("cmd", "?")
             elif name == "python_eval":
-                parts.append(f"  {verb}")
-            else:
-                parts.append(f"  {verb}")
+                detail = ""
+            safe_detail = esc(str(detail))
+            parts.append(f"  [bold]{verb} {safe_detail}[/bold]" if detail else f"  [bold]{verb}[/bold]")
         return "\n".join(parts)
 
     def compose(self):
@@ -57,7 +60,7 @@ class ConfirmationScreen(Screen):
             yield Static(self._summarize(), id="confirm-summary")
             yield Checkbox("Remember for this session", id="confirm-remember")
             with Horizontal(classes="confirm-buttons"):
-                yield Button("No", id="confirm-no", variant="error")
+                yield Button("No", id="confirm-no")
                 yield Button("Yes", id="confirm-yes", variant="success")
 
     def on_mount(self):

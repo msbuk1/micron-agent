@@ -332,3 +332,88 @@ async def test_models_opens_picker_and_switches(tmp_path):
 
         assert app._commands.switched == [("ollama", "llama3")]
         assert not isinstance(app.screen, ModelPickerScreen)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_markup_with_brackets_does_not_crash(tmp_path):
+    """Regression: tool names and summaries containing ``[`` or ``=`` patterns
+    (e.g. ``[foo=300]`` from shell / file paths / error strings) used to
+    raise ``MarkupError`` from Textual's content parser because the inner
+    ``[foo=300]`` looked like a markup tag. ``esc()`` must neutralise them.
+    """
+    app = MicronTUI(make_factory(tmp_path), thread_workers=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._agent, app._session_logger, app._session_id = make_factory(tmp_path)()
+        app._commands = None
+
+        chat_log = app.query_one("#chat-log")
+        tool_panel = app.query_one("#tool-panel")
+        status_bar = app.query_one("#status-bar")
+
+        # Brackets in tool name + summary (chat)
+        chat_log.add_tool_result("write_file", "[foo=300] something")
+        chat_log.add_tool_result("run_command", "a==300")
+        chat_log.add_tool_result("read_file", "[2024-01-01] event")
+        chat_log.add_tool_result("python_eval", "[bold=300]")
+        chat_log.add_tool_result("cmd", "exit code [0]")
+        chat_log.add_tool_result("ls", "wrote 300 bytes = ok")
+
+        # OpenAI connection refused summary (the exact pattern that crashed).
+        # Contains ``[(port=3002, host=localhost)]`` — ``[(`` opens a tag
+        # whose body ``port=3002`` triggers the ``key=value`` MarkupError.
+        openai_err = (
+            "Failed to call API: NewConnectionError: "
+            "HTTPConnection(host='localhost', port=3002): "
+            "Failed to establish a new connection: (Errno 111) Connection refused"
+        )
+        chat_log.add_tool_result("openai", openai_err)
+        chat_log.add_tool_result(
+            "details",
+            "Failed to connect. Details: [(port=3002, host=localhost)]",
+        )
+
+        # Brackets in tool name + summary (panel)
+        tool_panel.add_call("c1", "write_file", {})
+        tool_panel.finish_call("c1", summary="[foo=300] something")
+        tool_panel.add_call("c2", "run_command", {})
+        tool_panel.finish_call("c2", summary="a==300")
+        tool_panel.add_call("c3", "read_file", {})
+        tool_panel.finish_call("c3", summary="[bold=300]")
+        tool_panel.add_call("c4", "openai", {})
+        tool_panel.finish_call("c4", summary=openai_err)
+
+        # Brackets in sidebar memories (knowledge doc titles)
+        from tests.test_tui import FakeMemory, FakeSkill
+        sidebar = app.query_one("#sidebar")
+        sidebar.set_memories(
+            [
+                FakeMemory("m1", "[TODO] fix =300 bug", tags=["[special]", "=300"]),
+                FakeMemory("m2", "path = /etc/[config]", tags=[]),
+            ]
+        )
+        sidebar.set_knowledge(
+            [{"title": "[2024] notes.md"}, {"title": "config=[foo=bar].yaml"}]
+        )
+        sidebar.set_skills(
+            [FakeSkill("[bold]test", description="has [brackets]")]
+        )
+
+        # Provider/model names with brackets
+        status_bar.update_status(
+            session_id="abc123",
+            provider="[=300]",
+            model="[foo=bar]",
+            memory_count=1,
+            knowledge_count=2,
+            skill_count=1,
+            status="thinking",
+        )
+
+        # Allow layout/reflow to run
+        await pilot.pause()
+        await pilot.pause()
+
+        # If we got here without WorkerFailed / MarkupError, the regression is fixed.
+        assert chat_log.query("Static")
+        assert tool_panel.query("ListItem")

@@ -3,6 +3,8 @@ from textual.containers import Vertical
 from textual.message import Message
 from textual.widgets import Input, ListItem, ListView, Static, TabbedContent, TabPane
 
+from micron.tui._markup import esc
+
 
 class Sidebar(Vertical):
     """Tabbed sidebar for memories, knowledge, skills, and sessions."""
@@ -16,16 +18,16 @@ class Sidebar(Vertical):
 
     def compose(self):
         with TabbedContent():
-            with TabPane("Memories", id="tab-memories"):
+            with TabPane("◈ Memories", id="tab-memories"):
                 yield Input(placeholder="Search memories...", id="memory-search")
                 yield ListView(id="memory-list")
                 yield Input(placeholder="Add memory...", id="memory-add")
-            with TabPane("Knowledge", id="tab-knowledge"):
+            with TabPane("◇ Knowledge", id="tab-knowledge"):
                 yield Input(placeholder="Search knowledge...", id="knowledge-search")
                 yield ListView(id="knowledge-list")
-            with TabPane("Skills", id="tab-skills"):
+            with TabPane("▸ Skills", id="tab-skills"):
                 yield ListView(id="skill-list")
-            with TabPane("Sessions", id="tab-sessions"):
+            with TabPane("◷ Sessions", id="tab-sessions"):
                 yield ListView(id="session-list")
 
     def on_mount(self):
@@ -35,43 +37,62 @@ class Sidebar(Vertical):
         self._memories = memories
         lv = self.query_one("#memory-list", ListView)
         lv.clear()
+        if not memories:
+            lv.append(ListItem(Static("[dim italic]no memories yet[/dim italic]")))
+            return
         for m in memories:
             text = getattr(m, "text", str(m))
             if len(text) > 40:
-                text = text[:37] + "..."
+                text = text[:37] + "…"
             tags = getattr(m, "tags", [])
             importance = getattr(m, "importance", 3)
-            tag_str = " ".join(f"[dim]#{t}[/dim]" for t in tags) if tags else ""
+            tag_str = " ".join(f"[dim]#{esc(t)}[/dim]" for t in tags) if tags else ""
             imp_str = "●" * importance + "○" * (5 - importance)
-            lv.append(ListItem(Static(f"{text}  [yellow]{imp_str}[/yellow]  {tag_str}")))
+            label = f"{esc(text)}  [#f59e1b]{imp_str}[/#f59e1b]"
+            if tag_str:
+                label += f"  {tag_str}"
+            lv.append(ListItem(Static(label)))
 
     def set_knowledge(self, docs: list) -> None:
         self._knowledge = docs
         lv = self.query_one("#knowledge-list", ListView)
         lv.clear()
+        if not docs:
+            lv.append(ListItem(Static("[dim italic]no documents indexed[/dim italic]")))
+            return
         for doc in docs:
             text = getattr(doc, "title", str(doc))
-            lv.append(ListItem(Static(text)))
+            lv.append(ListItem(Static(esc(text))))
 
     def set_skills(self, skills: list) -> None:
         self._skills = skills
         lv = self.query_one("#skill-list", ListView)
         lv.clear()
+        if not skills:
+            lv.append(ListItem(Static("[dim italic]no procedure skills[/dim italic]")))
+            return
         for s in skills:
             name = getattr(s, "name", str(s))
             desc = getattr(s, "description", "")[:50]
-            lv.append(ListItem(Static(f"[bold cyan]{name}[/bold cyan]: {desc}")))
+            label = f"[#f59e1b bold]{esc(name)}[/#f59e1b bold]"
+            if desc:
+                label += f": {esc(desc)}"
+            lv.append(ListItem(Static(label)))
 
     def set_sessions(self, sessions: list) -> None:
         self._sessions = sessions
         lv = self.query_one("#session-list", ListView)
         lv.clear()
+        if not sessions:
+            lv.append(ListItem(Static("[dim italic]no prior sessions[/dim italic]")))
+            return
         for s in sessions:
             sid = s.get("id", str(s))
             name = self._format_session_name(sid)
             turns = s.get("turns", 0)
             size = s.get("size", 0) // 1024
-            lv.append(ListItem(Static(f"[cyan]{name}[/cyan]  {turns} turns  {size}KB")))
+            label = f"[bold]{esc(name)}[/bold]  [dim]{turns} turns  {size}KB[/dim]"
+            lv.append(ListItem(Static(label)))
 
     @staticmethod
     def _format_session_name(sid: str) -> str:

@@ -5,6 +5,7 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import ListItem, ListView, Static
 
+from micron.tui._markup import esc
 from micron.tui.commands import _format_price
 
 
@@ -60,9 +61,12 @@ class ModelPickerScreen(Screen):
         model_w = max((len(m) for _, m, _ in self._entries), default=0)
         for prov, model, meta in self._entries:
             detail = _model_detail(meta)
-            label = f"{prov:<{prov_w}}  {model:<{model_w}}"
+            label = (
+                f"[#f59e1b bold]{esc(prov):<{prov_w}}[/#f59e1b bold]  "
+                f"{esc(model):<{model_w}}"
+            )
             if detail:
-                label += f"  [{detail}]"
+                label += f"  [dim][{esc(detail)}][/dim]"
             lv.append(ListItem(Static(label)))
         lv.focus()
 

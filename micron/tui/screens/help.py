@@ -8,18 +8,16 @@ from textual.widgets import Button, Markdown
 HELP_TEXT = """
 # micron shortcuts
 
-| Shortcut | Action |
-|---|---|
-| Ctrl+Q | Quit |
-| Ctrl+L | Clear chat history |
-| Ctrl+K | Focus input |
-| Ctrl+B | Toggle sidebar |
-| Ctrl+/ | Show this help |
-| Enter | Send message |
+**Keyboard**
 
-# Slash commands
+- `Ctrl+Q` — Quit
+- `Ctrl+L` — Clear chat history
+- `Ctrl+K` — Focus input
+- `Ctrl+B` — Toggle sidebar
+- `Ctrl+/` — Show this help
+- `Enter` — Send message
 
-Type in the input bar:
+**Slash commands**
 
 - `/help` — Show this help
 - `/exit` or `/quit` — Exit micron

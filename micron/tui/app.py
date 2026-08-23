@@ -11,7 +11,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import Screen
-from textual.widgets import Button, Header, Input, Label, Markdown, Static
+from textual.widgets import Button, Header, Input, Label, LoadingIndicator, Markdown, Static
 
 from micron.agent import ToolCall
 from micron.events import EventType
@@ -69,6 +69,10 @@ class MicronTUI(App):
         # Session-level override set when the user checks "Remember for this session".
         # One of None (no override), "allow", "deny".
         self._session_confirm_writes: str | None = None
+        # Input history for Up/Down recall (like shell)
+        self._input_history: list[str] = []
+        self._history_index: int = -1
+        self._history_draft: str = ""
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -83,7 +87,7 @@ class MicronTUI(App):
             yield StatusBar(id="status-bar")
         with Vertical(id="loading-overlay"), Vertical(id="loading-dialog"):
             yield Label("Loading micron...")
-            yield Static("⏳", id="loading-spinner")
+            yield LoadingIndicator(id="loading-spinner")
 
     def on_mount(self) -> None:
         self.run_worker(self._init_agent, thread=self._thread_workers, name="init_agent")
@@ -112,6 +116,11 @@ class MicronTUI(App):
             pass
         if not text:
             return
+        # record in input history (Up/Down recall)
+        if not self._input_history or self._input_history[-1] != text:
+            self._input_history.append(text)
+        self._history_index = -1
+        self._history_draft = ""
         if text.startswith("/"):
             self._handle_command(text)
             return
@@ -144,6 +153,37 @@ class MicronTUI(App):
         bar.remove_class("hidden")
 
     def on_key(self, event) -> None:
+        # Up/Down: input history recall
+        if event.key in ("up", "down"):
+            try:
+                inp = self.query_one("#message-input", Input)
+            except Exception:
+                return
+            if not inp.has_focus or not self._input_history:
+                return
+            if event.key == "up":
+                if self._history_index == -1:
+                    self._history_draft = inp.value or ""
+                    self._history_index = len(self._input_history) - 1
+                elif self._history_index > 0:
+                    self._history_index -= 1
+                else:
+                    return
+                inp.value = self._input_history[self._history_index]
+                inp.cursor_position = len(inp.value)
+            else:  # down
+                if self._history_index == -1:
+                    return
+                if self._history_index == len(self._input_history) - 1:
+                    self._history_index = -1
+                    inp.value = self._history_draft
+                else:
+                    self._history_index += 1
+                    inp.value = self._input_history[self._history_index]
+                inp.cursor_position = len(inp.value)
+            event.prevent_default()
+            event.stop()
+            return
         # Tab autocomplete for slash commands
         if event.key != "tab":
             return
