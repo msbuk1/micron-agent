@@ -454,30 +454,23 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
     from micron.tools.error_handling import handle_error, success
     from micron.tools.command_policy import CommandPolicy, Deny, Limit
 
-    # Length guard
-    if len(cmd) > 500:
-        return handle_error("run_command", Exception("Command too long"), "command exceeds 500 character limit")
+    # Length guard — allow larger commands for file creation via shell,
+    # but suggest write_file for very large content
+    if len(cmd) > 8000:
+        return handle_error(
+            "run_command",
+            Exception("Command too long"),
+            "command exceeds 8000 character limit — use write_file for large file content instead of echo/cat with shell",
+        )
 
-    # Detect shell operators — if present, run via shell so pipes/redirects work
-    shell_operators = ["|", "&&", "||", ";", ">", ">>", "<", "$(", "`"]
-    use_shell = any(op in cmd for op in shell_operators)
-
-    # Parse (for policy check — shell commands still need policy on the base cmd)
+    # Parse
     try:
-        args = shlex.split(cmd) if not use_shell else shlex.split(cmd.replace("|", " ").replace("&&", " ").replace(";", " ").split(">")[0].split("<")[0].strip().split()[0] if cmd.strip() else cmd)
-        # For shell mode, we still want the base command for blocklist; extract first token
-        base_args = shlex.split(cmd) if not use_shell else [cmd.strip().split()[0].lstrip()]
-        # Fallback: if base_args empty, use shlex of cmd
-        if not base_args:
-            base_args = shlex.split(cmd) if cmd.strip() else []
+        args = shlex.split(cmd)
     except ValueError as e:
         return handle_error("run_command", Exception(f"Invalid command syntax: {e}"), "could not parse command")
 
-    # Evaluate policy on base command (shell operators stripped for check)
-    policy_args = base_args if use_shell else args
-    if not policy_args:
-        policy_args = args
-    decision = CommandPolicy().evaluate(policy_args)
+    # Evaluate policy
+    decision = CommandPolicy().evaluate(args)
     if isinstance(decision, Deny):
         return handle_error("run_command", Exception(decision.reason), decision.reason)
 
@@ -494,30 +487,11 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
         if isinstance(workdir, str):
             return workdir
 
-        if use_shell:
-            # Shell pipelines need to fork; keep the parent's high nproc limit
-            # (don't clamp to 50) — otherwise "Cannot fork" with 147 procs alive
-            from micron.tools.command_policy import Limit
-            import resource as _res
-
-            try:
-                cur_nproc_soft, _ = _res.getrlimit(_res.RLIMIT_NPROC)
-            except Exception:
-                cur_nproc_soft = 113981
-            shell_decision = Limit(procs=max(cur_nproc_soft, 512), files=decision.files if isinstance(decision, Limit) else None,
-                                   cpu=decision.cpu if isinstance(decision, Limit) else None,
-                                   memory=decision.memory if isinstance(decision, Limit) else None)
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
-                timeout=timeout, cwd=workdir,
-                preexec_fn=lambda: _set_command_resource_limits(shell_decision),
-            )
-        else:
-            result = subprocess.run(
-                args, shell=False, capture_output=True, text=True,
-                timeout=timeout, cwd=workdir,
-                preexec_fn=lambda: _set_command_resource_limits(decision),
-            )
+        result = subprocess.run(
+            args, shell=False, capture_output=True, text=True,
+            timeout=timeout, cwd=workdir,
+            preexec_fn=lambda: _set_command_resource_limits(decision),
+        )
         output = result.stdout
         if result.stderr:
             output += f"\n[STDERR]\n{result.stderr}"

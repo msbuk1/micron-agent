@@ -7,20 +7,20 @@ from micron.tools.builtin import run_command
 
 
 class TestCommandLengthLimit:
-    """Tests for command length limit (500 characters)."""
+    """Tests for command length limit (8000 characters)."""
 
     def test_command_under_limit(self):
-        """Test that commands under 500 chars work."""
+        """Test that commands under 8000 chars work."""
         cmd = "echo " + "a" * 40
         result = run_command(cmd)
         assert "Command blocked" not in result
 
     def test_command_over_limit(self):
-        """Test that commands over 500 chars are blocked."""
-        cmd = "echo " + "a" * 496  # 501 chars total
+        """Test that commands over 8000 chars are blocked."""
+        cmd = "echo " + "a" * 7996  # 8001 chars total
         result = run_command(cmd)
         assert "Error" in result
-        assert "too long" in result.lower() or "500" in result
+        assert "too long" in result.lower() or "8000" in result
 
 
 class TestCommandBlocklist:

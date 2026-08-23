@@ -40,6 +40,7 @@ class MicronTUI(App):
         ("ctrl+b", "toggle_sidebar", "Sidebar"),
         ("ctrl+slash", "show_help", "Help"),
         ("ctrl+r", "history_search", "History"),
+        ("escape", "cancel_agent", "Cancel"),
     ]
 
     conversation_history: reactive[list[dict]] = reactive(list)
@@ -76,6 +77,9 @@ class MicronTUI(App):
         self._history_index: int = -1
         self._history_draft: str = ""
         self._history_filtered: list[str] | None = None
+        # Active Textual Worker for the running agent (for Esc/Stop)
+        self._agent_worker = None
+        self._agent_worker_name: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -400,11 +404,12 @@ class MicronTUI(App):
         chat_log.add_thinking_indicator()
 
         runner = run_agent if self._thread_workers else run_agent_async
-        self.run_worker(
+        self._agent_worker = self.run_worker(
             partial(runner, self, self._agent, query, history=self._current_history),
             thread=self._thread_workers,
             name="agent_run",
         )
+        self._agent_worker_name = "agent_run"
         self._update_status("thinking")
 
     def on_agent_event(self, event: AgentEvent) -> None:
@@ -447,9 +452,13 @@ class MicronTUI(App):
             self._finalize_turn()
 
     def on_agent_done(self, event: AgentDone) -> None:
+        self._agent_worker = None
+        self._agent_worker_name = None
         self._finalize_turn()
 
     def on_agent_error(self, event: AgentError) -> None:
+        self._agent_worker = None
+        self._agent_worker_name = None
         self.query_one("#chat-log", ChatLog).add_system(f"[Error] {event.error}")
         self._finalize_turn()
 
@@ -483,7 +492,7 @@ class MicronTUI(App):
             self._update_status("ready")
             return
         runner = run_agent if self._thread_workers else run_agent_async
-        self.run_worker(
+        self._agent_worker = self.run_worker(
             partial(
                 runner,
                 self,
@@ -496,6 +505,7 @@ class MicronTUI(App):
             thread=self._thread_workers,
             name="agent_confirm",
         )
+        self._agent_worker_name = "agent_confirm"
         self._update_status("confirming writes")
 
     def _cancel_pending_writes(self, reason: str = "cancelled by user") -> None:
@@ -511,6 +521,9 @@ class MicronTUI(App):
             # both fire for the same run and would otherwise push two screens
             if isinstance(self.screen, ConfirmationScreen):
                 return
+            # previous worker is done
+            self._agent_worker = None
+            self._agent_worker_name = None
             policy = self._resolve_confirm()
             if policy == "allow":
                 self._execute_confirmed_writes()
@@ -522,6 +535,9 @@ class MicronTUI(App):
             self.push_screen(ConfirmationScreen(writes), callback=self._on_confirm)
             return
 
+        # no pending writes — turn complete, clear worker
+        self._agent_worker = None
+        self._agent_worker_name = None
         assistant_text = self._current_assistant_text
         self.conversation_history.append({"role": "user", "content": self._current_user_text})
         self.conversation_history.append({"role": "assistant", "content": assistant_text})
@@ -586,6 +602,42 @@ class MicronTUI(App):
             inp.focus()
         except Exception:
             pass
+
+    def on_input_bar_stop_requested(self, event: InputBar.StopRequested) -> None:
+        self.action_cancel_agent()
+
+    def action_cancel_agent(self) -> None:
+        # Let modal screens handle Esc themselves (decline/close)
+        if isinstance(self.screen, ConfirmationScreen):
+            return
+        # Check if any modal is on top (help/model/history/detail/menu)
+        if self.screen is not self.screen_stack[-1].screen if hasattr(self, "screen_stack") else False:
+            pass  # not needed, modals handle their own Esc
+        worker = getattr(self, "_agent_worker", None)
+        if worker is None:
+            return
+        try:
+            if hasattr(worker, "is_finished") and worker.is_finished:
+                self._agent_worker = None
+                return
+            if hasattr(worker, "cancel"):
+                worker.cancel()
+        except Exception:
+            pass
+        self._agent_worker = None
+        self._agent_worker_name = None
+        try:
+            chat = self.query_one("#chat-log", ChatLog)
+            chat.remove_thinking_indicator()
+            chat.add_system("Cancelled.")
+        except Exception:
+            pass
+        try:
+            self.query_one("#input-bar", InputBar).set_pending(False)
+        except Exception:
+            pass
+        self._pending_writes = None
+        self._update_status("ready")
 
     def on_unmount(self) -> None:
         if self._session_logger is not None:

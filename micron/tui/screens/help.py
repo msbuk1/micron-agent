@@ -20,6 +20,7 @@ HELP_TEXT = """
 - `Up` / `Down` — Recall input history (prefix-filtered)
 - `Ctrl+R` — Search history (reverse-i-search)
 - `Tab` — Autocomplete slash command
+- `Esc` — Cancel running agent (or `■` Stop button)
 
 **Slash commands**
 

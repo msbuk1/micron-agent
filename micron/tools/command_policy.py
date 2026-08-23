@@ -117,10 +117,11 @@ class CommandPolicy:
             if cmd_name == "rm" and arg_lower.startswith("-") and "r" in arg_lower:
                 return Deny(reason="rm -r/-rf is not allowed")
 
-            # Pipe operator — handled via shell=True in run_command
-            # (previously blocked, now allowed with blocklist still enforced)
+            # Pipe operator — suggest file-tool alternatives
             if arg == "|":
-                pass
+                return Deny(
+                    reason="shell pipes (|) are not allowed — use write_file / read_file for files, or run multiple run_command calls instead of piping"
+                )
 
             # Shell execution via path
             if arg.startswith("./") or arg.startswith("~/"):

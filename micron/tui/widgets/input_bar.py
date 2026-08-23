@@ -13,8 +13,9 @@ class InputBar(Horizontal):
 
     def compose(self):
         yield Static("›", id="input-prompt")
-        yield Input(placeholder="Type a message or /command... (Shift+Enter newline, Up history, Ctrl+R search)", id="message-input")
+        yield Input(placeholder="Type a message or /command... (Shift+Enter newline, Up history, Ctrl+R, Esc to stop)", id="message-input")
         yield Button("⏎", id="send-btn", variant="primary")
+        yield Button("■", id="stop-btn", variant="error", disabled=True)
         yield Button("≡", id="menu-btn")
 
     def on_mount(self):
@@ -25,12 +26,16 @@ class InputBar(Horizontal):
         self._pending = pending
         inp = self.query_one("#message-input", Input)
         send = self.query_one("#send-btn", Button)
+        stop = self.query_one("#stop-btn", Button)
         menu = self.query_one("#menu-btn", Button)
         inp.disabled = pending
         send.disabled = pending
-        menu.disabled = pending
+        stop.disabled = not pending
+        # dim input when busy, but keep focus for Esc
         if not pending:
             inp.focus()
+        else:
+            stop.focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "message-input" and not self._pending:
@@ -43,6 +48,8 @@ class InputBar(Horizontal):
             if not self._pending:
                 self.post_message(self.Submitted(inp.value))
                 inp.value = ""
+        elif event.button.id == "stop-btn":
+            self.post_message(self.StopRequested())
         elif event.button.id == "menu-btn":
             self.post_message(self.MenuRequested())
 
@@ -55,3 +62,6 @@ class InputBar(Horizontal):
 
     class MenuRequested(Message):
         """Posted when the menu button is pressed."""
+
+    class StopRequested(Message):
+        """Posted when the stop button is pressed (or Esc)."""
