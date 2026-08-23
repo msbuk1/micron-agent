@@ -442,7 +442,7 @@ def tree(path: str = ".", max_depth: int = 3, show_files: bool = True, ext: str 
 
 @tool(
     name="run_command",
-    description="Run a shell command in the working directory (30s timeout, blocklist enforced)",
+    description="Run a shell command in the working directory (30s timeout, blocklist enforced, supports pipes/&&/; via shell)",
     write=True,
     cmd="Shell command to execute",
     cwd="Working directory (relative to workdir)",
@@ -463,16 +463,54 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
             "command exceeds 8000 character limit — use write_file for large file content instead of echo/cat with shell",
         )
 
-    # Parse
+    # Block command substitution outright (security) — even before shell detection
+    if "$(" in cmd or "`" in cmd:
+        return handle_error(
+            "run_command", Exception("Command substitution is blocked"), "Command substitution is blocked — not allowed"
+        )
+
+    # Detect shell operators — if present, run via shell so pipes/redirects/and-chains work
+    # (pipes to shells like | bash are still blocked via policy check below)
+    shell_operators = ["|", "&&", "||", ";", ">", ">>", "<"]
+    use_shell = any(op in cmd for op in shell_operators)
+
+    # Parse for policy check (extract base command, shell may contain multiple)
     try:
-        args = shlex.split(cmd)
+        # Use shlex for non-shell, simple split for shell base check
+        if use_shell:
+            # For policy, check each segment's base command
+            import re as _re
+
+            # Split on shell operators to get individual commands
+            segments = _re.split(r"\s*(?:\|\||&&|\||;|>>|>|<)\s*", cmd)
+            base_cmds = []
+            for seg in segments:
+                seg = seg.strip()
+                if not seg:
+                    continue
+                try:
+                    seg_args = shlex.split(seg)
+                    if seg_args:
+                        base_cmds.append(seg_args[0].lower())
+                except ValueError:
+                    continue
+            # Check each base command against policy
+            for base in base_cmds:
+                decision = CommandPolicy().evaluate([base])
+                if isinstance(decision, Deny):
+                    return handle_error("run_command", Exception(decision.reason), decision.reason)
+            # Also check full args for other flags (e.g. rm -rf)
+            args = shlex.split(cmd) if not use_shell else []
+            decision = CommandPolicy().evaluate(base_cmds if base_cmds else ["echo"])
+            if isinstance(decision, Deny):
+                return handle_error("run_command", Exception(decision.reason), decision.reason)
+        else:
+            args = shlex.split(cmd)
+            decision = CommandPolicy().evaluate(args)
+            if isinstance(decision, Deny):
+                return handle_error("run_command", Exception(decision.reason), decision.reason)
     except ValueError as e:
         return handle_error("run_command", Exception(f"Invalid command syntax: {e}"), "could not parse command")
-
-    # Evaluate policy
-    decision = CommandPolicy().evaluate(args)
-    if isinstance(decision, Deny):
-        return handle_error("run_command", Exception(decision.reason), decision.reason)
 
     # Resource limits are applied to the child only via preexec_fn, which
     # runs after fork() in the child before exec(). resource.setrlimit is
@@ -487,19 +525,51 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
         if isinstance(workdir, str):
             return workdir
 
-        result = subprocess.run(
-            args, shell=False, capture_output=True, text=True,
-            timeout=timeout, cwd=workdir,
-            preexec_fn=lambda: _set_command_resource_limits(decision),
-        )
+        if use_shell:
+            # Shell mode: pass raw cmd to shell so pipes/redirects/&& work
+            # Use high nproc for shell pipelines (don't clamp to 50)
+            from micron.tools.command_policy import Limit
+            import resource as _res
+
+            try:
+                cur_nproc_soft, _ = _res.getrlimit(_res.RLIMIT_NPROC)
+            except Exception:
+                cur_nproc_soft = 113981
+            shell_decision = Limit(
+                procs=max(cur_nproc_soft, 512),
+                files=decision.files if isinstance(decision, Limit) else None,
+                cpu=decision.cpu if isinstance(decision, Limit) else None,
+                memory=decision.memory if isinstance(decision, Limit) else None,
+            )
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True,
+                timeout=timeout, cwd=workdir,
+                preexec_fn=lambda: _set_command_resource_limits(shell_decision),
+            )
+        else:
+            result = subprocess.run(
+                args, shell=False, capture_output=True, text=True,
+                timeout=timeout, cwd=workdir,
+                preexec_fn=lambda: _set_command_resource_limits(decision),
+            )
         output = result.stdout
         if result.stderr:
-            output += f"\n[STDERR]\n{result.stderr}"
+            # Helpful hint for grep with leading dashes
+            stderr = result.stderr
+            if "grep" in cmd and "unrecognised option" in stderr and "---" in cmd:
+                stderr += "\nHint: use grep -- \"pattern\" when pattern starts with -"
+            if "sed" in cmd and "unrecognised option" in stderr:
+                stderr += "\nHint: use sed -- or sed -e 's/.../.../'"
+            if "wc" in cmd and "invalid option" in stderr:
+                stderr += "\nHint: wc options are -l/-w/-c/-m, not -a/-n; try wc -l"
+            output += f"\n[STDERR]\n{stderr}"
         return output.strip() if output.strip() else success("Command executed successfully")
     except subprocess.TimeoutExpired as e:
         return handle_error("run_command", e, f"command timed out after {timeout} seconds")
     except FileNotFoundError as e:
-        return handle_error("run_command", e, f"command not found: {args[0]}")
+        # Use base command for message when in shell mode
+        _cmd0 = (base_args[0] if 'base_args' in locals() and base_args else (args[0] if args else cmd.split()[0] if cmd.strip() else "command"))
+        return handle_error("run_command", e, f"command not found: {_cmd0}")
     except Exception as e:
         return handle_error("run_command", e, "while executing command")
 

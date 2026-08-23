@@ -123,18 +123,16 @@ class TestInjectionPrevention:
         assert "Error" in result or "invalid option" in result or "passwd" in result or "No such file" in result
 
     def test_pipe_not_executed(self):
-        """Test that pipes are not executed as shell pipes."""
-        # With shell=False, | is treated as literal argument
+        """Test that safe pipes are now executed via shell, dangerous ones blocked."""
+        # Safe pipe like `echo hello | cat` should now execute and return "hello"
         result = run_command("echo hello | cat")
-        # Should either fail or echo "hello | cat" as literal
-        assert "Error" in result or "hello | cat" in result
+        assert "hello" in result
 
     def test_command_substitution_not_executed(self):
-        """Test that command substitution is not executed."""
-        # With shell=False, $(...) is treated as literal argument
+        """Test that command substitution is still blocked."""
         result = run_command("echo $(whoami)")
-        # Should either fail or echo "$(whoami)" as literal
-        assert "Error" in result or "$(whoami)" in result
+        assert "Error" in result
+        assert "blocked" in result.lower()
 
 
 class TestParentProcessNotPolluted:

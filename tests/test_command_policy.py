@@ -82,9 +82,13 @@ class TestFlagScanning:
     """Dangerous flags / patterns in any argument position."""
 
     def test_pipe_blocked(self, policy):
+        # Safe pipes (ls | head, cat | grep) are now allowed via shell
         d = policy.evaluate(["echo", "hello", "|", "cat"])
-        assert isinstance(d, Deny)
-        assert "pipe" in d.reason.lower()
+        assert isinstance(d, Limit)
+        # But piping to a shell is still blocked
+        d2 = policy.evaluate(["echo", "hello", "|", "bash"])
+        assert isinstance(d2, Deny)
+        assert "piping to" in d2.reason.lower() or "not allowed" in d2.reason.lower()
 
     def test_dot_slash_blocked(self, policy):
         d = policy.evaluate(["./script.sh"])

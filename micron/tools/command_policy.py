@@ -117,11 +117,18 @@ class CommandPolicy:
             if cmd_name == "rm" and arg_lower.startswith("-") and "r" in arg_lower:
                 return Deny(reason="rm -r/-rf is not allowed")
 
-            # Pipe operator — suggest file-tool alternatives
+            # Pipe operator — only block when piping to a shell (e.g. | bash)
+            # For file ops like `ls | head` or `cat file | grep`, we handle via
+            # shell=True in run_command with blocklist still enforced on segments.
             if arg == "|":
-                return Deny(
-                    reason="shell pipes (|) are not allowed — use write_file / read_file for files, or run multiple run_command calls instead of piping"
-                )
+                # Look ahead: next arg is the piped-to command
+                idx = args.index(arg) if arg in args else -1
+                if idx != -1 and idx + 1 < len(args):
+                    nxt = args[idx + 1].lower()
+                    if nxt in SHELL_NAMES or nxt in BLOCKED_COMMANDS:
+                        return Deny(reason=f"piping to '{nxt}' is not allowed")
+                # Allow safe pipes — run_command will use shell=True
+                return None
 
             # Shell execution via path
             if arg.startswith("./") or arg.startswith("~/"):
@@ -137,6 +144,6 @@ class CommandPolicy:
 
             # Shell names as arguments
             if arg_lower in SHELL_NAMES:
-                return Deny(reason="cannot execute bash/sh/zsh")
+                return Deny(reason="cannot execute bash/sh/zsh — blocked for security")
 
         return None

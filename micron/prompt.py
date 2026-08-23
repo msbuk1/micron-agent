@@ -48,6 +48,7 @@ INSTRUCTIONS:
 - To create directories/folders: use `run_command` with `mkdir -p folder_name`.
 - To create files: use `write_file` with full content (not `run_command` with `echo`/`cat`/pipes, and not `mkdir`). For HTML/CSS/JS, always use `write_file`.
 - To delete files/folders: use `run_command` with `rm -rf path`.
+- Shell pipes (|, &&, ;) and redirects (>, >>) are supported in run_command via shell, but prefer file tools (read_file/list_files) for file ops. For grep with patterns starting with -, use `grep -- "pattern"`.
 {text_tool_format}
 """
 
