@@ -511,3 +511,57 @@ ModelPickerScreen,
 #model-dialog #model-list > ListItem.-selected {
     background: $micron-surface-light;
 }
+
+#history-dialog {
+    width: 80;
+    min-width: 50;
+    height: auto;
+    max-height: 70%;
+    border: thick $micron-accent;
+    padding: 1 2;
+    background: $micron-surface;
+}
+
+#history-dialog #history-title {
+    color: $micron-muted;
+    margin-bottom: 1;
+}
+
+#history-dialog #history-input {
+    border: none;
+    border-bottom: solid $micron-border;
+    background: $micron-surface;
+    margin-bottom: 1;
+}
+
+#history-dialog #history-input:focus {
+    border-bottom: solid $micron-accent;
+}
+
+#history-dialog #history-list {
+    width: 100%;
+    max-height: 25;
+    border: none;
+    background: $micron-surface;
+}
+
+#history-dialog #history-list > ListItem {
+    background: $micron-surface;
+    color: $micron-text;
+    height: auto;
+    padding: 0 1;
+}
+
+#history-dialog #history-list > ListItem:hover {
+    background: $micron-surface-light;
+}
+
+#history-dialog #history-list > ListItem:focus {
+    background: $micron-surface-light;
+    color: $micron-accent;
+}
+
+HistorySearchScreen {
+    align: center middle;
+    background: $micron-bg 70%;
+}

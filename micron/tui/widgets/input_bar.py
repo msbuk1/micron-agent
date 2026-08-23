@@ -13,7 +13,7 @@ class InputBar(Horizontal):
 
     def compose(self):
         yield Static("›", id="input-prompt")
-        yield Input(placeholder="Type a message or /command...", id="message-input")
+        yield Input(placeholder="Type a message or /command... (Shift+Enter newline, Up history, Ctrl+R search)", id="message-input")
         yield Button("⏎", id="send-btn", variant="primary")
         yield Button("≡", id="menu-btn")
 

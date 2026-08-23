@@ -16,6 +16,10 @@ HELP_TEXT = """
 - `Ctrl+B` — Toggle sidebar
 - `Ctrl+/` — Show this help
 - `Enter` — Send message
+- `Shift+Enter` — Insert newline (multiline)
+- `Up` / `Down` — Recall input history (prefix-filtered)
+- `Ctrl+R` — Search history (reverse-i-search)
+- `Tab` — Autocomplete slash command
 
 **Slash commands**
 

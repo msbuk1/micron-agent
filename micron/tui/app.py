@@ -18,6 +18,7 @@ from micron.events import EventType
 from micron.tui.commands import CommandDispatcher
 from micron.tui.screens.confirm import ConfirmationScreen
 from micron.tui.screens.help import HelpScreen
+from micron.tui.screens.history import HistorySearchScreen
 from micron.tui.screens.models import ModelPickerScreen
 from micron.tui.widgets.chat import ChatLog
 from micron.tui.widgets.input_bar import InputBar
@@ -38,6 +39,7 @@ class MicronTUI(App):
         ("ctrl+k", "focus_input", "Input"),
         ("ctrl+b", "toggle_sidebar", "Sidebar"),
         ("ctrl+slash", "show_help", "Help"),
+        ("ctrl+r", "history_search", "History"),
     ]
 
     conversation_history: reactive[list[dict]] = reactive(list)
@@ -73,6 +75,7 @@ class MicronTUI(App):
         self._input_history: list[str] = []
         self._history_index: int = -1
         self._history_draft: str = ""
+        self._history_filtered: list[str] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -100,9 +103,69 @@ class MicronTUI(App):
         else:
             self.call_from_thread(self._on_agent_ready)
 
+    def _history_path(self) -> Path | None:
+        try:
+            if self._agent is not None and hasattr(self._agent, "context_dir"):
+                return Path(self._agent.context_dir) / "input_history.jsonl"
+            if self._config is not None:
+                ctx = self._config.get("context_dir", "context")
+                if ctx:
+                    return Path(ctx) / "input_history.jsonl"
+        except Exception:
+            pass
+        return None
+
+    def _load_history(self) -> None:
+        path = self._history_path()
+        if path is None or not path.exists():
+            return
+        try:
+            import json
+
+            loaded: list[str] = []
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    t = obj.get("t") if isinstance(obj, dict) else str(obj)
+                except Exception:
+                    t = line
+                if t:
+                    loaded.append(t)
+            # keep last 500, dedupe consecutive already handled on append
+            self._input_history = loaded[-500:]
+            self._history_index = -1
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"load history failed: {exc}")
+
+    def _append_history(self, text: str) -> None:
+        path = self._history_path()
+        if path is None:
+            return
+        try:
+            import json
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # append
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"t": text}, ensure_ascii=False) + "\n")
+            # enforce 500 limit by trimming oldest if needed
+            if len(self._input_history) > 500:
+                # rewrite trimmed
+                trimmed = self._input_history[-500:]
+                self._input_history = trimmed
+                with path.open("w", encoding="utf-8") as f:
+                    for t in trimmed:
+                        f.write(json.dumps({"t": t}, ensure_ascii=False) + "\n")
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"append history failed: {exc}")
+
     def _on_agent_ready(self) -> None:
         loading = self.query_one("#loading-overlay", Vertical)
         loading.display = False
+        self._load_history()
         self._refresh_sidebar()
         self._update_status("ready")
         self.query_one("#message-input").focus()
@@ -119,8 +182,10 @@ class MicronTUI(App):
         # record in input history (Up/Down recall)
         if not self._input_history or self._input_history[-1] != text:
             self._input_history.append(text)
+            self._append_history(text)
         self._history_index = -1
         self._history_draft = ""
+        self._history_filtered = None
         if text.startswith("/"):
             self._handle_command(text)
             return
@@ -153,7 +218,29 @@ class MicronTUI(App):
         bar.remove_class("hidden")
 
     def on_key(self, event) -> None:
-        # Up/Down: input history recall
+        # Shift+Enter: insert newline for multiline input (Input is single-line
+        # but value may contain \n for the LLM; we insert at cursor)
+        is_shift_enter = (
+            event.key in ("shift+enter", "enter")
+            and "shift" in getattr(event, "modifiers", set())
+        ) or event.key == "shift+enter"
+        if is_shift_enter:
+            try:
+                inp = self.query_one("#message-input", Input)
+            except Exception:
+                return
+            if not inp.has_focus:
+                return
+            val = inp.value or ""
+            pos = getattr(inp, "cursor_position", len(val)) or 0
+            # clamp
+            pos = max(0, min(pos, len(val)))
+            inp.value = val[:pos] + "\n" + val[pos:]
+            inp.cursor_position = pos + 1
+            event.prevent_default()
+            event.stop()
+            return
+        # Up/Down: input history recall (prefix-filtered like fish/zsh)
         if event.key in ("up", "down"):
             try:
                 inp = self.query_one("#message-input", Input)
@@ -161,25 +248,39 @@ class MicronTUI(App):
                 return
             if not inp.has_focus or not self._input_history:
                 return
+            # use filtered list if active, else full history
+            hist = self._history_filtered if self._history_filtered is not None else self._input_history
             if event.key == "up":
                 if self._history_index == -1:
-                    self._history_draft = inp.value or ""
-                    self._history_index = len(self._input_history) - 1
+                    cur = inp.value or ""
+                    self._history_draft = cur
+                    if cur:
+                        # prefix filter: only entries starting with current text
+                        self._history_filtered = [h for h in self._input_history if h.startswith(cur)]
+                        if not self._history_filtered:
+                            self._history_filtered = None
+                            return
+                        hist = self._history_filtered
+                    else:
+                        self._history_filtered = None
+                        hist = self._input_history
+                    self._history_index = len(hist) - 1
                 elif self._history_index > 0:
                     self._history_index -= 1
                 else:
                     return
-                inp.value = self._input_history[self._history_index]
+                inp.value = hist[self._history_index]
                 inp.cursor_position = len(inp.value)
             else:  # down
                 if self._history_index == -1:
                     return
-                if self._history_index == len(self._input_history) - 1:
+                if self._history_index == len(hist) - 1:
                     self._history_index = -1
                     inp.value = self._history_draft
+                    self._history_filtered = None
                 else:
                     self._history_index += 1
-                    inp.value = self._input_history[self._history_index]
+                    inp.value = hist[self._history_index]
                 inp.cursor_position = len(inp.value)
             event.prevent_default()
             event.stop()
@@ -451,6 +552,26 @@ class MicronTUI(App):
 
     def action_show_help(self) -> None:
         self.push_screen(HelpScreen())
+
+    def action_history_search(self) -> None:
+        if not self._input_history:
+            self.query_one("#chat-log", ChatLog).add_system("No history yet.")
+            return
+        self.push_screen(
+            HistorySearchScreen(self._input_history),
+            callback=self._on_history_search_result,
+        )
+
+    def _on_history_search_result(self, result: str | None) -> None:
+        if not result:
+            return
+        try:
+            inp = self.query_one("#message-input", Input)
+            inp.value = result
+            inp.cursor_position = len(result)
+            inp.focus()
+        except Exception:
+            pass
 
     def on_unmount(self) -> None:
         if self._session_logger is not None:
