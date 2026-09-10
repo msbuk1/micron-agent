@@ -52,9 +52,25 @@ class ToolRegistry:
 
     def call(self, name: str, **kwargs) -> Any:
         """Execute a tool by name."""
+        import concurrent.futures
+
         if name not in self._tools:
             raise ValueError(f"Tool not found: {name}")
-        return self._tools[name].func(**kwargs)
+        timeout = kwargs.pop("timeout", None)
+        func = self._tools[name].func
+        if timeout is None:
+            return func(**kwargs)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            future = executor.submit(func, **kwargs)
+            try:
+                return future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                raise TimeoutError(
+                    f"Tool '{name}' timed out after {timeout}s"
+                ) from None
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
