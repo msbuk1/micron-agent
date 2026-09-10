@@ -40,6 +40,7 @@ class AgentConfig:
     temperature: float = 0.1
     max_tokens: int = 2048
     max_tool_iterations: int = 8
+    tool_timeout: float = 120.0
     use_text_tool_parsing: bool = False
     llm_retries: int = 2
     llm_retry_base_delay: float = 0.25
@@ -208,6 +209,7 @@ class MicronAgent:
                     temperature=config.temperature,
                     max_tokens=config.max_tokens,
                     max_tool_iterations=config.max_tool_iterations,
+                    tool_timeout=config.tool_timeout,
                     use_text_tool_parsing=config.use_text_tool_parsing,
                     llm_retries=config.llm_retries,
                     llm_retry_base_delay=config.llm_retry_base_delay,
@@ -489,7 +491,7 @@ class MicronAgent:
                 has_errors = False
                 for tc in read_calls:
                     try:
-                        result = self.tools.call(tc.name, **tc.args)
+                        result = self._call_tool(tc)
                         summary = self._summarize_result(result)
                         # Check if the tool returned an error string
                         is_error = isinstance(result, str) and result.startswith("Error:")
@@ -556,7 +558,7 @@ class MicronAgent:
         tool_results = []
         for tc in calls:
             try:
-                result = self.tools.call(tc.name, **tc.args)
+                result = self._call_tool(tc)
                 summary = self._summarize_result(result)
                 tool_results.append({
                     "role": "tool",
@@ -576,6 +578,18 @@ class MicronAgent:
                 yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": friendly}
         # Return tool_results by attaching to the generator (hacky but works)
         self._last_tool_results = tool_results
+
+    def _call_tool(self, tc: ToolCall):
+        """Execute one tool call with the configured outer timeout.
+
+        `setdefault` (not blind injection): a model-supplied `timeout` arg
+        — e.g. run_command's own timeout parameter — wins, so we never crash
+        with duplicate kwargs. The registry pops `timeout` and enforces it
+        as an outer cap; it never leaks into tool signatures.
+        """
+        kwargs = dict(tc.args)
+        kwargs.setdefault("timeout", self.config.tool_timeout)
+        return self.tools.call(tc.name, **kwargs)
 
     def _friendly_error(self, tool_name: str, error: Exception) -> str:
         """Convert a tool error into a user-friendly message."""

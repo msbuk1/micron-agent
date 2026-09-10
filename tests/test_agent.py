@@ -472,5 +472,48 @@ def test_mid_stream_failure_does_not_retry(tmp_path):
                and e.get("content") == "partial") == 1
 
 
+def test_tool_timeout_yields_tool_error(tmp_path):
+    """A hung read tool surfaces as tool_error, not a hung loop."""
+    import time
+    agent, _ = make_agent(
+        tmp_path,
+        [[LLMResponse(type="tool_call", tool_name="slow_read",
+                      tool_args={}, tool_call_id="c1"),
+          LLMResponse(type="done", content="")]],
+    )
+    def slow_read():
+        time.sleep(30)
+        return "too late"
+    agent.tools.register(name="slow_read", func=slow_read,
+                         description="slow",
+                         parameters={"type": "object", "properties": {}})
+    agent.config.tool_timeout = 0.2
+    events = list(agent.run("go slow"))
+    errors = [e for e in events if e["type"] == "tool_error"]
+    assert any("timed out" in e.get("error", "") for e in errors), \
+        f"expected timeout tool_error, got: {events}"
+
+
+def test_model_timeout_arg_does_not_crash(tmp_path):
+    """A model-supplied `timeout` arg (like run_command's own) must not
+    collide with the agent's injected timeout — model value wins."""
+    agent, _ = make_agent(
+        tmp_path,
+        [[LLMResponse(type="tool_call", tool_name="echo_timeout",
+                      tool_args={"timeout": 5}, tool_call_id="c1"),
+          LLMResponse(type="done", content="")],
+         [LLMResponse(type="text", content="ok"),
+          LLMResponse(type="done", content="")]],
+    )
+    agent.tools.register(name="echo_timeout",
+                         func=lambda timeout=30: f"timeout={timeout}",
+                         description="echo",
+                         parameters={"type": "object",
+                                     "properties": {"timeout": {"type": "integer"}}})
+    events = list(agent.run("echo"))
+    assert not any(e["type"] == "error" for e in events)
+    assert any(e["type"] == "tool_result" for e in events)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
