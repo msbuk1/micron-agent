@@ -440,5 +440,37 @@ def test_llm_retry_on_transient_failure(tmp_path):
                if e["type"] == "text")
 
 
+def test_mid_stream_failure_does_not_retry(tmp_path):
+    """Exception after the first chunk propagates — single attempt, no retry.
+
+    Neither run() nor _run_with_messages catches backend exceptions (the
+    response.type == "error" branch only handles backend-returned error
+    responses), so a mid-stream failure surfaces to the caller after the
+    already-yielded text. The lock: exactly one backend call, partial text
+    yielded exactly once.
+    """
+    import pytest
+    agent, _ = make_agent(
+        tmp_path,
+        [[LLMResponse(type="done", content="")]],
+    )
+    backend = agent.llm
+    calls = {"n": 0}
+
+    def flaky_mid_stream(messages, tools=None, temperature=0.1, max_tokens=2048):
+        calls["n"] += 1
+        yield LLMResponse(type="text", content="partial")
+        raise ConnectionError("dropped mid-stream")
+
+    backend.stream_chat = flaky_mid_stream
+    events: list[dict] = []
+    with pytest.raises(ConnectionError):
+        for e in agent.run("hello"):
+            events.append(e)
+    assert calls["n"] == 1
+    assert sum(1 for e in events if e["type"] == "text"
+               and e.get("content") == "partial") == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
