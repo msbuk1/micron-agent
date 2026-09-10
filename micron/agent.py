@@ -44,6 +44,7 @@ class AgentConfig:
     use_text_tool_parsing: bool = False
     llm_retries: int = 2
     llm_retry_base_delay: float = 0.25
+    history_keep_recent: int = 8
     llm_kwargs: dict = field(default_factory=dict)
 
 
@@ -55,17 +56,37 @@ FINAL_ITERATION_NUDGE = (
 )
 
 class _HistoryCompactor:
-    """Pure history compression — mirrors previous _compress_history."""
+    """Pure history compression — extractive, token-aware, recursive.
 
-    def __init__(self, keep_recent: int = 8):
+    Token budget (~4 chars/token heuristic) is the primary trigger; message
+    count is a backstop. If one summarize pass still exceeds budget, recurse
+    (max_depth) on the already-compressed output. Stays extractive — no LLM
+    call inside the loop, so no new failure modes.
+    """
+
+    def __init__(self, keep_recent: int = 8, max_tokens: int = 6000,
+                 max_depth: int = 3):
         self.keep_recent = keep_recent
+        self.max_tokens = max_tokens
+        self.max_depth = max_depth
 
-    def compress(self, history: list[dict], keep_recent: int | None = None) -> list[dict]:
+    @staticmethod
+    def _tokens(msgs: list[dict]) -> int:
+        total = 0
+        for m in msgs:
+            total += len(str(m.get("content") or "")) // 4
+            for tc in m.get("tool_calls") or []:
+                total += len(str(tc)) // 4
+        return total
+
+    def compress(self, history: list[dict], keep_recent: int | None = None,
+                 _depth: int = 0) -> list[dict]:
         keep = keep_recent if keep_recent is not None else self.keep_recent
-        if len(history) <= keep:
+        if len(history) <= keep and self._tokens(history) <= self.max_tokens:
             return history
-        old = history[:-keep]
-        recent = history[-keep:]
+        split = max(1, len(history) - keep)
+        old = history[:-keep] if len(history) > keep else history[:split]
+        recent = history[-keep:] if len(history) > keep else history[split:]
         parts: list[str] = []
         for msg in old:
             role = msg["role"]
@@ -80,10 +101,16 @@ class _HistoryCompactor:
                 content = content[:200] + "..."
             parts.append(f"{role}: {content}")
         summary = "Previous conversation summary:\n" + "\n".join(parts)
-        return [{"role": "user", "content": summary}] + recent
+        out = [{"role": "user", "content": summary}] + recent
+        if (_depth < self.max_depth and len(out) > 2
+                and self._tokens(out) > self.max_tokens):
+            return self.compress(out, keep_recent=keep, _depth=_depth + 1)
+        return out
 
     def should_compress(self, history: list[dict] | None) -> bool:
-        return bool(history and len(history) > 12)
+        if not history:
+            return False
+        return len(history) > 12 or self._tokens(history) > self.max_tokens
 
 
 class _LoopController:
@@ -213,6 +240,7 @@ class MicronAgent:
                     use_text_tool_parsing=config.use_text_tool_parsing,
                     llm_retries=config.llm_retries,
                     llm_retry_base_delay=config.llm_retry_base_delay,
+                    history_keep_recent=config.history_keep_recent,
                     llm_kwargs={k: v for k, v in config.llm_kwargs.items() if k != "backend"},
                 )
             except Exception:
@@ -260,7 +288,8 @@ class MicronAgent:
         self._load_plugins()
         # Internal modules — not part of external seam
         self._loop = _LoopController(max_iterations=config.max_tool_iterations)
-        self._compactor = _HistoryCompactor(keep_recent=8)
+        self._compactor = _HistoryCompactor(
+            keep_recent=getattr(config, "history_keep_recent", 8))
 
     # Backward-compat shims: tests access agent._tool_history / _consecutive_failures directly
     # These proxy to _loop so both views stay in sync.
