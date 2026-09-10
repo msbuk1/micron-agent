@@ -352,5 +352,28 @@ def add_numbers(a: int = 0, b: int = 0) -> int:
         assert result == "Hello, plugin!"
 
 
+def test_final_iteration_nudge_injected(tmp_path):
+    """On the last allowed iteration the agent appends a wrap-up nudge."""
+    agent, _ = make_agent(
+        tmp_path,
+        [[
+            LLMResponse(type="tool_call", tool_name="read_file",
+                        tool_args={"path": "a.txt"}, tool_call_id="c1"),
+            LLMResponse(type="done", content=""),
+        ], [
+            LLMResponse(type="text", content="final answer"),
+            LLMResponse(type="done", content=""),
+        ]],
+    )
+    backend = agent.llm
+    agent.config.max_tool_iterations = 2
+    agent._loop.reset(max_iterations=2)
+    list(agent.run("hello"))
+    last_messages = backend.messages_history[-1]
+    assert any("final answer now" in (m.get("content") or "")
+               for m in last_messages), \
+        f"nudge missing in: {last_messages}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
