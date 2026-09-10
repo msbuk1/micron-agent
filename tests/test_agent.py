@@ -375,5 +375,24 @@ def test_final_iteration_nudge_injected(tmp_path):
         f"nudge missing in: {last_messages}"
 
 
+def test_nudge_present_with_single_iteration(tmp_path):
+    """With max_tool_iterations=1 the single call is also the last."""
+    agent, _ = make_agent(
+        tmp_path,
+        [[
+            LLMResponse(type="text", content="only answer"),
+            LLMResponse(type="done", content=""),
+        ]],
+    )
+    backend = agent.llm
+    agent.config.max_tool_iterations = 1
+    agent._loop.reset(max_iterations=1)
+    list(agent.run("hello"))
+    first_messages = backend.messages_history[0]
+    assert any("final answer now" in (m.get("content") or "")
+               for m in first_messages), \
+        f"nudge missing in: {first_messages}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
