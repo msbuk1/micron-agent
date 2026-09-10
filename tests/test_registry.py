@@ -122,6 +122,22 @@ def test_auto_detect_required():
     assert set(tool.parameters["required"]) == {"a", "b"}
 
 
+def test_tool_call_timeout():
+    import time
+
+    import pytest
+
+    reg = ToolRegistry()
+
+    def slow():
+        time.sleep(5)
+        return "done"
+
+    reg.register("slow", slow, "Slow tool", {"type": "object", "properties": {}})
+    with pytest.raises(TimeoutError, match="timed out"):
+        reg.call("slow", timeout=0.2)
+
+
 if __name__ == "__main__":
     test_register_and_call()
     test_call_nonexistent_tool()
