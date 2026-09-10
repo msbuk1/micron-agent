@@ -46,6 +46,11 @@ class AgentConfig:
 
 # ── internal modules (not part of external seam) ───────────────────────
 
+FINAL_ITERATION_NUDGE = (
+    "This is your FINAL tool iteration. You MUST produce a final answer now — "
+    "do not call more tools. Summarize what you found and answer the user."
+)
+
 class _HistoryCompactor:
     """Pure history compression — mirrors previous _compress_history."""
 
@@ -368,8 +373,12 @@ class MicronAgent:
                 else None
             )
 
+            if tool_iterations == self.config.max_tool_iterations - 1:
+                llm_messages = messages + [{"role": "user", "content": FINAL_ITERATION_NUDGE}]
+            else:
+                llm_messages = messages
             for response in self.llm.stream_chat(
-                messages=messages,
+                messages=llm_messages,
                 tools=self.tools.schemas(),
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
