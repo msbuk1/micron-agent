@@ -394,5 +394,15 @@ def test_nudge_present_with_single_iteration(tmp_path):
         f"nudge missing in: {first_messages}"
 
 
+def test_detect_alternating_pattern(tmp_path):
+    agent, _ = make_agent(tmp_path, [[LLMResponse(type="done", content="")]])
+    a = ToolCall(name="read_file", args={"path": "a.txt"}, call_id="1")
+    b = ToolCall(name="read_file", args={"path": "b.txt"}, call_id="2")
+    assert agent._loop.detect_loop([a]) is False
+    assert agent._loop.detect_loop([b]) is False
+    assert agent._loop.detect_loop([a]) is False
+    assert agent._loop.detect_loop([b]) is True  # A-B-A-B
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
