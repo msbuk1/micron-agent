@@ -41,6 +41,8 @@ class AgentConfig:
     max_tokens: int = 2048
     max_tool_iterations: int = 8
     use_text_tool_parsing: bool = False
+    llm_retries: int = 2
+    llm_retry_base_delay: float = 0.25
     llm_kwargs: dict = field(default_factory=dict)
 
 
@@ -207,6 +209,8 @@ class MicronAgent:
                     max_tokens=config.max_tokens,
                     max_tool_iterations=config.max_tool_iterations,
                     use_text_tool_parsing=config.use_text_tool_parsing,
+                    llm_retries=config.llm_retries,
+                    llm_retry_base_delay=config.llm_retry_base_delay,
                     llm_kwargs={k: v for k, v in config.llm_kwargs.items() if k != "backend"},
                 )
             except Exception:
@@ -361,6 +365,31 @@ class MicronAgent:
 
         yield from self._run_with_messages(messages)
 
+    def _stream_chat_with_retry(self, messages, tools, temperature, max_tokens):
+        """Yield from llm.stream_chat, retrying transient failures.
+
+        Retries only when NOTHING was yielded yet in this attempt (setup-time
+        failure). Mid-stream failures propagate as error events as today —
+        already-yielded text cannot be unsent.
+        """
+        import time as _time
+        delay = self.config.llm_retry_base_delay
+        for attempt in range(self.config.llm_retries + 1):
+            yielded_anything = False
+            try:
+                for response in self.llm.stream_chat(
+                    messages=messages, tools=tools,
+                    temperature=temperature, max_tokens=max_tokens,
+                ):
+                    yielded_anything = True
+                    yield response
+                return
+            except Exception:
+                if yielded_anything or attempt >= self.config.llm_retries:
+                    raise
+                _time.sleep(delay)
+                delay *= 2
+
     def _run_with_messages(self, messages: list[dict], skip_write_confirm: bool = False) -> Generator[dict, None, None]:
         """Run the tool loop with pre-built messages.
 
@@ -390,7 +419,7 @@ class MicronAgent:
                 llm_messages = messages + [{"role": "user", "content": FINAL_ITERATION_NUDGE}]
             else:
                 llm_messages = messages
-            for response in self.llm.stream_chat(
+            for response in self._stream_chat_with_retry(
                 messages=llm_messages,
                 tools=self.tools.schemas(),
                 temperature=self.config.temperature,
