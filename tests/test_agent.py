@@ -414,5 +414,31 @@ def test_varied_sequence_is_not_a_loop(tmp_path):
         assert agent._loop.detect_loop([c]) is False
 
 
+def test_llm_retry_on_transient_failure(tmp_path):
+    agent, _ = make_agent(
+        tmp_path,
+        [[
+            LLMResponse(type="text", content="recovered"),
+            LLMResponse(type="done", content=""),
+        ]],
+    )
+    backend = agent.llm
+    orig = backend.stream_chat
+    calls = {"n": 0}
+
+    def flaky(messages, tools=None, temperature=0.1, max_tokens=2048):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("refused")
+        yield from orig(messages, tools=tools, temperature=temperature,
+                        max_tokens=max_tokens)
+
+    backend.stream_chat = flaky
+    events = list(agent.run("hello"))
+    assert not any(e["type"] == "error" for e in events)
+    assert any(e.get("content") == "recovered" for e in events
+               if e["type"] == "text")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
