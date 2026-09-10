@@ -404,5 +404,15 @@ def test_detect_alternating_pattern(tmp_path):
     assert agent._loop.detect_loop([b]) is True  # A-B-A-B
 
 
+def test_varied_sequence_is_not_a_loop(tmp_path):
+    agent, _ = make_agent(tmp_path, [[LLMResponse(type="done", content="")]])
+    calls = [
+        ToolCall(name="read_file", args={"path": f"{p}.txt"}, call_id=str(i))
+        for i, p in enumerate(["a", "b", "c", "d"])
+    ]
+    for c in calls:
+        assert agent._loop.detect_loop([c]) is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
