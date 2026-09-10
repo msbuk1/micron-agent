@@ -105,6 +105,19 @@ class _LoopController:
         if len(fingerprints) != len(set(fingerprints)):
             return True
         self.tool_history.extend(fingerprints)
+        # NOTE: no text-monologue counter. Zero tool calls yields done+return,
+        # so text-only output cannot infinite-loop in this architecture.
+        # Short alternating pattern: A-B-A-B (needs only 4 entries).
+        if len(self.tool_history) >= 4:
+            last4 = self.tool_history[-4:]
+            if (len(set(last4)) == 2 and last4[0] == last4[2]
+                    and last4[1] == last4[3]):
+                return True
+        # Rotation: A-B-C-A-B-C.
+        if len(self.tool_history) >= 6:
+            last6 = self.tool_history[-6:]
+            if last6[:3] == last6[3:] and len(set(last6)) == 3:
+                return True
         if len(self.tool_history) >= 6:
             last6 = self.tool_history[-6:]
             if len(set(last6)) <= 2:
