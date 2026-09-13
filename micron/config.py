@@ -54,7 +54,6 @@ class RuntimeConfig:
     tool_timeout: float
     llm_retries: int
     llm_retry_base_delay: float
-    history_keep_recent: int
     workdir: Path
     context_dir: Path
     knowledge_dir: Path
@@ -77,7 +76,6 @@ class RuntimeConfig:
             "tool_timeout": self.tool_timeout,
             "llm_retries": self.llm_retries,
             "llm_retry_base_delay": self.llm_retry_base_delay,
-            "history_keep_recent": self.history_keep_recent,
             "workdir": str(self.workdir),
             "context_dir": str(self.context_dir),
             "knowledge_dir": str(self.knowledge_dir),
@@ -100,7 +98,6 @@ class RuntimeConfig:
             "tool_timeout": self.tool_timeout,
             "llm_retries": self.llm_retries,
             "llm_retry_base_delay": self.llm_retry_base_delay,
-            "history_keep_recent": self.history_keep_recent,
         }
 
     def for_backend(self) -> dict:
@@ -132,7 +129,6 @@ class RuntimeConfig:
             tool_timeout=120.0,
             llm_retries=2,
             llm_retry_base_delay=0.25,
-            history_keep_recent=8,
             workdir=Path(tmp_path),
             context_dir=Path(tmp_path) / "context",
             knowledge_dir=Path(tmp_path) / "context" / "knowledge",
@@ -322,7 +318,6 @@ class Config:
             "TOOL_TIMEOUT": "tool_timeout",
             "LLM_RETRIES": "llm_retries",
             "LLM_RETRY_BASE_DELAY": "llm_retry_base_delay",
-            "HISTORY_KEEP_RECENT": "history_keep_recent",
             "HOST": "host",
             "PORT": "port",
             "FIRECRAWL_URL": "firecrawl_url",
@@ -337,7 +332,7 @@ class Config:
                 
                 # Convert numeric values
                 if config_key in ["max_tokens", "max_tool_iterations", "port",
-                                  "llm_retries", "history_keep_recent"]:
+                                  "llm_retries"]:
                     try:
                         value = int(value)
                     except ValueError:
@@ -461,7 +456,6 @@ class Config:
             tool_timeout=float(self.get("tool_timeout", 120.0)),
             llm_retries=int(self.get("llm_retries", 2)),
             llm_retry_base_delay=float(self.get("llm_retry_base_delay", 0.25)),
-            history_keep_recent=int(self.get("history_keep_recent", 8)),
             workdir=workdir,
             context_dir=ctx_path,
             knowledge_dir=kd_path,

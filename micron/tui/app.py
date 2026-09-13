@@ -65,7 +65,6 @@ class MicronTUI(App):
         self._pending_writes: list[dict] | None = None
         self._current_query: str = ""
         self._current_user_text: str = ""
-        self._current_history: list[dict] | None = None
         self._current_assistant_text: str = ""
         self._commands: CommandDispatcher | None = None
         self._config = config
@@ -388,7 +387,6 @@ class MicronTUI(App):
 
         self._current_query = query
         self._current_user_text = text
-        self._current_history = list(self.conversation_history)
         self._pending_writes = None
         self._current_assistant_text = ""
 
@@ -405,7 +403,7 @@ class MicronTUI(App):
 
         runner = run_agent if self._thread_workers else run_agent_async
         self._agent_worker = self.run_worker(
-            partial(runner, self, self._agent, query, history=self._current_history),
+            partial(runner, self, self._agent, query),
             thread=self._thread_workers,
             name="agent_run",
         )
@@ -500,7 +498,6 @@ class MicronTUI(App):
                 self,
                 self._agent,
                 self._current_query,
-                history=self._current_history,
                 confirm=True,
                 pending_tool_calls=calls,
             ),

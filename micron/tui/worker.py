@@ -38,7 +38,6 @@ def _iterate_agent(
     agent,
     query: str,
     *,
-    history: list[dict] | None = None,
     confirm: bool = False,
     pending_tool_calls=None,
 ):
@@ -46,7 +45,6 @@ def _iterate_agent(
     try:
         generator = agent.run(
             query,
-            history=history,
             stream=True,
             confirm=confirm,
             pending_tool_calls=pending_tool_calls,
@@ -64,12 +62,11 @@ def run_agent(
     agent,
     query: str,
     *,
-    history: list[dict] | None = None,
     confirm: bool = False,
     pending_tool_calls=None,
 ) -> None:
     """Synchronous function intended to run inside a threaded Textual worker."""
-    _iterate_agent(app, agent, query, history=history, confirm=confirm, pending_tool_calls=pending_tool_calls)
+    _iterate_agent(app, agent, query, confirm=confirm, pending_tool_calls=pending_tool_calls)
 
 
 async def run_agent_async(
@@ -77,7 +74,6 @@ async def run_agent_async(
     agent,
     query: str,
     *,
-    history: list[dict] | None = None,
     confirm: bool = False,
     pending_tool_calls=None,
 ) -> None:
@@ -86,7 +82,6 @@ async def run_agent_async(
     try:
         generator = agent.run(
             query,
-            history=history,
             stream=True,
             confirm=confirm,
             pending_tool_calls=pending_tool_calls,

@@ -198,20 +198,6 @@ def test_local_provider_enables_text_parsing(tmp_path, monkeypatch):
     assert any(e["type"] == "tool_result" for e in events)
 
 
-def test_history_compression_preserves_tool_pairs():
-    history = []
-    for i in range(15):
-        history.append({"role": "user", "content": f"q{i}"})
-        history.append({"role": "assistant", "content": f"a{i}"})
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        agent, _ = make_agent(Path(tmpdir), [])
-        compressed = agent._compress_history(history, keep_recent=4)
-        assert len(compressed) == 5  # summary + 4 recent
-        assert compressed[0]["role"] == "user"
-        assert "q0" in compressed[0]["content"]
-
-
 def test_consecutive_failure_pivot():
     bad = [
         LLMResponse(type="text", content=""),

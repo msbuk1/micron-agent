@@ -62,26 +62,6 @@ class SessionLogger:
         """ID of the current session (None before start_session)."""
         return self._session_id
 
-    def log_turn(self, role: str, content: str, tool_calls: list = None):
-        """Log a single conversation turn (legacy audit-trail entry).
-
-        New code should use :meth:`log_message` (model-visible, settled) or
-        :meth:`log_attempt` (log-only failed stream) instead.
-        """
-        if not self._current_file:
-            return
-
-        entry = {
-            "type": "turn",
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now().isoformat(),
-        }
-        if tool_calls:
-            entry["tool_calls"] = tool_calls
-
-        self._append_checked(entry)
-
     def log_message(
         self,
         role: str,
@@ -231,7 +211,7 @@ class SessionLogger:
         return msgs
 
     def get_session_context(self, session_id: str, max_turns: int = 20) -> list[dict]:
-        """Get a session's history formatted for the agent's history parameter.
+        """Get a session's projected model history.
 
         Thin alias over :meth:`derive_messages` — the log is the authority.
         """

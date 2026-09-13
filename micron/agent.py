@@ -46,7 +46,6 @@ class AgentConfig:
     use_text_tool_parsing: bool = False
     llm_retries: int = 2
     llm_retry_base_delay: float = 0.25
-    history_keep_recent: int = 8
     llm_kwargs: dict = field(default_factory=dict)
 
 
@@ -56,64 +55,6 @@ FINAL_ITERATION_NUDGE = (
     "This is your FINAL tool iteration. You MUST produce a final answer now — "
     "do not call more tools. Summarize what you found and answer the user."
 )
-
-class _HistoryCompactor:
-    """Pure history compression — extractive, token-aware, recursive.
-
-    Token budget (~4 chars/token heuristic) is the primary trigger; message
-    count is a backstop. If one summarize pass still exceeds budget, recurse
-    (max_depth) on the already-compressed output. Stays extractive — no LLM
-    call inside the loop, so no new failure modes.
-    """
-
-    def __init__(self, keep_recent: int = 8, max_tokens: int = 6000,
-                 max_depth: int = 3):
-        self.keep_recent = keep_recent
-        self.max_tokens = max_tokens
-        self.max_depth = max_depth
-
-    @staticmethod
-    def _tokens(msgs: list[dict]) -> int:
-        total = 0
-        for m in msgs:
-            total += len(str(m.get("content") or "")) // 4
-            for tc in m.get("tool_calls") or []:
-                total += len(str(tc)) // 4
-        return total
-
-    def compress(self, history: list[dict], keep_recent: int | None = None,
-                 _depth: int = 0) -> list[dict]:
-        keep = keep_recent if keep_recent is not None else self.keep_recent
-        if len(history) <= keep and self._tokens(history) <= self.max_tokens:
-            return history
-        split = max(1, len(history) - keep)
-        old = history[:-keep] if len(history) > keep else history[:split]
-        recent = history[-keep:] if len(history) > keep else history[split:]
-        parts: list[str] = []
-        for msg in old:
-            role = msg["role"]
-            content = msg.get("content", "")
-            tool_calls = msg.get("tool_calls")
-            tool_call_id = msg.get("tool_call_id")
-            if tool_calls:
-                content = f"[used tools: {', '.join(tc['function']['name'] for tc in tool_calls)}]"
-            elif tool_call_id:
-                content = f"[tool result] {content[:100]}"
-            elif len(content) > 200:
-                content = content[:200] + "..."
-            parts.append(f"{role}: {content}")
-        summary = "Previous conversation summary:\n" + "\n".join(parts)
-        out = [{"role": "user", "content": summary}] + recent
-        if (_depth < self.max_depth and len(out) > 2
-                and self._tokens(out) > self.max_tokens):
-            return self.compress(out, keep_recent=keep, _depth=_depth + 1)
-        return out
-
-    def should_compress(self, history: list[dict] | None) -> bool:
-        if not history:
-            return False
-        return len(history) > 12 or self._tokens(history) > self.max_tokens
-
 
 class _LoopController:
     """Owns tool-loop state: iteration count, failure pivot, loop detection."""
@@ -175,7 +116,7 @@ class MicronAgent:
     """Lightweight AI agent with file-based memory, skills, and tool calling.
 
     Deep module — external seam is small (run/ask + injected backend). Loop
-    control lives in internal _LoopController/_HistoryCompactor, not at the
+    control lives in internal _LoopController, not at the
     seam. Accepts dependencies, doesn't create them when the caller injects
     them (local-substitutable Memory/SkillLoader/ToolRegistry via tmp_path
     in tests, Remote-but-owned LLMBackend port with FakeLLM adapter).
@@ -244,7 +185,6 @@ class MicronAgent:
                     use_text_tool_parsing=config.use_text_tool_parsing,
                     llm_retries=config.llm_retries,
                     llm_retry_base_delay=config.llm_retry_base_delay,
-                    history_keep_recent=config.history_keep_recent,
                     llm_kwargs={k: v for k, v in config.llm_kwargs.items() if k != "backend"},
                 )
             except Exception:
@@ -301,8 +241,10 @@ class MicronAgent:
         self._load_plugins()
         # Internal modules — not part of external seam
         self._loop = _LoopController(max_iterations=config.max_tool_iterations)
-        self._compactor = _HistoryCompactor(
-            keep_recent=getattr(config, "history_keep_recent", 8))
+        # Transient in-memory history — used ONLY when no session logger is
+        # active (headless). When the log is the authority, model history is
+        # derived from the log (derive_messages) and this list is ignored.
+        self._history: list[dict] = []
         # Turn/step lifecycle (micron/turns.py): hooks are interceptable,
         # inbox holds injected context until the next admitted request.
         self.hooks = hooks if hooks is not None else TurnHooks()
@@ -363,7 +305,7 @@ class MicronAgent:
         self.tools.register(name, func, description, parameters, write)
 
     def run(
-        self, message: str, history: list[dict] | None = None, stream: bool = True,
+        self, message: str, stream: bool = True,
         confirm: bool = False, pending_tool_calls: list[ToolCall] | None = None,
     ) -> Generator[dict, None, None]:
         """Run one turn: explicit turn_start/turn_end around zero or more steps.
@@ -384,23 +326,57 @@ class MicronAgent:
                 yield {"type": "done"}
                 return
             message = claimed
-            # New model-visible input commits to the log as a message
-            # before any model request is built (issue #20).
-            if self._log_active():
-                self.sessions.log_message("user", message)
-        yield from self._run_turn(message, history, confirm, pending_tool_calls)
+            # New model-visible input commits before any model request is
+            # built (issue #20) — to the session log when one is active,
+            # otherwise to the transient in-memory history.
+            self._commit("user", message)
+        yield from self._run_turn(message, confirm, pending_tool_calls)
         yield {"type": "turn_end", "turn_id": turn_id}
 
     def _log_active(self) -> bool:
         """True when the session log is the authority for model history."""
         return self.sessions is not None and self.sessions.session_id is not None
 
+    def _commit(
+        self,
+        role: str,
+        content: str,
+        tool_calls: list | None = None,
+        tool_call_id: str | None = None,
+        name: str | None = None,
+    ) -> None:
+        """Commit settled, model-visible content to the single history path.
+
+        Session log active → ``log_message`` (the log is the authority).
+        Otherwise → append to the transient in-memory history (headless).
+        """
+        if self._log_active():
+            self.sessions.log_message(
+                role, content, tool_calls=tool_calls,
+                tool_call_id=tool_call_id, name=name,
+            )
+            return
+        msg: dict = {"role": role, "content": content}
+        if tool_calls:
+            msg["tool_calls"] = tool_calls
+        if tool_call_id is not None:
+            msg["tool_call_id"] = tool_call_id
+        if name is not None:
+            msg["name"] = name
+        self._history.append(msg)
+
+    def _model_history(self) -> list[dict]:
+        """Project model history through the single active path."""
+        if self._log_active():
+            return self.sessions.derive_messages()
+        return list(self._history)
+
     def inject(self, text: str) -> None:
         """Queue context for the next admitted request (never mid-stream)."""
         self._inbox.inject(text)
 
     def _run_turn(
-        self, message: str, history: list[dict] | None,
+        self, message: str,
         confirm: bool, pending_tool_calls: list[ToolCall] | None,
     ) -> Generator[dict, None, None]:
         if not self.llm.is_available():
@@ -423,30 +399,20 @@ class MicronAgent:
 
             # Continue conversation with tool results in history
             if tool_results:
-                # Build messages with the tool results appended
+                # Build messages with the tool results appended. The
+                # projected history already ends with the assistant
+                # tool_calls message + the user message from the original
+                # run — don't re-append the user message.
                 system_prompt = self.prompt_builder.build_system_prompt(message)
                 messages = [{"role": "system", "content": system_prompt}]
-                if self._log_active():
-                    # Log-derived history already ends with the assistant
-                    # tool_calls message + the user message from the
-                    # original run — don't re-append the user message.
-                    history = self.sessions.derive_messages()
-                if history:
-                    if self._compactor.should_compress(history) and not self._log_active():
-                        history = self._compactor.compress(history)
-                    for msg in history[-20:]:
-                        messages.append(msg)
-                if not self._log_active():
-                    # Add the user message and tool results
-                    messages.append({"role": "user", "content": message})
+                messages.extend(self._model_history()[-20:])
                 messages.extend(tool_results)
-                # Tool results are model-visible — commit them to the log.
-                if self._log_active():
-                    for tr in tool_results:
-                        self.sessions.log_message(
-                            "tool", tr["content"],
-                            tool_call_id=tr["tool_call_id"], name=tr["name"],
-                        )
+                # Tool results are model-visible — commit them.
+                for tr in tool_results:
+                    self._commit(
+                        "tool", tr["content"],
+                        tool_call_id=tr["tool_call_id"], name=tr["name"],
+                    )
 
                 # Continue the conversation
                 yield from self._run_with_messages(messages, skip_write_confirm=True)
@@ -456,24 +422,10 @@ class MicronAgent:
         system_prompt = self.prompt_builder.build_system_prompt(message)
         messages = [{"role": "system", "content": system_prompt}]
 
-        if self._log_active():
-            # The log is the authority: project model history from it and
-            # ignore any side-channel history list. Lossless — no
-            # destructive compaction (issue #20).
-            history = self.sessions.derive_messages()
-
-        # Compress history if too long (summarize old turns) — legacy path
-        # only; the log-derived path stays lossless.
-        if self._compactor.should_compress(history) and not self._log_active():
-            history = self._compactor.compress(history)
-
-        if history:
-            for msg in history[-20:]:
-                messages.append(msg)
-        if not self._log_active():
-            # With the log as authority the user message is already in the
-            # derived history (committed in run() before this turn).
-            messages.append({"role": "user", "content": message})
+        # Single history path: the log projection when a session is active,
+        # the transient in-memory list otherwise. The user message is
+        # already in the projected history (committed in run()).
+        messages.extend(self._model_history()[-20:])
 
         yield from self._run_with_messages(messages)
 
@@ -537,8 +489,7 @@ class MicronAgent:
                 # request, after any tool results have settled (never mid-stream).
                 for extra in self._inbox.drain():
                     messages.append({"role": "user", "content": extra})
-                    if self._log_active():
-                        self.sessions.log_message("user", extra)
+                    self._commit("user", extra)
 
                 # Runtime invariant (issue #20): every model-visible message
                 # must be reconstructable from the session log.
@@ -593,8 +544,8 @@ class MicronAgent:
 
                 if not pending_calls:
                     # Settled assistant output commits as one message.
-                    if self._log_active() and full_text:
-                        self.sessions.log_message("assistant", full_text)
+                    if full_text:
+                        self._commit("assistant", full_text)
                     yield {"type": "step_end", "step": step}
                     yield {"type": "done"}
                     return
@@ -625,11 +576,10 @@ class MicronAgent:
                             for tc in read_calls
                         ]
                     messages.append(assistant_message)
-                    if self._log_active():
-                        self.sessions.log_message(
-                            "assistant", assistant_message["content"],
-                            tool_calls=assistant_message.get("tool_calls"),
-                        )
+                    self._commit(
+                        "assistant", assistant_message["content"],
+                        tool_calls=assistant_message.get("tool_calls"),
+                    )
 
                     has_errors = False
                     for tc in read_calls:
@@ -654,11 +604,10 @@ class MicronAgent:
                                 "name": tc.name,
                                 "content": f"Error: {friendly}",
                             })
-                            if self._log_active():
-                                self.sessions.log_message(
-                                    "tool", f"Error: {friendly}",
-                                    tool_call_id=tc.call_id, name=tc.name,
-                                )
+                            self._commit(
+                                "tool", f"Error: {friendly}",
+                                tool_call_id=tc.call_id, name=tc.name,
+                            )
                             yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": friendly}
                             continue
 
@@ -681,10 +630,9 @@ class MicronAgent:
                             "name": tc.name,
                             "content": summary,
                         })
-                        if self._log_active():
-                            self.sessions.log_message(
-                                "tool", summary, tool_call_id=tc.call_id, name=tc.name,
-                            )
+                        self._commit(
+                            "tool", summary, tool_call_id=tc.call_id, name=tc.name,
+                        )
                         if is_error:
                             has_errors = True
                             error = next(
@@ -698,8 +646,7 @@ class MicronAgent:
                     pivot = self._loop.record_result(has_errors)
                     if pivot:
                         messages.append({"role": "user", "content": pivot})
-                        if self._log_active():
-                            self.sessions.log_message("user", pivot)
+                        self._commit("user", pivot)
 
                     tool_iterations += 1
                     step += 1
@@ -717,11 +664,10 @@ class MicronAgent:
                         for tc in write_calls
                     ]
                     messages.append(assistant_message)
-                    if self._log_active():
-                        self.sessions.log_message(
-                            "assistant", assistant_message["content"],
-                            tool_calls=assistant_message["tool_calls"],
-                        )
+                    self._commit(
+                        "assistant", assistant_message["content"],
+                        tool_calls=assistant_message["tool_calls"],
+                    )
 
                     # Emit confirmation_required event with pending write calls
                     pending_writes = [
@@ -888,12 +834,8 @@ class MicronAgent:
     def _detect_loop(self, calls: list[ToolCall]) -> bool:
         return self._loop.detect_loop(calls)
 
-    def _compress_history(self, history: list[dict], keep_recent: int = 8) -> list[dict]:
-        """Compress old history by summarizing tool results into a single summary turn."""
-        return self._compactor.compress(history, keep_recent=keep_recent)
-
-    def _continue_conversation(self, user_message: str, history: list[dict] | None = None) -> Generator[dict, None, None]:
-        yield from self.run(user_message, history=history)
+    def _continue_conversation(self, user_message: str) -> Generator[dict, None, None]:
+        yield from self.run(user_message)
 
     def add_memory(self, text: str, tags: list[str] | None = None, importance: int = 3) -> str:
         return self.memory.add(text, tags=tags, importance=importance)
@@ -918,7 +860,7 @@ class MicronAgent:
         """Ergonomic alias for unload_model."""
         self.unload_model()
 
-    def ask(self, query: str, history: list[dict] | None = None) -> str:
+    def ask(self, query: str) -> str:
         """One-liner for the 80% non-streaming case: run + collect text.
 
         Hides process_events behind the seam so CLI/server non-stream branches
@@ -926,7 +868,7 @@ class MicronAgent:
         """
         from micron.events import process_events
 
-        result = process_events(self.run(query, history=history))
+        result = process_events(self.run(query))
         return result.text
 
     def confirm(
@@ -934,7 +876,6 @@ class MicronAgent:
         writes: list[dict],
         *,
         query: str = "",
-        history: list[dict] | None = None,
     ) -> Generator[dict, None, None]:
         """Resume after a confirmation_required event.
 
@@ -949,7 +890,7 @@ class MicronAgent:
             )
             for i, w in enumerate(writes)
         ]
-        yield from self.run(query, history=history, confirm=True, pending_tool_calls=calls)
+        yield from self.run(query, confirm=True, pending_tool_calls=calls)
 
     def reconfigure(self, provider: str, model: str, **kwargs) -> None:
         """Ergonomic alias for set_backend."""

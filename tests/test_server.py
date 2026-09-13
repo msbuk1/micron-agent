@@ -282,8 +282,8 @@ class TestSessionEndpoints:
         sessions_dir = tmp_path / "sessions"
         logger = SessionLogger(sessions_dir)
         session_id = logger.start_session()
-        logger.log_turn("user", "first message")
-        logger.log_turn("assistant", "first reply")
+        logger.log_message("user", "first message")
+        logger.log_message("assistant", "first reply")
         logger.end_session()
 
         original_logger = srv.session_logger
@@ -301,8 +301,8 @@ class TestSessionEndpoints:
         sessions_dir = tmp_path / "sessions"
         logger = SessionLogger(sessions_dir)
         session_id = logger.start_session()
-        logger.log_turn("user", "hello")
-        logger.log_turn("assistant", "world")
+        logger.log_message("user", "hello")
+        logger.log_message("assistant", "world")
         logger.end_session()
 
         original_logger = srv.session_logger
@@ -326,9 +326,9 @@ class TestSessionEndpoints:
         sessions_dir = tmp_path / "sessions"
         logger = SessionLogger(sessions_dir)
         session_id = logger.start_session()
-        logger.log_turn("user", "hello")
+        logger.log_message("user", "hello")
         logger.log_attempt("assistant", "partial stream", reason="failed")
-        logger.log_turn("assistant", "world")
+        logger.log_message("assistant", "world")
         logger.end_session()
 
         original_logger = srv.session_logger
@@ -368,13 +368,13 @@ class TestSessionEndpoints:
         sessions_dir = tmp_path / "sessions"
         logger = SessionLogger(sessions_dir)
         session_id = logger.start_session()
-        logger.log_turn("user", "earlier question")
-        logger.log_turn("assistant", "earlier answer")
+        logger.log_message("user", "earlier question")
+        logger.log_message("assistant", "earlier answer")
 
         original_logger = srv.session_logger
         original_run = srv.agent.run
 
-        def fake_run(message, history=None, confirm=False, pending_tool_calls=None, **_):
+        def fake_run(message, confirm=False, pending_tool_calls=None, **_):
             yield {"type": "text", "content": "follow-up-reply"}
             yield {"type": "done"}
 
@@ -402,8 +402,8 @@ class TestSessionEndpoints:
         sessions_dir = tmp_path / "sessions"
         logger = SessionLogger(sessions_dir)
         session_id = logger.start_session()
-        logger.log_turn("user", "hi")
-        logger.log_turn("assistant", "hello!")
+        logger.log_message("user", "hi")
+        logger.log_message("assistant", "hello!")
 
         original_logger = srv.session_logger
         srv.session_logger = logger

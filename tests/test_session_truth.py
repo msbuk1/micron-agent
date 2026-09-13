@@ -113,8 +113,9 @@ def test_agent_derives_history_from_log_not_side_channel(tmp_path):
     ])
 
     list(agent.run("question one"))
-    # A stale side-channel history must be ignored when the log is authority.
-    list(agent.run("question two", history=[{"role": "user", "content": "STALE"}]))
+    # Single history path: the second request's history comes from the
+    # log projection alone — there is no side-channel list to pollute it.
+    list(agent.run("question two"))
 
     second_request = backend.messages_history[1]
     model_msgs = [m for m in second_request if m["role"] != "system"]

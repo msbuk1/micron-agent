@@ -78,7 +78,7 @@ class FakeAgent:
         self.config = type("Config", (), {"provider": "fake", "model": "fake-model"})()
         self._events = []
 
-    def run(self, message, history=None, stream=True, confirm=False, pending_tool_calls=None):
+    def run(self, message, stream=True, confirm=False, pending_tool_calls=None):
         if confirm and pending_tool_calls:
             for tc in pending_tool_calls:
                 yield {"type": "tool_result", "name": tc.name, "call_id": tc.call_id, "summary": "done"}
@@ -137,7 +137,7 @@ class FakeLogger:
     def end_session(self):
         pass
 
-    def log_turn(self, role, content):
+    def log_message(self, role, content):
         self._turns.append({"role": role, "content": content})
 
     def list_sessions(self, n=10):
@@ -188,7 +188,7 @@ async def test_submit_message(tmp_path):
 @pytest.mark.asyncio
 async def test_submit_message_no_transport_side_logging(tmp_path):
     """The TUI never double-books: logging happens inside the agent's
-    truth path, not via transport-side log_turn calls (issue #25)."""
+    truth path, not via transport-side logging calls (issue #25)."""
     app = MicronTUI(make_factory(tmp_path), thread_workers=False)
     async with app.run_test() as pilot:
         await pilot.pause()

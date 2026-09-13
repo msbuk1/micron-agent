@@ -146,7 +146,6 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     message: str
-    history: list[dict] | None = None
     stream: bool = True
     confirm: bool = False
     pending_writes: list[dict] | None = None
@@ -216,7 +215,7 @@ async def undo_backup_file(request: UndoRequest):
     return _recovery_result(undo_file(request.path), "path", request.path)
 
 
-async def generate_sse(message, history, confirm=False, pending_writes=None):
+async def generate_sse(message, confirm=False, pending_writes=None):
     """Generate SSE events from agent response."""
     from micron.agent import ToolCall
     from micron.events import EventType
@@ -230,7 +229,7 @@ async def generate_sse(message, history, confirm=False, pending_writes=None):
             ) for i, w in enumerate(pending_writes)]
 
         # Forward every agent event as SSE — single loop, no type filtering
-        for chunk in agent.run(message, history=history, confirm=confirm, pending_tool_calls=calls):
+        for chunk in agent.run(message, confirm=confirm, pending_tool_calls=calls):
             event_type = chunk.get("type")
             if event_type == EventType.DONE:
                 continue  # handled in finally block
@@ -275,7 +274,7 @@ async def chat(request: ChatRequest, req: Request = None):
     # session log itself (truth path, issue #25).
     if request.stream:
         return StreamingResponse(
-            generate_sse(request.message, request.history, confirm=request.confirm, pending_writes=request.pending_writes),
+            generate_sse(request.message, confirm=request.confirm, pending_writes=request.pending_writes),
             media_type="text/event-stream",
         )
     else:
@@ -283,7 +282,7 @@ async def chat(request: ChatRequest, req: Request = None):
         try:
             from micron.events import process_events
             result = process_events(
-                agent.run(request.message, history=request.history,
+                agent.run(request.message,
                           confirm=request.confirm, pending_tool_calls=request.pending_writes),
             )
             # No transport-side logging (truth path, issue #25).
@@ -357,13 +356,13 @@ async def resume_session_endpoint(session_id: str, request: ResumeRequest):
     # No transport-side logging (truth path, issue #25).
     if request.stream:
         return StreamingResponse(
-            generate_sse(request.message, history),
+            generate_sse(request.message),
             media_type="text/event-stream",
         )
 
     from micron.events import process_events
     try:
-        result = process_events(agent.run(request.message, history=history))
+        result = process_events(agent.run(request.message))
         return {"response": result.text, "history": history}
     except Exception as e:
         return {"error": str(e), "response": ""}
