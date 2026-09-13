@@ -44,8 +44,8 @@ providers:
     api_key: no_key
     base_url: http://192.168.1.163:1234/v1
     # model: gemma-4-12b-it-qat
-    model: minicpm5-1b
-    # model: qwen/qwen3.5-9b
+    # model: minicpm5-1b
+    model: mistralai/ministral-3-14b-reasoning
     chat_format: gemmaml
 
   ollama:
