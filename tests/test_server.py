@@ -248,6 +248,38 @@ class TestSessionEndpoints:
         finally:
             srv.session_logger = original_logger
 
+    async def test_read_session_exposes_attempts(self, client, tmp_path, monkeypatch):
+        """Log-only attempts surface via the transcript path, never in turns."""
+        sessions_dir = tmp_path / "sessions"
+        logger = SessionLogger(sessions_dir)
+        session_id = logger.start_session()
+        logger.log_turn("user", "hello")
+        logger.log_attempt("assistant", "partial stream", reason="failed")
+        logger.log_turn("assistant", "world")
+        logger.end_session()
+
+        original_logger = srv.session_logger
+        srv.session_logger = logger
+        try:
+            resp = await client.get(f"/session/{session_id}")
+            assert resp.status_code == 200
+            data = resp.json()
+            # Attempts are separate from the model-visible transcript.
+            assert data["attempts"] == [{
+                "type": "attempt",
+                "role": "assistant",
+                "content": "partial stream",
+                "reason": "failed",
+                "timestamp": data["attempts"][0]["timestamp"],
+            }]
+            turns = data["turns"]
+            assert [t["content"] for t in turns] == ["hello", "world"]
+            # And they never enter the model history projection either.
+            history = logger.derive_messages(session_id)
+            assert all("partial stream" not in m["content"] for m in history)
+        finally:
+            srv.session_logger = original_logger
+
     async def test_read_session_not_found(self, client, tmp_path):
         sessions_dir = tmp_path / "sessions"
         logger = SessionLogger(sessions_dir)
@@ -351,7 +383,8 @@ class TestWebUI:
         body = resp.text
         assert "class EventRenderer" in body
         for method in ("text", "thinking", "tool_start", "tool_result",
-                       "tool_error", "confirmation_required", "error", "done"):
+                       "tool_pre", "tool_post", "tool_error",
+                       "confirmation_required", "error", "done"):
             assert method in body, f"EventRenderer missing {method} handler"
 
     async def test_index_has_no_inline_styles_or_scripts(self, client):

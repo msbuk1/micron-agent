@@ -237,6 +237,44 @@ class SessionLogger:
         """
         return self.derive_messages(session_id, max_messages=max_turns)
 
+    def fork_session(
+        self,
+        parent_id: str,
+        *,
+        max_messages: int | None = None,
+        child_id: str | None = None,
+    ) -> str:
+        """Fork a session into a child seeded purely from the log projection.
+
+        Reads the parent through :meth:`derive_messages` (the projection —
+        attempts and lifecycle entries never carry over), takes the last
+        ``max_messages`` settled messages as the prefix (``None`` = all),
+        and starts a new session whose header links back to the parent.
+        The parent log is never modified. Returns the child session id;
+        the child becomes the logger's current session.
+        """
+        prefix = self.derive_messages(parent_id, max_messages=max_messages)
+        if child_id is None:
+            child_id = datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")
+        self._session_id = child_id
+        self._current_file = self.sessions_dir / f"{child_id}.jsonl"
+        self._append({
+            "type": "session_start",
+            "id": child_id,
+            "timestamp": datetime.now().isoformat(),
+            "hostname": os.uname().nodename,
+            "format_version": FORMAT_VERSION,
+            "parent": parent_id,
+        })
+        for m in prefix:
+            self.log_message(
+                m["role"], m["content"],
+                tool_calls=m.get("tool_calls"),
+                tool_call_id=m.get("tool_call_id"),
+                name=m.get("name"),
+            )
+        return child_id
+
     def _append(self, entry: dict):
         """Append a JSON line to the current session file."""
         with open(self._current_file, "a") as f:

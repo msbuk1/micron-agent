@@ -186,6 +186,75 @@ def test_runtime_check_rejects_unlogged_model_visible_message(tmp_path):
     ])
 
 
+def test_fork_seeds_child_from_projection_at_boundary(tmp_path):
+    """Fork at a turn boundary: child derives the parent history prefix
+    via the projection only; parent log untouched."""
+    logger = SessionLogger(tmp_path / "sessions")
+    parent = logger.start_session()
+    logger.log_message("user", "q1")
+    logger.log_message("assistant", "a1")
+    logger.log_message("user", "q2")
+    logger.log_message("assistant", "a2")
+    before = (tmp_path / "sessions" / f"{parent}.jsonl").read_text()
+
+    child = logger.fork_session(parent, max_messages=2)
+    assert child != parent
+
+    # Child header links to the parent.
+    header = json.loads((tmp_path / "sessions" / f"{child}.jsonl").read_text().splitlines()[0])
+    assert header["parent"] == parent
+    assert header["format_version"] == FORMAT_VERSION
+
+    # Child projection is exactly the last-2 prefix of the parent's.
+    assert logger.derive_messages(child) == [
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    # Parent untouched.
+    assert (tmp_path / "sessions" / f"{parent}.jsonl").read_text() == before
+    assert logger.derive_messages(parent) == [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+
+
+def test_fork_excludes_attempts_but_parent_keeps_them(tmp_path):
+    """Demo: a session with a failed attempt forks into a child that
+    replays the conversation without the failure; the attempt stays
+    replayable from the parent log."""
+    logger = SessionLogger(tmp_path / "sessions")
+    parent = logger.start_session()
+    logger.log_message("user", "tell me a fact")
+    logger.log_attempt("assistant", "PARTIAL GARBAGE", reason="failed")
+    logger.log_message("assistant", "The sky is blue.")
+
+    child = logger.fork_session(parent)
+
+    child_derived = json.dumps(logger.derive_messages(child))
+    assert "PARTIAL GARBAGE" not in child_derived
+    assert logger.derive_messages(child) == [
+        {"role": "user", "content": "tell me a fact"},
+        {"role": "assistant", "content": "The sky is blue."},
+    ]
+    # Attempt still replayable from the parent's full log.
+    attempts = [e for e in logger.read_entries(parent) if e["type"] == "attempt"]
+    assert len(attempts) == 1 and attempts[0]["reason"] == "failed"
+    # And absent from the child's full log too.
+    assert not [e for e in logger.read_entries(child) if e["type"] == "attempt"]
+
+
+def test_fork_carries_tool_exchange_messages(tmp_path):
+    logger = SessionLogger(tmp_path / "sessions")
+    parent = logger.start_session()
+    logger.log_message("assistant", "", tool_calls=[{"id": "c1", "function": {"name": "echo", "arguments": "{}"}}])
+    logger.log_message("tool", "echo: hi", tool_call_id="c1", name="echo")
+
+    child = logger.fork_session(parent)
+    assert logger.derive_messages(child) == logger.derive_messages(parent)
+
+
 def test_tool_loop_messages_all_logged(tmp_path):
     """Assistant tool_calls + tool results commit as messages so the
     runtime check holds across a tool iteration."""

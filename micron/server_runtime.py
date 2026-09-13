@@ -74,14 +74,6 @@ class ServerRuntime:
             except Exception:
                 self.auth = AuthPolicy.disabled()
 
-    @classmethod
-    def load(cls, config_path: str | None = None, **overrides) -> "ServerRuntime":
-        cfg = Config(config_path=config_path)
-        rt = cfg.runtime()
-        if overrides:
-            rt = rt.replace(**overrides)
-        return cls(config=rt)
-
     @property
     def config(self) -> Config | None:
         return self._config

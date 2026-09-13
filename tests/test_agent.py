@@ -1,6 +1,5 @@
 """Tests for micron agent loop and write-tool confirmation flow."""
 import json
-import os
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -130,28 +129,23 @@ def test_write_tool_requires_confirmation():
         assert any(e["type"] == "confirmation_required" for e in events)
 
 
-def test_confirm_executes_write_call(tmpdir):
-    tmp_path = Path(tmpdir)
+def test_confirm_executes_write_call(tmp_path, monkeypatch):
     # Set workdir so write_file writes to the temp dir
-    import os
-    os.environ["MICRON_WORKDIR"] = str(tmp_path)
-    try:
-        agent, backend = make_agent(
-            tmp_path,
+    monkeypatch.setenv("MICRON_WORKDIR", str(tmp_path))
+    agent, backend = make_agent(
+        tmp_path,
+        [
             [
-                [
-                    LLMResponse(type="text", content="Wrote file."),
-                    LLMResponse(type="done"),
-                ]
-            ],
-        )
+                LLMResponse(type="text", content="Wrote file."),
+                LLMResponse(type="done"),
+            ]
+        ],
+    )
 
-        pending = [ToolCall(name="write_file", args={"path": "out.txt", "content": "confirmed"}, call_id="call_w2", is_write=True)]
-        events = list(agent.run("write it", confirm=True, pending_tool_calls=pending))
-        assert any(e["type"] == "tool_result" and e["name"] == "write_file" for e in events)
-        assert (tmp_path / "out.txt").read_text() == "confirmed"
-    finally:
-        os.environ.pop("MICRON_WORKDIR", None)
+    pending = [ToolCall(name="write_file", args={"path": "out.txt", "content": "confirmed"}, call_id="call_w2", is_write=True)]
+    events = list(agent.run("write it", confirm=True, pending_tool_calls=pending))
+    assert any(e["type"] == "tool_result" and e["name"] == "write_file" for e in events)
+    assert (tmp_path / "out.txt").read_text() == "confirmed"
 
 
 def test_loop_detection_stops_repeated_calls():
@@ -181,32 +175,27 @@ def test_text_tool_parsing_gated_by_provider():
         assert not any(e["type"] == "tool_result" for e in events)
 
 
-def test_local_provider_enables_text_parsing():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-        text = '<function name="read_file">{"path": "foo.txt"}[PROMPT_INJECTION]'
-        ctx = tmpdir / "context"
-        (ctx / "skills").mkdir(parents=True)
-        _read_tool_skill(ctx / "skills")
-        _write_tool_skill(ctx / "skills")
-        # Create target file so read_file succeeds
-        os.environ["MICRON_WORKDIR"] = str(tmpdir)
-        (tmpdir / "foo.txt").write_text("hello")
+def test_local_provider_enables_text_parsing(tmp_path, monkeypatch):
+    text = '<function name="read_file">{"path": "foo.txt"}[PROMPT_INJECTION]'
+    ctx = tmp_path / "context"
+    (ctx / "skills").mkdir(parents=True)
+    _read_tool_skill(ctx / "skills")
+    _write_tool_skill(ctx / "skills")
+    # Create target file so read_file succeeds
+    monkeypatch.setenv("MICRON_WORKDIR", str(tmp_path))
+    (tmp_path / "foo.txt").write_text("hello")
 
-        backend = FakeBackend([[LLMResponse(type="text", content=text), LLMResponse(type="done")]])
-        agent = create_agent(
-            context_dir=str(ctx),
-            provider="llamacpp",
-            model="fake.gguf",
-            llm_kwargs={"backend": backend},
-        )
-        agent.llm = backend
-        assert agent.use_text_tool_format is True
-        events = list(agent.run("parse me"))
-        assert any(e["type"] == "tool_result" for e in events)
-
-        # Reset workdir to project root after test
-        os.environ.pop("MICRON_WORKDIR", None)
+    backend = FakeBackend([[LLMResponse(type="text", content=text), LLMResponse(type="done")]])
+    agent = create_agent(
+        context_dir=str(ctx),
+        provider="llamacpp",
+        model="fake.gguf",
+        llm_kwargs={"backend": backend},
+    )
+    agent.llm = backend
+    assert agent.use_text_tool_format is True
+    events = list(agent.run("parse me"))
+    assert any(e["type"] == "tool_result" for e in events)
 
 
 def test_history_compression_preserves_tool_pairs():

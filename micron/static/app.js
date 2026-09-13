@@ -63,7 +63,8 @@ class EventRenderer {
     if (
       !this.lastMsg ||
       this.lastMsg.classList.contains("thinking") ||
-      this.lastMsg.classList.contains("tool-call")
+      this.lastMsg.classList.contains("tool-call") ||
+      this.lastMsg.classList.contains("tool-card")
     ) {
       this.lastMsg = this.addMsg("assistant", "");
     }
@@ -104,6 +105,31 @@ class EventRenderer {
         this.lastMsg.textContent = "🤔 " + this.thinkingBuffer;
       }
     }
+  }
+
+  tool_pre(ev) {
+    // Pipeline visibility (ADR 0008): a tool invocation reached pre-execute.
+    // Rendered as its own card so denials/short-circuits are visible even
+    // when no tool_result follows.
+    const args = Object.entries(ev.args || {})
+      .map(([k, v]) => k + "=" + String(v).slice(0, 60))
+      .join(", ");
+    this.lastMsg = this.addMsg(
+      "tool-card",
+      "▶ " + ev.name + "(" + args + ") — pre-execute"
+    );
+  }
+
+  tool_post(ev) {
+    // Pipeline visibility (ADR 0008): post-execute ran; show the (possibly
+    // listener-modified) result summary on its own card.
+    const summary = typeof ev.result === "string"
+      ? ev.result.slice(0, 200)
+      : JSON.stringify(ev.result || "").slice(0, 200);
+    this.lastMsg = this.addMsg(
+      "tool-card",
+      "✓ " + ev.name + " — post-execute" + (summary ? ": " + summary : "")
+    );
   }
 
   tool_error(ev) {

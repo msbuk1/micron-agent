@@ -1,7 +1,5 @@
 """Tests for write tool confirmation flow."""
 import json
-import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -70,214 +68,160 @@ def make_confirmation_agent(tmpdir: Path, responses: list[list[LLMResponse]]):
 class TestConfirmationRequired:
     """Tests for confirmation_required event emission."""
 
-    def test_write_tool_emits_confirmation_required(self):
+    def test_write_tool_emits_confirmation_required(self, tmp_path, monkeypatch):
         """Test that write tools emit confirmation_required event."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            old_workdir = os.environ.get("MICRON_WORKDIR")
-            os.environ["MICRON_WORKDIR"] = str(tmpdir)
-            
-            try:
-                agent, backend = make_confirmation_agent(
-                    tmpdir,
-                    [[
-                        LLMResponse(type="tool_call", tool_name="write_file", tool_args={"path": "test.txt", "content": "hello"}, tool_call_id="call_1"),
-                        LLMResponse(type="done"),
-                    ]],
-                )
+        monkeypatch.setenv("MICRON_WORKDIR", str(tmp_path))
 
-                events = list(agent.run("write a file"))
-                
-                # Check that confirmation_required event is emitted
-                confirmation_events = [e for e in events if e.get("type") == "confirmation_required"]
-                assert len(confirmation_events) > 0
-                
-                # Check that pending_writes is populated
-                assert "pending_writes" in confirmation_events[0]
-                pending_writes = confirmation_events[0]["pending_writes"]
-                assert len(pending_writes) > 0
-                
-                # Check that write_file is in pending writes
-                tool_names = [w.get("tool_name") for w in pending_writes]
-                assert "write_file" in tool_names
-            finally:
-                if old_workdir:
-                    os.environ["MICRON_WORKDIR"] = old_workdir
-                elif "MICRON_WORKDIR" in os.environ:
-                    del os.environ["MICRON_WORKDIR"]
+        agent, backend = make_confirmation_agent(
+            tmp_path,
+            [[
+                LLMResponse(type="tool_call", tool_name="write_file", tool_args={"path": "test.txt", "content": "hello"}, tool_call_id="call_1"),
+                LLMResponse(type="done"),
+            ]],
+        )
 
-    def test_confirmation_required_contains_tool_details(self):
+        events = list(agent.run("write a file"))
+
+        # Check that confirmation_required event is emitted
+        confirmation_events = [e for e in events if e.get("type") == "confirmation_required"]
+        assert len(confirmation_events) > 0
+
+        # Check that pending_writes is populated
+        assert "pending_writes" in confirmation_events[0]
+        pending_writes = confirmation_events[0]["pending_writes"]
+        assert len(pending_writes) > 0
+
+        # Check that write_file is in pending writes
+        tool_names = [w.get("tool_name") for w in pending_writes]
+        assert "write_file" in tool_names
+
+    def test_confirmation_required_contains_tool_details(self, tmp_path, monkeypatch):
         """Test that confirmation_required event contains tool details."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            old_workdir = os.environ.get("MICRON_WORKDIR")
-            os.environ["MICRON_WORKDIR"] = str(tmpdir)
-            
-            try:
-                agent, backend = make_confirmation_agent(
-                    tmpdir,
-                    [[
-                        LLMResponse(type="tool_call", tool_name="write_file", tool_args={"path": "test.txt", "content": "hello"}, tool_call_id="call_1"),
-                        LLMResponse(type="done"),
-                    ]],
-                )
+        monkeypatch.setenv("MICRON_WORKDIR", str(tmp_path))
 
-                events = list(agent.run("write a file"))
-                
-                confirmation_events = [e for e in events if e.get("type") == "confirmation_required"]
-                assert len(confirmation_events) > 0
-                
-                pending_writes = confirmation_events[0]["pending_writes"]
-                write_call = pending_writes[0]
-                
-                # Check that all required fields are present
-                assert "tool_name" in write_call
-                assert "args" in write_call
-                assert "call_id" in write_call
-                
-                # Check values
-                assert write_call["tool_name"] == "write_file"
-                assert "path" in write_call["args"]
-                assert "content" in write_call["args"]
-            finally:
-                if old_workdir:
-                    os.environ["MICRON_WORKDIR"] = old_workdir
-                elif "MICRON_WORKDIR" in os.environ:
-                    del os.environ["MICRON_WORKDIR"]
+        agent, backend = make_confirmation_agent(
+            tmp_path,
+            [[
+                LLMResponse(type="tool_call", tool_name="write_file", tool_args={"path": "test.txt", "content": "hello"}, tool_call_id="call_1"),
+                LLMResponse(type="done"),
+            ]],
+        )
 
-    def test_tool_start_events_emitted(self):
+        events = list(agent.run("write a file"))
+
+        confirmation_events = [e for e in events if e.get("type") == "confirmation_required"]
+        assert len(confirmation_events) > 0
+
+        pending_writes = confirmation_events[0]["pending_writes"]
+        write_call = pending_writes[0]
+
+        # Check that all required fields are present
+        assert "tool_name" in write_call
+        assert "args" in write_call
+        assert "call_id" in write_call
+
+        # Check values
+        assert write_call["tool_name"] == "write_file"
+        assert "path" in write_call["args"]
+        assert "content" in write_call["args"]
+
+    def test_tool_start_events_emitted(self, tmp_path, monkeypatch):
         """Test that tool_start events are also emitted for write tools."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            old_workdir = os.environ.get("MICRON_WORKDIR")
-            os.environ["MICRON_WORKDIR"] = str(tmpdir)
-            
-            try:
-                agent, backend = make_confirmation_agent(
-                    tmpdir,
-                    [[
-                        LLMResponse(type="tool_call", tool_name="write_file", tool_args={"path": "test.txt", "content": "hello"}, tool_call_id="call_1"),
-                        LLMResponse(type="done"),
-                    ]],
-                )
+        monkeypatch.setenv("MICRON_WORKDIR", str(tmp_path))
 
-                events = list(agent.run("write a file"))
-                
-                # Check for tool_start events
-                tool_start_events = [e for e in events if e.get("type") == "tool_start"]
-                assert len(tool_start_events) > 0
-                
-                # Check that write_file tool_start is present
-                tool_names = [e.get("name") for e in tool_start_events]
-                assert "write_file" in tool_names
-            finally:
-                if old_workdir:
-                    os.environ["MICRON_WORKDIR"] = old_workdir
-                elif "MICRON_WORKDIR" in os.environ:
-                    del os.environ["MICRON_WORKDIR"]
+        agent, backend = make_confirmation_agent(
+            tmp_path,
+            [[
+                LLMResponse(type="tool_call", tool_name="write_file", tool_args={"path": "test.txt", "content": "hello"}, tool_call_id="call_1"),
+                LLMResponse(type="done"),
+            ]],
+        )
+
+        events = list(agent.run("write a file"))
+
+        # Check for tool_start events
+        tool_start_events = [e for e in events if e.get("type") == "tool_start"]
+        assert len(tool_start_events) > 0
+
+        # Check that write_file tool_start is present
+        tool_names = [e.get("name") for e in tool_start_events]
+        assert "write_file" in tool_names
 
 
 class TestConfirmedWrites:
     """Tests for confirmed write execution."""
 
-    def test_confirmed_write_executes(self):
+    def test_confirmed_write_executes(self, tmp_path, monkeypatch):
         """Test that confirmed writes execute successfully."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            old_workdir = os.environ.get("MICRON_WORKDIR")
-            os.environ["MICRON_WORKDIR"] = str(tmpdir)
-            
-            try:
-                agent, backend = make_confirmation_agent(tmpdir, [])
+        monkeypatch.setenv("MICRON_WORKDIR", str(tmp_path))
 
-                pending = [
-                    ToolCall(
-                        name="write_file",
-                        args={"path": "confirmed.txt", "content": "test content"},
-                        call_id="call_confirm_1",
-                        is_write=True,
-                    )
-                ]
-                
-                # Run with confirm=True
-                events = list(agent.run("confirm write", confirm=True, pending_tool_calls=pending))
-                
-                # Check for tool_result event
-                tool_result_events = [e for e in events if e.get("type") == "tool_result"]
-                assert len(tool_result_events) > 0
-                
-                # Check that the write_file result is present
-                assert tool_result_events[0].get("name") == "write_file"
-            finally:
-                if old_workdir:
-                    os.environ["MICRON_WORKDIR"] = old_workdir
-                elif "MICRON_WORKDIR" in os.environ:
-                    del os.environ["MICRON_WORKDIR"]
+        agent, backend = make_confirmation_agent(tmp_path, [])
 
-    def test_confirmed_write_creates_file(self):
+        pending = [
+            ToolCall(
+                name="write_file",
+                args={"path": "confirmed.txt", "content": "test content"},
+                call_id="call_confirm_1",
+                is_write=True,
+            )
+        ]
+
+        # Run with confirm=True
+        events = list(agent.run("confirm write", confirm=True, pending_tool_calls=pending))
+
+        # Check for tool_result event
+        tool_result_events = [e for e in events if e.get("type") == "tool_result"]
+        assert len(tool_result_events) > 0
+
+        # Check that the write_file result is present
+        assert tool_result_events[0].get("name") == "write_file"
+
+    def test_confirmed_write_creates_file(self, tmp_path, monkeypatch):
         """Test that confirmed writes actually create files."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            old_workdir = os.environ.get("MICRON_WORKDIR")
-            os.environ["MICRON_WORKDIR"] = str(tmpdir)
-            
-            try:
-                agent, backend = make_confirmation_agent(tmpdir, [])
+        monkeypatch.setenv("MICRON_WORKDIR", str(tmp_path))
 
-                pending = [
-                    ToolCall(
-                        name="write_file",
-                        args={"path": "test_confirm.txt", "content": "confirmed content"},
-                        call_id="call_confirm_2",
-                        is_write=True,
-                    )
-                ]
-                
-                # Run with confirm=True
-                events = list(agent.run("confirm write", confirm=True, pending_tool_calls=pending))
-                
-                # Check that the file was created
-                test_file = tmpdir / "test_confirm.txt"
-                assert test_file.exists()
-                assert test_file.read_text() == "confirmed content"
-            finally:
-                if old_workdir:
-                    os.environ["MICRON_WORKDIR"] = old_workdir
-                elif "MICRON_WORKDIR" in os.environ:
-                    del os.environ["MICRON_WORKDIR"]
+        agent, backend = make_confirmation_agent(tmp_path, [])
+
+        pending = [
+            ToolCall(
+                name="write_file",
+                args={"path": "test_confirm.txt", "content": "confirmed content"},
+                call_id="call_confirm_2",
+                is_write=True,
+            )
+        ]
+
+        # Run with confirm=True
+        events = list(agent.run("confirm write", confirm=True, pending_tool_calls=pending))
+
+        # Check that the file was created
+        test_file = tmp_path / "test_confirm.txt"
+        assert test_file.exists()
+        assert test_file.read_text() == "confirmed content"
 
 
 class TestCancelledWrites:
     """Tests for cancelled write operations."""
 
-    def test_cancelled_write_no_confirmation(self):
+    def test_cancelled_write_no_confirmation(self, tmp_path, monkeypatch):
         """Test that writes without confirmation don't execute."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            old_workdir = os.environ.get("MICRON_WORKDIR")
-            os.environ["MICRON_WORKDIR"] = str(tmpdir)
-            
-            try:
-                agent, backend = make_confirmation_agent(
-                    tmpdir,
-                    [[
-                        LLMResponse(type="tool_call", tool_name="write_file", tool_args={"path": "cancelled.txt", "content": "should not appear"}, tool_call_id="call_cancel"),
-                        LLMResponse(type="done"),
-                    ]],
-                )
-                
-                # Run WITHOUT confirm=True (default is False)
-                events = list(agent.run("write a file"))
-                
-                # Should emit confirmation_required, not execute
-                confirmation_events = [e for e in events if e.get("type") == "confirmation_required"]
-                assert len(confirmation_events) > 0
-                
-                # File should NOT be created
-                cancelled_file = tmpdir / "cancelled.txt"
-                assert not cancelled_file.exists()
-            finally:
-                if old_workdir:
-                    os.environ["MICRON_WORKDIR"] = old_workdir
-                elif "MICRON_WORKDIR" in os.environ:
-                    del os.environ["MICRON_WORKDIR"]
+        monkeypatch.setenv("MICRON_WORKDIR", str(tmp_path))
+
+        agent, backend = make_confirmation_agent(
+            tmp_path,
+            [[
+                LLMResponse(type="tool_call", tool_name="write_file", tool_args={"path": "cancelled.txt", "content": "should not appear"}, tool_call_id="call_cancel"),
+                LLMResponse(type="done"),
+            ]],
+        )
+
+        # Run WITHOUT confirm=True (default is False)
+        events = list(agent.run("write a file"))
+
+        # Should emit confirmation_required, not execute
+        confirmation_events = [e for e in events if e.get("type") == "confirmation_required"]
+        assert len(confirmation_events) > 0
+
+        # File should NOT be created
+        cancelled_file = tmp_path / "cancelled.txt"
+        assert not cancelled_file.exists()

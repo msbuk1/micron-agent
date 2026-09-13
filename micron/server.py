@@ -308,16 +308,25 @@ async def list_sessions_endpoint(n: int = 20):
 
 @app.get("/session/{session_id}")
 async def read_session_endpoint(session_id: str):
-    """Read the turns of a single session."""
+    """Read the turns of a single session, plus log-only attempts.
+
+    ``turns`` are the model-visible messages (read_session projection);
+    ``attempts`` are failed/retried/cancelled streams recorded log-only
+    (issue #20) — exposed here for replay display, never part of history.
+    """
     if session_logger is None:
         raise HTTPException(status_code=503, detail="Session logging not configured")
     turns = session_logger.read_session(session_id)
+    attempts = [
+        e for e in session_logger.read_entries(session_id)
+        if e.get("type") == "attempt"
+    ]
     # read_session returns [] for both "missing file" and "empty session".
     # Distinguish the two so clients can show a clear 404 vs an empty session.
     session_file = session_logger.sessions_dir / f"{session_id}.jsonl"
     if not session_file.exists():
         raise HTTPException(status_code=404, detail="Session not found")
-    return {"id": session_id, "turns": turns}
+    return {"id": session_id, "turns": turns, "attempts": attempts}
 
 
 @app.post("/session/{session_id}/resume")

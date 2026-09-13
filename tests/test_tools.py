@@ -1,6 +1,5 @@
 """Tests for built-in tools: delete_file, edit_file, list_skills."""
 import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -10,18 +9,10 @@ from micron.tools.builtin import delete_file, edit_file, list_skills
 
 # Set up test environment
 @pytest.fixture
-def test_dir():
+def test_dir(tmp_path, monkeypatch):
     """Create a temporary directory for tests."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Set MICRON_WORKDIR to the temp directory
-        old_workdir = os.environ.get("MICRON_WORKDIR")
-        os.environ["MICRON_WORKDIR"] = tmpdir
-        yield Path(tmpdir)
-        # Restore original workdir
-        if old_workdir:
-            os.environ["MICRON_WORKDIR"] = old_workdir
-        elif "MICRON_WORKDIR" in os.environ:
-            del os.environ["MICRON_WORKDIR"]
+    monkeypatch.setenv("MICRON_WORKDIR", str(tmp_path))
+    yield tmp_path
 
 
 class TestDeleteFile:
