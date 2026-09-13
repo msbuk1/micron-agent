@@ -42,6 +42,7 @@ redefined here.
 | `ModelCatalog` | `micron/catalog.py` | `list(provider=None)->list[ModelEntry]`; `text(entries, active)->str`; `switch(agent, provider, model)->str` | Deep module owning live fetch (`/api/tags` vs `/models`), fallback chain, price/meta formatting, switch validation. Port `ModelSource.fetch(provider,cfg)->list[dict]` (Http vs Fake). `CommandDispatcher` + `ModelPickerScreen` are thin adapters. |
 | `Profiles` | `micron/profiles.py` | `build_composition(config, *, profile, home_patch, overlay_patch, provider, model, temperature, max_tokens) -> Composition`; `boot(composition, *, config, sessions=True) -> Boot`; `apply_patch_layer(rt, patch)`; `canonical_profile(name)` | One boot composition for every entry point (CLI one-shot, TUI, server, headless). Ordered patch layers apply deterministically: base (CLI flags) → profile patch → home (`profiles:` section of micron.yaml) → `--patch` overlay file; later layers replace whole rows by id or insert new rows, unknown rows raise. `--dump-config` prints the resolved composition (`api_key` redacted). `boot` delegates to `ServerRuntime` — no parallel loader (ADR 0005/0007); `sessions=False` (headless) skips the session logger. `Boot` carries `agent/sessions/limiter/auth/server_runtime`. |
 | `budget_join` | `micron/knowledge.py` | `budget_join(chunks, *, budget=8000, label="items", sep)->str` | Pure helper hiding budget + sentinel; used by `KnowledgeIndex.prompt_context` and `PromptBuilder._load_skill_instructions` (no new module). |
+| `TurnHooks` / `Inbox` | `micron/turns.py` | `TurnHooks.pre_step(message)->str|None` (rewrite or reject), `TurnHooks.should_stop()->bool`; `Inbox.inject(text)` / `drain()` | Turn/step lifecycle (issue #17). `agent.hooks` is replaceable; `agent.inject()` queues context that lands at the start of the next admitted request. Pass-through by default. |
 
 ## Event vocabulary
 
@@ -54,8 +55,20 @@ The agent yields events as plain dicts. The canonical names are
 - `tool_result` — tool returned successfully.
 - `tool_error` — tool raised.
 - `confirmation_required` — write tools have been parked awaiting user decision. Payload: `pending_writes: list[{tool_name, args, call_id}]`.
+- `tool_pre` / `tool_post` — waterfall pipeline visibility (ADR 0008).
+- `turn_start` / `turn_end` — turn lifecycle. A **turn** is zero or more **steps**; it opens before the first input is claimed and closes once nothing is owed. Payload: `turn_id` (and `reason: "rejected"` when a pre-step hook rejected the input).
+- `step_start` / `step_end` — step lifecycle. A **step** is one model request plus the tools it calls; steps are indexed from 0.
 - `error` — fatal agent error.
 - `done` — stream finished.
+
+Turn map (issue #17): `run(message)` opens a turn, claims `message`
+through `hooks.pre_step` (rewrite or reject — a rejected/empty first claim
+closes the turn with no step), then runs steps; `agent.inject(text)` queues
+context in the `Inbox` (`micron/turns.py`) that lands at the start of the
+next admitted request, never mid-stream; `hooks.should_stop()` ends the
+turn before the next step. CLI, TUI, and server deliberately ignore
+turn/step events — `process_events` is the single documented seam where
+transports skip them.
 
 The web UI (`micron/static/app.js`) renders these via an `EventRenderer`
 class — one method per event type — dispatched by the SSE consumer. The

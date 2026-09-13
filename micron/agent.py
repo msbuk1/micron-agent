@@ -12,6 +12,7 @@ from micron.prompt import PromptBuilder
 from micron.skills import SkillLoader
 from micron.text_tool_parser import TextToolCallParser
 from micron.tools.registry import ToolRegistry
+from micron.turns import Inbox, TurnHooks, new_turn_id
 
 
 def _availability_hint(backend, provider: str) -> str:
@@ -140,6 +141,7 @@ class MicronAgent:
         skills: SkillLoader | None = None,
         tools: ToolRegistry | None = None,
         prompt: PromptBuilder | None = None,
+        hooks: "TurnHooks | None" = None,
         **kwargs,
     ):
         # ── ergonomic C compat: MicronAgent(backend=FakeLLM, config=..., memory=...)
@@ -237,6 +239,10 @@ class MicronAgent:
         # Internal modules — not part of external seam
         self._loop = _LoopController(max_iterations=config.max_tool_iterations)
         self._compactor = _HistoryCompactor(keep_recent=8)
+        # Turn/step lifecycle (micron/turns.py): hooks are interceptable,
+        # inbox holds injected context until the next admitted request.
+        self.hooks = hooks if hooks is not None else TurnHooks()
+        self._inbox = Inbox()
 
     # Backward-compat shims: tests access agent._tool_history / _consecutive_failures directly
     # These proxy to _loop so both views stay in sync.
@@ -291,6 +297,35 @@ class MicronAgent:
     def run(
         self, message: str, history: list[dict] | None = None, stream: bool = True,
         confirm: bool = False, pending_tool_calls: list[ToolCall] | None = None,
+    ) -> Generator[dict, None, None]:
+        """Run one turn: explicit turn_start/turn_end around zero or more steps.
+
+        The wake ``message`` is claimed through the pre-step hook
+        (``self.hooks.pre_step``), which may rewrite it or reject it
+        (``None``/``""`` closes the turn with no step). Context added via
+        :meth:`inject` waits in the inbox and lands in the next admitted
+        request — never mid-stream.
+        """
+        turn_id = new_turn_id()
+        yield {"type": "turn_start", "turn_id": turn_id}
+        if not confirm:
+            claimed = self.hooks.pre_step(message)
+            if not claimed:
+                # Rejected/empty first claim — close the turn with no step.
+                yield {"type": "turn_end", "turn_id": turn_id, "reason": "rejected"}
+                yield {"type": "done"}
+                return
+            message = claimed
+        yield from self._run_turn(message, history, confirm, pending_tool_calls)
+        yield {"type": "turn_end", "turn_id": turn_id}
+
+    def inject(self, text: str) -> None:
+        """Queue context for the next admitted request (never mid-stream)."""
+        self._inbox.inject(text)
+
+    def _run_turn(
+        self, message: str, history: list[dict] | None,
+        confirm: bool, pending_tool_calls: list[ToolCall] | None,
     ) -> Generator[dict, None, None]:
         if not self.llm.is_available():
             yield {"type": "error", "message": "LLM backend not available."}
@@ -354,8 +389,13 @@ class MicronAgent:
         tool_iterations = 0
         tools_used_this_turn = False
         pending_calls: list[ToolCall] = []
+        step = 0
 
         while tool_iterations < self.config.max_tool_iterations:
+            # Turn-stopping hook: end the turn before the next step.
+            if self.hooks.should_stop():
+                break
+            yield {"type": "step_start", "step": step}
             full_text = ""
             pending_calls = []
             # TextToolCallParser owns the streaming buffer (one per iteration).
@@ -367,6 +407,11 @@ class MicronAgent:
                 if self.use_text_tool_format
                 else None
             )
+
+            # Injected context lands here — the start of the next admitted
+            # request, after any tool results have settled (never mid-stream).
+            for extra in self._inbox.drain():
+                messages.append({"role": "user", "content": extra})
 
             for response in self.llm.stream_chat(
                 messages=messages,
@@ -403,15 +448,18 @@ class MicronAgent:
                         )
                     break
                 elif response.type == "error":
+                    yield {"type": "step_end", "step": step}
                     yield {"type": "error", "message": response.content}
                     yield {"type": "done"}
                     return
 
             if not pending_calls:
+                yield {"type": "step_end", "step": step}
                 yield {"type": "done"}
                 return
 
             if self._loop.detect_loop(pending_calls):
+                yield {"type": "step_end", "step": step}
                 yield {"type": "error", "message": "Loop detected. Stopping."}
                 yield {"type": "done"}
                 return
@@ -488,6 +536,8 @@ class MicronAgent:
                     messages.append({"role": "user", "content": pivot})
 
                 tool_iterations += 1
+                step += 1
+                yield {"type": "step_end", "step": step - 1}
                 continue
 
             if write_calls:
@@ -514,6 +564,7 @@ class MicronAgent:
                     yield {"type": "tool_start", "name": tc.name, "call_id": tc.call_id, "args": tc.args}
 
                 tool_iterations += 1
+                yield {"type": "step_end", "step": step}
                 yield {"type": "done"}
                 return
 
@@ -741,7 +792,7 @@ def create_agent(**kwargs) -> MicronAgent:
     # Ergonomic factory — supports both legacy AgentConfig(**kwargs) and
     # direct injection: create_agent(backend=fake, memory=..., tools=...)
     # Extract injectable seams if provided as kwargs.
-    inject_keys = {"backend", "memory", "skills", "tools", "prompt"}
+    inject_keys = {"backend", "memory", "skills", "tools", "prompt", "hooks"}
     injected = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k in inject_keys}
     # Also handle llm_kwargs backend passed via Config-style call
     if "backend" not in injected and "llm_kwargs" in kwargs and isinstance(kwargs["llm_kwargs"], dict) and "backend" in kwargs["llm_kwargs"]:

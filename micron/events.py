@@ -19,6 +19,10 @@ class EventType:
     TOOL_ERROR = "tool_error"
     TOOL_PRE = "tool_pre"
     TOOL_POST = "tool_post"
+    TURN_START = "turn_start"
+    TURN_END = "turn_end"
+    STEP_START = "step_start"
+    STEP_END = "step_end"
     ERROR = "error"
     CONFIRMATION_REQUIRED = "confirmation_required"
     DONE = "done"
@@ -41,6 +45,10 @@ def process_events(
     on_tool_error: Callable[[str, str], None] | None = None,
     on_tool_pre: Callable[[str, str], None] | None = None,
     on_tool_post: Callable[[str, Any], None] | None = None,
+    on_turn_start: Callable[[str], None] | None = None,
+    on_turn_end: Callable[[str], None] | None = None,
+    on_step_start: Callable[[int], None] | None = None,
+    on_step_end: Callable[[int], None] | None = None,
     on_error: Callable[[str], None] | None = None,
     on_confirmation_required: Callable[[list[dict]], None] | None = None,
     on_done: Callable[[], None] | None = None,
@@ -59,6 +67,11 @@ def process_events(
         on_tool_error: Called with (tool_name, error_message).
         on_tool_pre: Called with (tool_name, call_id) at pre-execute.
         on_tool_post: Called with (tool_name, result) after post-execute.
+        on_turn_start / on_turn_end: Called with the turn id. CLI, TUI, and
+            server deliberately do not pass these — this function is the
+            single documented seam where turn/step lifecycle events are
+            ignored by transports (see micron/turns.py).
+        on_step_start / on_step_end: Called with the step index.
         on_error: Called with error message string.
         on_confirmation_required: Called with pending_writes list.
         on_done: Called when the generator ends.
@@ -99,6 +112,22 @@ def process_events(
         elif event_type == EventType.TOOL_POST:
             if on_tool_post:
                 on_tool_post(chunk["name"], chunk.get("result"))
+
+        elif event_type == EventType.TURN_START:
+            if on_turn_start:
+                on_turn_start(chunk.get("turn_id", ""))
+
+        elif event_type == EventType.TURN_END:
+            if on_turn_end:
+                on_turn_end(chunk.get("turn_id", ""))
+
+        elif event_type == EventType.STEP_START:
+            if on_step_start:
+                on_step_start(chunk.get("step", 0))
+
+        elif event_type == EventType.STEP_END:
+            if on_step_end:
+                on_step_end(chunk.get("step", 0))
 
         elif event_type == EventType.ERROR:
             if on_error:
