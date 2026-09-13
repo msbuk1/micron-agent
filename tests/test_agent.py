@@ -403,5 +403,168 @@ def test_listener_pipeline_events_visible_in_agent_stream():
         assert "tool_result" in types
 
 
+def test_final_iteration_nudge_injected(tmp_path):
+    """On the last allowed iteration the agent appends a wrap-up nudge."""
+    agent, _ = make_agent(
+        tmp_path,
+        [[
+            LLMResponse(type="tool_call", tool_name="read_file",
+                        tool_args={"path": "a.txt"}, tool_call_id="c1"),
+            LLMResponse(type="done", content=""),
+        ], [
+            LLMResponse(type="text", content="final answer"),
+            LLMResponse(type="done", content=""),
+        ]],
+    )
+    backend = agent.llm
+    agent.config.max_tool_iterations = 2
+    agent._loop.reset(max_iterations=2)
+    list(agent.run("hello"))
+    last_messages = backend.messages_history[-1]
+    assert any("final answer now" in (m.get("content") or "")
+               for m in last_messages), \
+        f"nudge missing in: {last_messages}"
+
+
+def test_nudge_present_with_single_iteration(tmp_path):
+    """With max_tool_iterations=1 the single call is also the last."""
+    agent, _ = make_agent(
+        tmp_path,
+        [[
+            LLMResponse(type="text", content="only answer"),
+            LLMResponse(type="done", content=""),
+        ]],
+    )
+    backend = agent.llm
+    agent.config.max_tool_iterations = 1
+    agent._loop.reset(max_iterations=1)
+    list(agent.run("hello"))
+    first_messages = backend.messages_history[0]
+    assert any("final answer now" in (m.get("content") or "")
+               for m in first_messages), \
+        f"nudge missing in: {first_messages}"
+
+
+def test_detect_alternating_pattern(tmp_path):
+    agent, _ = make_agent(tmp_path, [[LLMResponse(type="done", content="")]])
+    a = ToolCall(name="read_file", args={"path": "a.txt"}, call_id="1")
+    b = ToolCall(name="read_file", args={"path": "b.txt"}, call_id="2")
+    assert agent._loop.detect_loop([a]) is False
+    assert agent._loop.detect_loop([b]) is False
+    assert agent._loop.detect_loop([a]) is False
+    assert agent._loop.detect_loop([b]) is True  # A-B-A-B
+
+
+def test_varied_sequence_is_not_a_loop(tmp_path):
+    agent, _ = make_agent(tmp_path, [[LLMResponse(type="done", content="")]])
+    calls = [
+        ToolCall(name="read_file", args={"path": f"{p}.txt"}, call_id=str(i))
+        for i, p in enumerate(["a", "b", "c", "d"])
+    ]
+    for c in calls:
+        assert agent._loop.detect_loop([c]) is False
+
+
+def test_llm_retry_on_transient_failure(tmp_path):
+    agent, _ = make_agent(
+        tmp_path,
+        [[
+            LLMResponse(type="text", content="recovered"),
+            LLMResponse(type="done", content=""),
+        ]],
+    )
+    backend = agent.llm
+    orig = backend.stream_chat
+    calls = {"n": 0}
+
+    def flaky(messages, tools=None, temperature=0.1, max_tokens=2048):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("refused")
+        yield from orig(messages, tools=tools, temperature=temperature,
+                        max_tokens=max_tokens)
+
+    backend.stream_chat = flaky
+    events = list(agent.run("hello"))
+    assert not any(e["type"] == "error" for e in events)
+    assert any(e.get("content") == "recovered" for e in events
+               if e["type"] == "text")
+
+
+def test_mid_stream_failure_does_not_retry(tmp_path):
+    """Exception after the first chunk propagates — single attempt, no retry.
+
+    Neither run() nor _run_with_messages catches backend exceptions (the
+    response.type == "error" branch only handles backend-returned error
+    responses), so a mid-stream failure surfaces to the caller after the
+    already-yielded text. The lock: exactly one backend call, partial text
+    yielded exactly once.
+    """
+    import pytest
+    agent, _ = make_agent(
+        tmp_path,
+        [[LLMResponse(type="done", content="")]],
+    )
+    backend = agent.llm
+    calls = {"n": 0}
+
+    def flaky_mid_stream(messages, tools=None, temperature=0.1, max_tokens=2048):
+        calls["n"] += 1
+        yield LLMResponse(type="text", content="partial")
+        raise ConnectionError("dropped mid-stream")
+
+    backend.stream_chat = flaky_mid_stream
+    events: list[dict] = []
+    with pytest.raises(ConnectionError):
+        for e in agent.run("hello"):
+            events.append(e)
+    assert calls["n"] == 1
+    assert sum(1 for e in events if e["type"] == "text"
+               and e.get("content") == "partial") == 1
+
+
+def test_tool_timeout_yields_tool_error(tmp_path):
+    """A hung read tool surfaces as tool_error, not a hung loop."""
+    import time
+    agent, _ = make_agent(
+        tmp_path,
+        [[LLMResponse(type="tool_call", tool_name="slow_read",
+                      tool_args={}, tool_call_id="c1"),
+          LLMResponse(type="done", content="")]],
+    )
+    def slow_read():
+        time.sleep(30)
+        return "too late"
+    agent.tools.register(name="slow_read", func=slow_read,
+                         description="slow",
+                         parameters={"type": "object", "properties": {}})
+    agent.config.tool_timeout = 0.2
+    events = list(agent.run("go slow"))
+    errors = [e for e in events if e["type"] == "tool_error"]
+    assert any("timed out" in e.get("error", "") for e in errors), \
+        f"expected timeout tool_error, got: {events}"
+
+
+def test_model_timeout_arg_does_not_crash(tmp_path):
+    """A model-supplied `timeout` arg (like run_command's own) must not
+    collide with the agent's injected timeout — model value wins."""
+    agent, _ = make_agent(
+        tmp_path,
+        [[LLMResponse(type="tool_call", tool_name="echo_timeout",
+                      tool_args={"timeout": 5}, tool_call_id="c1"),
+          LLMResponse(type="done", content="")],
+         [LLMResponse(type="text", content="ok"),
+          LLMResponse(type="done", content="")]],
+    )
+    agent.tools.register(name="echo_timeout",
+                         func=lambda timeout=30: f"timeout={timeout}",
+                         description="echo",
+                         parameters={"type": "object",
+                                     "properties": {"timeout": {"type": "integer"}}})
+    events = list(agent.run("echo"))
+    assert not any(e["type"] == "error" for e in events)
+    assert any(e["type"] == "tool_result" for e in events)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

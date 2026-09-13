@@ -42,24 +42,53 @@ class AgentConfig:
     temperature: float = 0.1
     max_tokens: int = 2048
     max_tool_iterations: int = 8
+    tool_timeout: float = 120.0
     use_text_tool_parsing: bool = False
+    llm_retries: int = 2
+    llm_retry_base_delay: float = 0.25
+    history_keep_recent: int = 8
     llm_kwargs: dict = field(default_factory=dict)
 
 
 # ── internal modules (not part of external seam) ───────────────────────
 
+FINAL_ITERATION_NUDGE = (
+    "This is your FINAL tool iteration. You MUST produce a final answer now — "
+    "do not call more tools. Summarize what you found and answer the user."
+)
+
 class _HistoryCompactor:
-    """Pure history compression — mirrors previous _compress_history."""
+    """Pure history compression — extractive, token-aware, recursive.
 
-    def __init__(self, keep_recent: int = 8):
+    Token budget (~4 chars/token heuristic) is the primary trigger; message
+    count is a backstop. If one summarize pass still exceeds budget, recurse
+    (max_depth) on the already-compressed output. Stays extractive — no LLM
+    call inside the loop, so no new failure modes.
+    """
+
+    def __init__(self, keep_recent: int = 8, max_tokens: int = 6000,
+                 max_depth: int = 3):
         self.keep_recent = keep_recent
+        self.max_tokens = max_tokens
+        self.max_depth = max_depth
 
-    def compress(self, history: list[dict], keep_recent: int | None = None) -> list[dict]:
+    @staticmethod
+    def _tokens(msgs: list[dict]) -> int:
+        total = 0
+        for m in msgs:
+            total += len(str(m.get("content") or "")) // 4
+            for tc in m.get("tool_calls") or []:
+                total += len(str(tc)) // 4
+        return total
+
+    def compress(self, history: list[dict], keep_recent: int | None = None,
+                 _depth: int = 0) -> list[dict]:
         keep = keep_recent if keep_recent is not None else self.keep_recent
-        if len(history) <= keep:
+        if len(history) <= keep and self._tokens(history) <= self.max_tokens:
             return history
-        old = history[:-keep]
-        recent = history[-keep:]
+        split = max(1, len(history) - keep)
+        old = history[:-keep] if len(history) > keep else history[:split]
+        recent = history[-keep:] if len(history) > keep else history[split:]
         parts: list[str] = []
         for msg in old:
             role = msg["role"]
@@ -74,10 +103,16 @@ class _HistoryCompactor:
                 content = content[:200] + "..."
             parts.append(f"{role}: {content}")
         summary = "Previous conversation summary:\n" + "\n".join(parts)
-        return [{"role": "user", "content": summary}] + recent
+        out = [{"role": "user", "content": summary}] + recent
+        if (_depth < self.max_depth and len(out) > 2
+                and self._tokens(out) > self.max_tokens):
+            return self.compress(out, keep_recent=keep, _depth=_depth + 1)
+        return out
 
     def should_compress(self, history: list[dict] | None) -> bool:
-        return bool(history and len(history) > 12)
+        if not history:
+            return False
+        return len(history) > 12 or self._tokens(history) > self.max_tokens
 
 
 class _LoopController:
@@ -102,6 +137,19 @@ class _LoopController:
         if len(fingerprints) != len(set(fingerprints)):
             return True
         self.tool_history.extend(fingerprints)
+        # NOTE: no text-monologue counter. Zero tool calls yields done+return,
+        # so text-only output cannot infinite-loop in this architecture.
+        # Short alternating pattern: A-B-A-B (needs only 4 entries).
+        if len(self.tool_history) >= 4:
+            last4 = self.tool_history[-4:]
+            if (len(set(last4)) == 2 and last4[0] == last4[2]
+                    and last4[1] == last4[3]):
+                return True
+        # Rotation: A-B-C-A-B-C.
+        if len(self.tool_history) >= 6:
+            last6 = self.tool_history[-6:]
+            if last6[:3] == last6[3:] and len(set(last6)) == 3:
+                return True
         if len(self.tool_history) >= 6:
             last6 = self.tool_history[-6:]
             if len(set(last6)) <= 2:
@@ -192,7 +240,11 @@ class MicronAgent:
                     temperature=config.temperature,
                     max_tokens=config.max_tokens,
                     max_tool_iterations=config.max_tool_iterations,
+                    tool_timeout=config.tool_timeout,
                     use_text_tool_parsing=config.use_text_tool_parsing,
+                    llm_retries=config.llm_retries,
+                    llm_retry_base_delay=config.llm_retry_base_delay,
+                    history_keep_recent=config.history_keep_recent,
                     llm_kwargs={k: v for k, v in config.llm_kwargs.items() if k != "backend"},
                 )
             except Exception:
@@ -249,7 +301,8 @@ class MicronAgent:
         self._load_plugins()
         # Internal modules — not part of external seam
         self._loop = _LoopController(max_iterations=config.max_tool_iterations)
-        self._compactor = _HistoryCompactor(keep_recent=8)
+        self._compactor = _HistoryCompactor(
+            keep_recent=getattr(config, "history_keep_recent", 8))
         # Turn/step lifecycle (micron/turns.py): hooks are interceptable,
         # inbox holds injected context until the next admitted request.
         self.hooks = hooks if hooks is not None else TurnHooks()
@@ -424,6 +477,31 @@ class MicronAgent:
 
         yield from self._run_with_messages(messages)
 
+    def _stream_chat_with_retry(self, messages, tools, temperature, max_tokens):
+        """Yield from llm.stream_chat, retrying transient failures.
+
+        Retries only when NOTHING was yielded yet in this attempt (setup-time
+        failure). Mid-stream failures propagate as error events as today —
+        already-yielded text cannot be unsent.
+        """
+        import time as _time
+        delay = self.config.llm_retry_base_delay
+        for attempt in range(self.config.llm_retries + 1):
+            yielded_anything = False
+            try:
+                for response in self.llm.stream_chat(
+                    messages=messages, tools=tools,
+                    temperature=temperature, max_tokens=max_tokens,
+                ):
+                    yielded_anything = True
+                    yield response
+                return
+            except Exception:
+                if yielded_anything or attempt >= self.config.llm_retries:
+                    raise
+                _time.sleep(delay)
+                delay *= 2
+
     def _run_with_messages(self, messages: list[dict], skip_write_confirm: bool = False) -> Generator[dict, None, None]:
         """Run the tool loop with pre-built messages.
 
@@ -466,8 +544,12 @@ class MicronAgent:
                 # must be reconstructable from the session log.
                 self._verify_projection(messages)
 
-                for response in self.llm.stream_chat(
-                    messages=messages,
+                if tool_iterations == self.config.max_tool_iterations - 1:
+                    llm_messages = messages + [{"role": "user", "content": FINAL_ITERATION_NUDGE}]
+                else:
+                    llm_messages = messages
+                for response in self._stream_chat_with_retry(
+                    messages=llm_messages,
                     tools=self.tools.schemas(),
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,
@@ -553,8 +635,15 @@ class MicronAgent:
                     for tc in read_calls:
                         pipeline_events: list[dict] = []
                         try:
+                            # Outer timeout (agent-loop tunables): a model-supplied
+                            # `timeout` arg wins via setdefault — never crashes
+                            # with duplicate kwargs, never leaks into tool
+                            # signatures (the registry pops and enforces it).
+                            call_kwargs = dict(tc.args)
+                            call_kwargs.setdefault("timeout", self.config.tool_timeout)
                             result = self.tools.call(
-                                tc.name, _emit=pipeline_events.append, _call_id=tc.call_id, **tc.args
+                                tc.name, _emit=pipeline_events.append,
+                                _call_id=tc.call_id, **call_kwargs
                             )
                         except Exception as e:
                             friendly = self._friendly_error(tc.name, e)
@@ -663,8 +752,11 @@ class MicronAgent:
         for tc in calls:
             pipeline_events: list[dict] = []
             try:
+                call_kwargs = dict(tc.args)
+                call_kwargs.setdefault("timeout", self.config.tool_timeout)
                 result = self.tools.call(
-                    tc.name, _emit=pipeline_events.append, _call_id=tc.call_id, **tc.args
+                    tc.name, _emit=pipeline_events.append,
+                    _call_id=tc.call_id, **call_kwargs
                 )
             except Exception as e:
                 friendly = self._friendly_error(tc.name, e)
@@ -731,6 +823,18 @@ class MicronAgent:
                     "model-visible message not reconstructable from session "
                     f"log: {key[:200]}"
                 )
+
+    def _call_tool(self, tc: ToolCall):
+        """Execute one tool call with the configured outer timeout.
+
+        `setdefault` (not blind injection): a model-supplied `timeout` arg
+        — e.g. run_command's own timeout parameter — wins, so we never crash
+        with duplicate kwargs. The registry pops `timeout` and enforces it
+        as an outer cap; it never leaks into tool signatures.
+        """
+        kwargs = dict(tc.args)
+        kwargs.setdefault("timeout", self.config.tool_timeout)
+        return self.tools.call(tc.name, **kwargs)
 
     def _friendly_error(self, tool_name: str, error: Exception) -> str:
         """Convert a tool error into a user-friendly message."""

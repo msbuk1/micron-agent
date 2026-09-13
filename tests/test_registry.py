@@ -123,7 +123,6 @@ def test_auto_detect_required():
     assert set(tool.parameters["required"]) == {"a", "b"}
 
 
-# ---------------------------------------------------------------------------
 # Waterfall pipeline (pre/post-execute with next()/short-circuit)
 # ---------------------------------------------------------------------------
 
@@ -256,6 +255,22 @@ def test_listener_chain_order():
     registry.add_listener(_Tag("inner"))
     registry.call("add", a=1, b=1)
     assert order == ["pre:outer", "pre:inner"]
+
+
+def test_tool_call_timeout():
+    import time
+
+    import pytest
+
+    reg = ToolRegistry()
+
+    def slow():
+        time.sleep(5)
+        return "done"
+
+    reg.register("slow", slow, "Slow tool", {"type": "object", "properties": {}})
+    with pytest.raises(TimeoutError, match="timed out"):
+        reg.call("slow", timeout=0.2)
 
 
 if __name__ == "__main__":

@@ -74,14 +74,19 @@ class ToolRegistry:
         Emits pipeline events via ``_emit`` (when given):
         ``tool_pre`` before pre-execute, ``tool_post`` after post-execute,
         and ``tool_error`` when a pre-execute listener short-circuits.
+
+        A ``timeout`` kwarg is popped and enforced as an outer cap on the
+        tool execution; it never leaks into tool signatures.
         """
+        timeout = kwargs.pop("timeout", None)
         tool = self._tools.get(name)
         if tool is None:
             raise ValueError(f"Tool not found: {name}")
-        return self._run_pipeline(tool, _emit=_emit, _call_id=_call_id, **kwargs)
+        return self._run_pipeline(tool, _emit=_emit, _call_id=_call_id,
+                                  _timeout=timeout, **kwargs)
 
     def _run_pipeline(self, tool: Tool, *, _emit: Callable[[dict], None] | None,
-                      _call_id: str, **kwargs) -> Any:
+                      _call_id: str, _timeout: float | None = None, **kwargs) -> Any:
         """Run one resolved tool through the listener chain.
 
         Split from :meth:`call` so scoped views can route out-of-scope
@@ -101,7 +106,7 @@ class ToolRegistry:
             executed = True
             # Execute with invocation.args (pre-execute listeners may
             # rewrite them — e.g. SandboxListener argv-wrapping).
-            return tool.func(**invocation.args)
+            return self._execute_with_timeout(tool, invocation.args, _timeout)
 
         result = self._listeners.run_pre(invocation, execute)
 
@@ -115,6 +120,25 @@ class ToolRegistry:
         result = self._listeners.run_post(invocation, result)
         emit({"type": "tool_post", "name": name, "call_id": _call_id, "result": result})
         return result
+
+    @staticmethod
+    def _execute_with_timeout(tool: Tool, args: dict, timeout: float | None) -> Any:
+        """Run the tool function, enforcing ``timeout`` as an outer cap."""
+        if timeout is None:
+            return tool.func(**args)
+        import concurrent.futures
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            future = executor.submit(tool.func, **args)
+            try:
+                return future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                raise TimeoutError(
+                    f"Tool '{tool.name}' timed out after {timeout}s"
+                ) from None
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
@@ -225,4 +249,6 @@ class ScopedToolRegistry(ToolRegistry):
         tool = self._tools.get(name) or self._parent.get(name)
         if tool is None:
             raise ValueError(f"Tool not found: {name}")
-        return self._run_pipeline(tool, _emit=_emit, _call_id=_call_id, **kwargs)
+        timeout = kwargs.pop("timeout", None)
+        return self._run_pipeline(tool, _emit=_emit, _call_id=_call_id,
+                                  _timeout=timeout, **kwargs)

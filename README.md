@@ -65,6 +65,16 @@ providers:
     model: openrouter/auto
 ```
 
+Agent loop tunables (top-level keys in `micron.yaml`, or `MICRON_*` env vars):
+
+```yaml
+max_tool_iterations: 10   # hard cap on tool-call rounds per turn
+tool_timeout: 120.0       # seconds before a hung tool call is killed (MICRON_TOOL_TIMEOUT)
+llm_retries: 2            # retries for transient LLM failures, setup-time only (MICRON_LLM_RETRIES)
+llm_retry_base_delay: 0.25  # first backoff delay in seconds, doubles per retry
+history_keep_recent: 8    # recent messages kept verbatim when compressing history (MICRON_HISTORY_KEEP_RECENT)
+```
+
 API keys live in `auth.yaml` (gitignored) so `micron.yaml` stays shareable.
 It is merged over `micron.yaml` per-provider, so only the key needs to be
 listed. Copy `auth.example.yaml` → `auth.yaml` and fill in the values:
