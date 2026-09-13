@@ -1,10 +1,15 @@
 """Tool registry — manages tool registration and execution."""
 import inspect
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from micron.error_format import format_error
-from micron.tools.pipeline import ListenerRegistry, ToolInvocation, ToolListener
+from micron.tools.pipeline import (
+    ListenerRegistry,
+    ToolInvocation,
+    ToolListener,
+    ToolScopeListener,
+)
 
 
 @dataclass
@@ -70,8 +75,20 @@ class ToolRegistry:
         ``tool_pre`` before pre-execute, ``tool_post`` after post-execute,
         and ``tool_error`` when a pre-execute listener short-circuits.
         """
-        if name not in self._tools:
+        tool = self._tools.get(name)
+        if tool is None:
             raise ValueError(f"Tool not found: {name}")
+        return self._run_pipeline(tool, _emit=_emit, _call_id=_call_id, **kwargs)
+
+    def _run_pipeline(self, tool: Tool, *, _emit: Callable[[dict], None] | None,
+                      _call_id: str, **kwargs) -> Any:
+        """Run one resolved tool through the listener chain.
+
+        Split from :meth:`call` so scoped views can route out-of-scope
+        (but parent-known) calls through the same pipeline — the scope
+        listener owns the denial (ADR 0008), not an if-check here.
+        """
+        name = tool.name
         emit = _emit or (lambda ev: None)
         invocation = ToolInvocation(name=name, args=dict(kwargs), call_id=_call_id)
 
@@ -82,7 +99,9 @@ class ToolRegistry:
         def execute() -> Any:
             nonlocal executed
             executed = True
-            return self._tools[name].func(**kwargs)
+            # Execute with invocation.args (pre-execute listeners may
+            # rewrite them — e.g. SandboxListener argv-wrapping).
+            return tool.func(**invocation.args)
 
         result = self._listeners.run_pre(invocation, execute)
 
@@ -135,3 +154,75 @@ class ToolRegistry:
             }
             for t in self._tools.values()
         ]
+
+
+class ScopedToolRegistry(ToolRegistry):
+    """Isolated view over a parent ToolRegistry (issue #18).
+
+    One session/agent can run with a different capability set than the
+    global registry (plan mode, a reduced subagent toolset) while the
+    parent keeps the full set. The view shares the parent's ``Tool``
+    objects — one definition, many scopes — and enforces the boundary in
+    the waterfall pipeline via ``ToolScopeListener`` (ADR 0008), so
+    out-of-scope calls are denied at pre-execute even if the model
+    hallucinates them. Prompt assembly and ``stream_chat(tools=...)``
+    only ever see in-scope schemas because they read from this view.
+
+    The view is a snapshot of the parent at construction; listeners present
+    on the parent at that moment are inherited (scope listener outermost)
+    so policy listeners like ``CommandPolicyListener`` still apply inside
+    the scope.
+    """
+
+    def __init__(self, parent: ToolRegistry, tools: Iterable[str]):
+        super().__init__()
+        self._parent = parent
+        requested = list(tools)
+        known = {t.name for t in parent.all()}
+        unknown = sorted(set(requested) - known)
+        if unknown:
+            raise ValueError(
+                f"Unknown tool(s) in scope: {unknown}. "
+                f"Parent registry has: {sorted(known)}"
+            )
+        for name in requested:
+            self._tools[name] = parent.get(name)
+        # Scope boundary first (outermost — sees every call before any
+        # policy listener), then the parent's inherited listeners.
+        self.add_listener(ToolScopeListener(set(requested)))
+        for listener in parent.listeners.all():
+            self.add_listener(listener)
+
+    def register(
+        self,
+        name: str,
+        func: Callable,
+        description: str,
+        parameters: dict,
+        write: bool = False,
+    ):
+        """Register a tool — scope is a capability boundary, so only
+        in-scope names may be (re-)registered, and the write goes to the
+        parent registry to keep the two views in sync."""
+        if name not in self._tools:
+            raise ValueError(
+                f"Cannot register '{name}' outside this registry's scope "
+                f"({sorted(self._tools)}). Register it on the parent registry."
+            )
+        self._parent.register(name, func, description, parameters, write)
+        self._tools[name] = self._parent.get(name)
+
+    def call(self, name: str, *, _emit: Callable[[dict], None] | None = None,
+             _call_id: str = "", **kwargs) -> Any:
+        """Execute a tool through this view's waterfall pipeline.
+
+        Out-of-scope names resolve against the parent and still flow
+        through the pipeline, where ``ToolScopeListener`` (outermost)
+        denies them — enforcement lives in the pipeline, not in an
+        if-check at the call site. Names unknown to both registries raise
+        ``ValueError`` as usual.
+        """
+        tool = self._tools.get(name) or self._parent.get(name)
+        if tool is None:
+            raise ValueError(f"Tool not found: {name}")
+        return self._run_pipeline(tool, _emit=_emit, _call_id=_call_id, **kwargs)

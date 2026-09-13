@@ -19,6 +19,7 @@ import json
 from dataclasses import dataclass, field
 
 from micron.config import Config, RuntimeConfig
+from micron.tools.registry import ScopedToolRegistry, ToolRegistry
 
 # ── Patch layers ─────────────────────────────────────────────────────────
 
@@ -76,6 +77,62 @@ def canonical_profile(name: str | None) -> str:
             f"Unknown profile: {name!r}. Known profiles: {sorted(PROFILE_PATCHES)}"
         )
     return canonical
+
+
+# ── Agent presets (tool scope) ───────────────────────────────────────────
+
+@dataclass(frozen=True)
+class AgentPreset:
+    """Named agent composition: a tool scope over the global registry.
+
+    ``tools=None`` means the full set (the default session keeps every
+    tool). A tool tuple composes a ``ScopedToolRegistry`` view — scoping
+    is a first-class composition input, not a filter hacked into the
+    prompt (issue #18). Enforcement lives in the waterfall pipeline.
+    """
+
+    name: str
+    tools: tuple[str, ...] | None = None
+
+
+#: Per-preset tool scopes. A preset only names the tools that distinguish
+#: it from the full set; unknown names fail loudly at composition time.
+AGENT_PRESETS: dict[str, AgentPreset] = {
+    # Default session — the full registry, no scoping.
+    "default": AgentPreset("default"),
+    # Plan mode — read/search only: no writes, no shell, no network mutation.
+    "plan": AgentPreset(
+        "plan",
+        tools=(
+            "read_file",
+            "list_files",
+            "tree",
+            "search_knowledge",
+            "search_memory",
+        ),
+    ),
+}
+
+
+def compose_tools(registry: ToolRegistry, preset: AgentPreset | str | None) -> ToolRegistry:
+    """Compose the tool registry for an agent preset.
+
+    Full-set presets (and ``None``) return the registry as-is; scoped
+    presets return a ``ScopedToolRegistry`` view over it. Accepts a preset
+    name for ergonomic use; unknown names raise ``ValueError``.
+    """
+    if preset is None:
+        return registry
+    if isinstance(preset, str):
+        if preset not in AGENT_PRESETS:
+            raise ValueError(
+                f"Unknown agent preset: {preset!r}. "
+                f"Known presets: {sorted(AGENT_PRESETS)}"
+            )
+        preset = AGENT_PRESETS[preset]
+    if preset.tools is None:
+        return registry
+    return ScopedToolRegistry(registry, preset.tools)
 
 
 # ── Composition ──────────────────────────────────────────────────────────

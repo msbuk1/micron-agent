@@ -99,6 +99,29 @@ class ListenerRegistry:
         return call
 
 
+class ToolScopeListener(ToolListener):
+    """Pre-execute listener enforcing a per-agent tool scope (issue #18).
+
+    A scoped registry view only *advertises* in-scope schemas, but the
+    model can still hallucinate a call to an out-of-scope tool. This
+    listener denies such calls at the pipeline enforcement point (ADR 0008
+    — "tool allowlists are a listener, not a change to every tool body"):
+    it short-circuits without calling ``next()``, so the tool never runs
+    and the denial renders as an ordinary ``tool_error`` via ``ErrorFormat``.
+    """
+
+    def __init__(self, allowed: set[str]):
+        self.allowed = set(allowed)
+
+    def pre_execute(self, invocation: ToolInvocation, next: Callable[[], Any]) -> Any:
+        if invocation.name not in self.allowed:
+            return (
+                f"Tool '{invocation.name}' is not available in this session. "
+                f"Allowed tools: {', '.join(sorted(self.allowed))}"
+            )
+        return next()
+
+
 class CommandPolicyListener(ToolListener):
     """Pre-execute listener routing ``run_command`` through ``CommandPolicy``.
 
@@ -115,4 +138,27 @@ class CommandPolicyListener(ToolListener):
         decision = evaluate_command(invocation.args.get("cmd", ""))
         if isinstance(decision, Deny):
             return decision.reason
+        return next()
+
+
+class SandboxListener(ToolListener):
+    """Pre-execute listener applying sandbox confinement once, before spawn.
+
+    When the execution world (:mod:`micron.execution`) is not ``local``,
+    ``run_command``'s argv is wrapped through ``world.sandbox_wrap`` here —
+    a single wrap point in the pipeline, never per-tool. Local worlds
+    pass through untouched.
+    """
+
+    def pre_execute(self, invocation: ToolInvocation, next: Callable[[], Any]) -> Any:
+        if invocation.name != "run_command":
+            return next()
+        from micron.execution import get_world
+
+        world = get_world()
+        if world.name == "local":
+            return next()
+        cmd = invocation.args.get("cmd")
+        if isinstance(cmd, str):
+            invocation.args["cmd"] = world.sandbox_wrap(cmd)
         return next()

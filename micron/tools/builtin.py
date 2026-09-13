@@ -77,23 +77,18 @@ def _get_trash_dir() -> Path:
     return d
 
 
-# ── WorkspaceFS singleton — adapters delegate here ─────────────────────
-_workspace_singleton = None
-_workspace_env_snapshot = None
+# ── Execution seam — adapters resolve through micron.execution ─────────
 
 
 def _ws():
-    """Return singleton WorkspaceFS bound to current MICRON_WORKDIR."""
-    global _workspace_singleton, _workspace_env_snapshot
-    # Use _get_workdir() as source of truth (handles env + Config fallback + cache)
-    wd = _get_workdir()
-    snap = str(wd)
-    if _workspace_singleton is None or _workspace_env_snapshot != snap:
-        from micron.workspace import WorkspaceFS
+    """Return the execution world's filesystem view (WorkspaceFS locally).
 
-        _workspace_singleton = WorkspaceFS(root=wd)
-        _workspace_env_snapshot = snap
-    return _workspace_singleton
+    Resolves through the unified execution seam (micron.execution) so
+    file tools follow the configured provider.
+    """
+    from micron.execution import get_world
+
+    return get_world().fs
 
 
 # Firecrawl config (reads from env var set by CLI/server)
@@ -120,56 +115,8 @@ def _verify_write(path: Path, check_fn, description: str = "expected content") -
     return None
 
 
-def _set_command_resource_limits(decision=None):
-    """Set resource limits for command execution.
-
-    *decision* may be a :class:`~micron.tools.command_policy.Limit` instance
-    whose non-``None`` fields override the env-var defaults.
-
-    Called via ``preexec_fn`` — runs in the child after fork, before exec.
-    Sets both soft and hard limits since this is a fresh process that will
-    be replaced by exec() immediately after.
-    """
-    from micron.tools.command_policy import Limit
-
-    if not _HAS_RESOURCE:
-        return
-
-    limit: Limit | None = decision if isinstance(decision, Limit) else None
-
-    def _val(override, env_key, default):
-        if override is not None:
-            return override
-        return int(os.getenv(env_key, default))
-
-    try:
-        if hasattr(resource, 'RLIMIT_CPU'):
-            v = _val(limit.cpu if limit else None, "MICRON_CMD_MAX_CPU", "60")
-            resource.setrlimit(resource.RLIMIT_CPU, (v, v))
-    except (ValueError, OSError):
-        pass
-
-    try:
-        if hasattr(resource, 'RLIMIT_AS'):
-            mb = _val(limit.memory if limit else None, "MICRON_CMD_MAX_MEMORY_MB", "512")
-            b = mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (b, b))
-    except (ValueError, OSError):
-        pass
-
-    try:
-        if hasattr(resource, 'RLIMIT_NPROC'):
-            v = _val(limit.procs if limit else None, "MICRON_CMD_MAX_PROCESSES", "50")
-            resource.setrlimit(resource.RLIMIT_NPROC, (v, v))
-    except (ValueError, OSError):
-        pass
-
-    try:
-        if hasattr(resource, 'RLIMIT_NOFILE'):
-            v = _val(limit.files if limit else None, "MICRON_CMD_MAX_FILES", "100")
-            resource.setrlimit(resource.RLIMIT_NOFILE, (v, v))
-    except (ValueError, OSError):
-        pass
+# Resource limits moved to micron/execution.py (unified execution seam).
+from micron.execution import _set_command_resource_limits  # noqa: F401
 
 
 @tool(
@@ -490,12 +437,15 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
     # Setting limits on the parent instead would constrain the parent's
     # own fds/sockets (Textual + LLM) and hang the UI.
 
-    # Resolve cwd and run
+    # Resolve cwd and run through the unified execution seam
     try:
+        from micron.execution import get_world
+
         workdir = _resolve_path(cwd)
         if isinstance(workdir, str):
             return workdir
 
+        world = get_world()
         if use_shell:
             # Shell mode: pass raw cmd to shell so pipes/redirects/&& work
             # Use high nproc for shell pipelines (don't clamp to 50)
@@ -512,16 +462,12 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
                 cpu=decision.cpu if isinstance(decision, Limit) else None,
                 memory=decision.memory if isinstance(decision, Limit) else None,
             )
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
-                timeout=timeout, cwd=workdir,
-                preexec_fn=lambda: _set_command_resource_limits(shell_decision),
+            result = world.run(
+                cmd, shell=True, cwd=workdir, timeout=timeout, limits=shell_decision
             )
         else:
-            result = subprocess.run(
-                args, shell=False, capture_output=True, text=True,
-                timeout=timeout, cwd=workdir,
-                preexec_fn=lambda: _set_command_resource_limits(decision),
+            result = world.run(
+                args, shell=False, cwd=workdir, timeout=timeout, limits=decision
             )
         output = result.stdout
         if result.stderr:

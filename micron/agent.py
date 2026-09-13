@@ -218,6 +218,15 @@ class MicronAgent:
             self.llm = config.llm_kwargs.pop("backend")  # type: ignore[attr-defined]
         else:
             self.llm = create_backend(config.provider, config.model, **config.llm_kwargs)
+        # Pipeline listeners (ADR 0008) — policy + sandbox confinement wrap
+        # points. Deduped so an injected registry is not double-wired.
+        from micron.tools.pipeline import CommandPolicyListener, SandboxListener
+
+        existing = {type(l).__name__ for l in self.tools.listeners.all()}
+        if "CommandPolicyListener" not in existing:
+            self.tools.add_listener(CommandPolicyListener())
+        if "SandboxListener" not in existing:
+            self.tools.add_listener(SandboxListener())
         # Default to text-tool format for local models, off for API backends.
         provider = getattr(config, "provider", "llamacpp").lower()
         # honour explicit use_text_tool_parsing or llm_kwargs flag
