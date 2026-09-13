@@ -39,6 +39,11 @@ class SessionLogger:
         self._cleanup()
         return timestamp
 
+    @property
+    def session_id(self) -> Optional[str]:
+        """ID of the current session (None before start_session)."""
+        return self._session_id
+
     def log_turn(self, role: str, content: str, tool_calls: list = None):
         """Log a single conversation turn."""
         if not self._current_file:

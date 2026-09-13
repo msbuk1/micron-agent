@@ -28,7 +28,8 @@ redefined here.
 | `strip_tool_call_markup` | `micron/text_tool_parser.py` | `strip_tool_call_markup(text) -> str` | Module-level. Used by the CLI's `_strip_thinking` to remove tool-call-looking syntax before printing. Shares regexes with `TextToolCallParser` so the two never drift. |
 | `coerce_param` | `micron/text_tool_parser.py` | `coerce_param(raw, prop_schema) -> Any` | Module-level. Converts a string to the JSON-schema type of the param. Falls back to the raw string on parse failure. |
 | `parse_streaming_tool_calls` | `micron/llm.py` | `parse_streaming_tool_calls(delta_iter) -> Iterator[LLMResponse]` | Module-level. Buffers tool-call deltas from any LLM backend stream, emits completed `tool_call` and `text` events. Replaces three duplicate buffering patterns in `LlamaCppBackend`, `OllamaBackend`, and `OpenAICompatibleBackend`. |
-| `CommandPolicy` | `micron/tools/command_policy.py` | `evaluate(args) -> Decision` | Pure computation. Evaluates a shell command argument list against the blocklist and flag-scan rules. Returns `Allow`, `Deny(reason)`, or `Limit(cpu, memory, procs, files)`. Tested with synthetic args, no subprocess. |
+| `CommandPolicy` | `micron/tools/command_policy.py` | `evaluate(args) -> Decision` | Pure computation. Evaluates a shell command argument list against the blocklist and flag-scan rules. Returns `Allow`, `Deny(reason)`, or `Limit(cpu, memory, procs, files)`. Tested with synthetic args, no subprocess. `evaluate_command(cmd)` is the shared parse+evaluate entry for raw command strings. |
+| `ToolListener` / `ListenerRegistry` | `micron/tools/pipeline.py` | `pre_execute(inv, next) / post_execute(inv, result, next)`; `ListenerRegistry.add/run_pre/run_post` | Waterfall tool pipeline (ADR 0008). Call `next()` to delegate; return without it to short-circuit (pre: deny → `tool_error` via `ErrorFormat`; post: replace result). `CommandPolicyListener` routes `run_command` denial through pre-execute. Wired into `ToolRegistry.call` (`add_listener`/`listeners`), which emits `tool_pre`/`tool_post`/`tool_error` events. |
 | `SlashCommandRegistry` | `micron/slash.py` | `register / add / get / all / dispatch(query) -> SlashCommandResult / help_text` | Transport-agnostic `/command` dispatcher. Handlers take `list[str]` args, return a `SlashCommandResult` with `text` and an `extras` dict for transport-specific flags. Decorator-style and imperative register both supported. |
 | `CommandDispatcher` | `micron/tui/commands.py` | `handle(cmd) -> CommandResult` | TUI adapter wrapping `SlashCommandRegistry`. All commands route through the registry; `handle` is a thin translation layer mapping `SlashCommandResult.extras` onto Textual `Message` fields. No if/elif ladder (post-issues #2–#4). |
 | `ModelPickerScreen` | `micron/tui/screens/models.py` | `ModelPickerScreen(entries)`, dismisses with `{"provider", "model"}` | Modal opened by `/model` (alias `/models`). Renders provider/model/metadata rows as a `ListView`; selecting a row dismisses with the chosen pair, which the app swaps via `CommandDispatcher.switch_model` and reflects in the status bar. |
@@ -39,6 +40,7 @@ redefined here.
 | `ErrorFormat` | `micron/error_format.py` | `format_error(exc, hint="", *, tool="")->str`; `ok(msg)->str`; `is_error(str)->bool` | Pure string table hiding `isinstance` + substring precedence + truncation. Single seam for `builtin` adapters and `MicronAgent._friendly_error`; `tools/error_handling.py` is shim. |
 | `ServerRuntime` | `micron/server_runtime.py` | `ServerRuntime(config, *, agent, sessions, limiter, auth)`; `load(path,**overrides)` | Ergonomic wrapper hiding `RuntimeConfig`→`create_agent`/`SessionLogger` wiring + `RateLimiter`/`AuthPolicy` globals. Local-substitutable via `tmp_path`/`FakeClock`. |
 | `ModelCatalog` | `micron/catalog.py` | `list(provider=None)->list[ModelEntry]`; `text(entries, active)->str`; `switch(agent, provider, model)->str` | Deep module owning live fetch (`/api/tags` vs `/models`), fallback chain, price/meta formatting, switch validation. Port `ModelSource.fetch(provider,cfg)->list[dict]` (Http vs Fake). `CommandDispatcher` + `ModelPickerScreen` are thin adapters. |
+| `Profiles` | `micron/profiles.py` | `build_composition(config, *, profile, home_patch, overlay_patch, provider, model, temperature, max_tokens) -> Composition`; `boot(composition, *, config, sessions=True) -> Boot`; `apply_patch_layer(rt, patch)`; `canonical_profile(name)` | One boot composition for every entry point (CLI one-shot, TUI, server, headless). Ordered patch layers apply deterministically: base (CLI flags) → profile patch → home (`profiles:` section of micron.yaml) → `--patch` overlay file; later layers replace whole rows by id or insert new rows, unknown rows raise. `--dump-config` prints the resolved composition (`api_key` redacted). `boot` delegates to `ServerRuntime` — no parallel loader (ADR 0005/0007); `sessions=False` (headless) skips the session logger. `Boot` carries `agent/sessions/limiter/auth/server_runtime`. |
 | `budget_join` | `micron/knowledge.py` | `budget_join(chunks, *, budget=8000, label="items", sep)->str` | Pure helper hiding budget + sentinel; used by `KnowledgeIndex.prompt_context` and `PromptBuilder._load_skill_instructions` (no new module). |
 
 ## Event vocabulary
@@ -102,6 +104,9 @@ Two flavours:
   `MICRON_CONTEXT_DIR` / `MICRON_PROVIDER` / `FIRECRAWL_URL` for tools
   that read env vars). CLI, TUI, and server all use `Config`. The former
   `__main__.load_config` parallel loader has been removed.
+- `profiles:` (section of micron.yaml) — home patch layer for the boot
+  composition (see `Profiles`). Rows are RuntimeConfig field names;
+  applied after the profile patch, before `--patch`.
 
 ## Out-of-band notes
 
@@ -129,6 +134,7 @@ architecture reviews should not re-litigate them.
 | [0005](docs/adr/0005-runtime-gate.md) | RuntimeConfig + RateLimiter / AuthPolicy | Accepted |
 | [0006](docs/adr/0006-error-format.md) | ErrorFormat deep module | Accepted |
 | [0007](docs/adr/0007-server-runtime.md) | ServerRuntime deep module | Accepted |
+| [0008](docs/adr/0008-tool-pipeline.md) | Waterfall tool pipeline (pre/post-execute listeners) | Accepted |
 
 Add a row here when a new ADR is accepted. Don't list draft / rejected
 proposals — only those that have shaped the current code.

@@ -452,7 +452,7 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
     """Run a shell command and return its output."""
     import shlex
     from micron.tools.error_handling import handle_error, success
-    from micron.tools.command_policy import CommandPolicy, Deny, Limit
+    from micron.tools.command_policy import Deny, Limit
 
     # Length guard — allow larger commands for file creation via shell,
     # but suggest write_file for very large content
@@ -474,43 +474,14 @@ def run_command(cmd: str, cwd: str = ".", timeout: int = 30) -> str:
     shell_operators = ["|", "&&", "||", ";", ">", ">>", "<"]
     use_shell = any(op in cmd for op in shell_operators)
 
-    # Parse for policy check (extract base command, shell may contain multiple)
-    try:
-        # Use shlex for non-shell, simple split for shell base check
-        if use_shell:
-            # For policy, check each segment's base command
-            import re as _re
-
-            # Split on shell operators to get individual commands
-            segments = _re.split(r"\s*(?:\|\||&&|\||;|>>|>|<)\s*", cmd)
-            base_cmds = []
-            for seg in segments:
-                seg = seg.strip()
-                if not seg:
-                    continue
-                try:
-                    seg_args = shlex.split(seg)
-                    if seg_args:
-                        base_cmds.append(seg_args[0].lower())
-                except ValueError:
-                    continue
-            # Check each base command against policy
-            for base in base_cmds:
-                decision = CommandPolicy().evaluate([base])
-                if isinstance(decision, Deny):
-                    return handle_error("run_command", Exception(decision.reason), decision.reason)
-            # Also check full args for other flags (e.g. rm -rf)
-            args = shlex.split(cmd) if not use_shell else []
-            decision = CommandPolicy().evaluate(base_cmds if base_cmds else ["echo"])
-            if isinstance(decision, Deny):
-                return handle_error("run_command", Exception(decision.reason), decision.reason)
-        else:
-            args = shlex.split(cmd)
-            decision = CommandPolicy().evaluate(args)
-            if isinstance(decision, Deny):
-                return handle_error("run_command", Exception(decision.reason), decision.reason)
-    except ValueError as e:
-        return handle_error("run_command", Exception(f"Invalid command syntax: {e}"), "could not parse command")
+    # Parse + policy check via the shared implementation (also enforced
+    # upstream by the CommandPolicyListener at pre-execute; this is the
+    # defense-in-depth path for direct registry.call invocations).
+    from micron.tools.command_policy import evaluate_command
+    decision = evaluate_command(cmd)
+    if isinstance(decision, Deny):
+        return handle_error("run_command", Exception(decision.reason), decision.reason)
+    args = [] if use_shell else shlex.split(cmd)
 
     # Resource limits are applied to the child only via preexec_fn, which
     # runs after fork() in the child before exec(). resource.setrlimit is

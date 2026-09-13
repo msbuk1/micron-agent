@@ -1,25 +1,25 @@
 """FastAPI + SSE server for micron agent with rate limiting and authentication."""
 import asyncio
 import json
-import os
 import mimetypes
+import os
+import time
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, File, Request, UploadFile, HTTPException, Depends
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import time
-from collections import deque
 
-from micron.agent import create_agent, AgentConfig, MicronAgent
-from micron.llm import create_backend
+from micron.agent import AgentConfig, MicronAgent, create_agent
 from micron.config import load_config
+from micron.llm import create_backend
 from micron.sessions import SessionLogger
 from micron.tools.builtin import _get_workdir, list_trash, purge_trash, restore_file, undo_file
 
@@ -41,6 +41,18 @@ def _get_cached_config():
     return _config_cache
 
 
+def _boot_from_profiles(profile: str = "server"):
+    """Cold-start via the shared boot composition (micron.profiles).
+
+    Single boot path shared with the CLI one-shot and TUI entries —
+    no divergent server wiring (issue #16).
+    """
+    from micron.profiles import boot, build_composition
+
+    composition = build_composition(profile=profile)
+    return boot(composition)
+
+
 def _get_runtime():
     global _runtime, agent, session_logger, _config_cache
     if _runtime is None:
@@ -49,7 +61,8 @@ def _get_runtime():
         if agent is not None:
             _runtime = ServerRuntime(agent=agent, sessions=session_logger)
         else:
-            _runtime = ServerRuntime.load()
+            b = _boot_from_profiles("server")
+            _runtime = b.server_runtime
             agent = _runtime.agent
             session_logger = _runtime.sessions
             _config_cache = _runtime._config
@@ -94,42 +107,19 @@ def check_rate_limit() -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize agent on startup if not already set (e.g. via run_server)."""
+    """Wire the runtime once via _get_runtime (single boot path, issue #16)."""
     global agent, session_logger, _runtime, _config_cache
 
-    if agent is not None and _runtime is None:
-        # Agent injected via run_server() — wrap in ServerRuntime for gates
-        from micron.server_runtime import ServerRuntime
+    # _get_runtime handles both entry shapes without re-wiring:
+    # - runtime already set (run_server with a composed ServerRuntime)
+    # - agent injected via module global (tests) — wrapped for gates
+    # - cold start — via the shared boot composition (micron.profiles)
+    _get_runtime()
 
-        _runtime = ServerRuntime(agent=agent, sessions=session_logger)
-        agent = _runtime.agent
-        session_logger = _runtime.sessions
-        _config_cache = _runtime._config
-        print(f"[micron] Using provided agent (LLM: {'available' if agent.llm and agent.llm.is_available() else 'N/A'})")
-        if session_logger is None:
-            try:
-                sessions_dir = Path(agent.context_dir) / "sessions"
-                session_logger = SessionLogger(sessions_dir)
-                session_logger.start_session()
-                _runtime.sessions = session_logger
-                print(f"[micron] Session logging enabled: {sessions_dir}")
-            except Exception as e:
-                print(f"[micron] Warning: Could not initialize session logger: {e}")
-        yield
-        if session_logger is not None:
-            session_logger.end_session()
-        return
-
-    # Cold start — via ServerRuntime (deep module, hides wiring)
-    from micron.server_runtime import ServerRuntime
-
-    _runtime = ServerRuntime.load()
-    agent = _runtime.agent
-    session_logger = _runtime.sessions
-    _config_cache = _runtime._config
-    print(f"[micron] Loaded {_runtime.runtime.provider} backend with model: {_runtime.runtime.model}")
+    if _runtime is not None and _runtime.agent is not None:
+        print(f"[micron] Loaded {_runtime.runtime.provider} backend with model: {_runtime.runtime.model}")
     if session_logger is not None:
-        print(f"[micron] Session logging enabled: {Path(_runtime.runtime.context_dir) / 'sessions'}")
+        print(f"[micron] Session logging enabled: {session_logger.sessions_dir}")
 
     yield
     # Cleanup on shutdown
@@ -510,15 +500,32 @@ async def upload_file(file: UploadFile = File(...)):
     }
 
 
-def run_server(agent_instance, host: str = "0.0.0.0", port: int = 8000, session_logger_instance: SessionLogger | None = None):
-    """Run the FastAPI server with the given agent instance."""
-    global agent, session_logger, _runtime, _config_cache
-    from micron.server_runtime import ServerRuntime
+def run_server(
+    agent_instance,
+    host: str = "0.0.0.0",
+    port: int = 8000,
+    session_logger_instance: SessionLogger | None = None,
+    *,
+    server_runtime=None,
+    config=None,
+):
+    """Run the FastAPI server with the given agent instance.
 
-    _runtime = ServerRuntime(agent=agent_instance, sessions=session_logger_instance)
+    ``server_runtime`` (a ServerRuntime wired by the profiles composition)
+    is preferred — when given, no re-wrapping happens and the composition's
+    gates (limiter/auth) are used as-is (issue #16).
+    """
+    global agent, session_logger, _runtime, _config_cache
+
+    if server_runtime is not None:
+        _runtime = server_runtime
+    else:
+        from micron.server_runtime import ServerRuntime
+
+        _runtime = ServerRuntime(agent=agent_instance, sessions=session_logger_instance)
     agent = _runtime.agent
     session_logger = _runtime.sessions
-    _config_cache = _runtime._config
+    _config_cache = config if config is not None else _runtime._config
     import uvicorn
     print(f"[micron] Web UI at http://{host}:{port}")
     uvicorn.run(app, host=host, port=port)

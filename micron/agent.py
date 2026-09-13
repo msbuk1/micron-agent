@@ -437,22 +437,11 @@ class MicronAgent:
 
                 has_errors = False
                 for tc in read_calls:
+                    pipeline_events: list[dict] = []
                     try:
-                        result = self.tools.call(tc.name, **tc.args)
-                        summary = self._summarize_result(result)
-                        # Check if the tool returned an error string
-                        is_error = isinstance(result, str) and result.startswith("Error:")
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.call_id,
-                            "name": tc.name,
-                            "content": summary,
-                        })
-                        if is_error:
-                            has_errors = True
-                            yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": summary}
-                        else:
-                            yield {"type": "tool_result", "name": tc.name, "call_id": tc.call_id, "summary": summary, "result": result}
+                        result = self.tools.call(
+                            tc.name, _emit=pipeline_events.append, _call_id=tc.call_id, **tc.args
+                        )
                     except Exception as e:
                         friendly = self._friendly_error(tc.name, e)
                         has_errors = True
@@ -463,6 +452,36 @@ class MicronAgent:
                             "content": f"Error: {friendly}",
                         })
                         yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": friendly}
+                        continue
+
+                    # Waterfall pipeline visibility: pre/post-execute events.
+                    for ev in pipeline_events:
+                        if ev["type"] in ("tool_pre", "tool_post"):
+                            yield ev
+
+                    short_circuited = any(
+                        ev["type"] == "tool_error" for ev in pipeline_events
+                    )
+                    summary = self._summarize_result(result)
+                    # Check if the tool returned an error string or was denied
+                    is_error = short_circuited or (
+                        isinstance(result, str) and result.startswith("Error:")
+                    )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.call_id,
+                        "name": tc.name,
+                        "content": summary,
+                    })
+                    if is_error:
+                        has_errors = True
+                        error = next(
+                            (ev["error"] for ev in pipeline_events if ev["type"] == "tool_error"),
+                            summary,
+                        )
+                        yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": error}
+                    else:
+                        yield {"type": "tool_result", "name": tc.name, "call_id": tc.call_id, "summary": summary, "result": result}
 
                 pivot = self._loop.record_result(has_errors)
                 if pivot:
@@ -504,16 +523,11 @@ class MicronAgent:
         """Execute confirmed write tool calls and return tool results for history."""
         tool_results = []
         for tc in calls:
+            pipeline_events: list[dict] = []
             try:
-                result = self.tools.call(tc.name, **tc.args)
-                summary = self._summarize_result(result)
-                tool_results.append({
-                    "role": "tool",
-                    "tool_call_id": tc.call_id,
-                    "name": tc.name,
-                    "content": summary,
-                })
-                yield {"type": "tool_result", "name": tc.name, "call_id": tc.call_id, "summary": summary, "result": result}
+                result = self.tools.call(
+                    tc.name, _emit=pipeline_events.append, _call_id=tc.call_id, **tc.args
+                )
             except Exception as e:
                 friendly = self._friendly_error(tc.name, e)
                 tool_results.append({
@@ -523,6 +537,37 @@ class MicronAgent:
                     "content": f"Error: {friendly}",
                 })
                 yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": friendly}
+                continue
+
+            # Waterfall pipeline visibility: pre/post-execute events.
+            for ev in pipeline_events:
+                if ev["type"] in ("tool_pre", "tool_post"):
+                    yield ev
+
+            short_circuited = any(
+                ev["type"] == "tool_error" for ev in pipeline_events
+            )
+            summary = self._summarize_result(result)
+            if short_circuited or (isinstance(result, str) and result.startswith("Error:")):
+                error = next(
+                    (ev["error"] for ev in pipeline_events if ev["type"] == "tool_error"),
+                    summary,
+                )
+                tool_results.append({
+                    "role": "tool",
+                    "tool_call_id": tc.call_id,
+                    "name": tc.name,
+                    "content": f"Error: {error}",
+                })
+                yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": error}
+            else:
+                tool_results.append({
+                    "role": "tool",
+                    "tool_call_id": tc.call_id,
+                    "name": tc.name,
+                    "content": summary,
+                })
+                yield {"type": "tool_result", "name": tc.name, "call_id": tc.call_id, "summary": summary, "result": result}
         # Return tool_results by attaching to the generator (hacky but works)
         self._last_tool_results = tool_results
 

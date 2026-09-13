@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from micron.config import Config, RuntimeConfig
-from micron.policy import RateLimiter, AuthPolicy
+from micron.policy import AuthPolicy, RateLimiter
 from micron.sessions import SessionLogger
 
 
@@ -19,7 +19,7 @@ class ServerRuntime:
         config: Config | RuntimeConfig | None = None,
         *,
         agent=None,
-        sessions: SessionLogger | None = None,
+        sessions: SessionLogger | None | bool = None,
         limiter: RateLimiter | None = None,
         auth: AuthPolicy | None = None,
     ):
@@ -44,8 +44,11 @@ class ServerRuntime:
                 self.agent.llm = backend
             except Exception:
                 pass
-        # sessions
-        if sessions is not None:
+        # sessions — None means "create default", False means "explicitly
+        # disabled" (headless profiles), a SessionLogger is used as-is.
+        if sessions is False:
+            self.sessions = None
+        elif sessions is not None:
             self.sessions = sessions
         else:
             try:

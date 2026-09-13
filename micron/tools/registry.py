@@ -3,6 +3,9 @@ import inspect
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from micron.error_format import format_error
+from micron.tools.pipeline import ListenerRegistry, ToolInvocation, ToolListener
+
 
 @dataclass
 class Tool:
@@ -18,6 +21,15 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, Tool] = {}
+        self._listeners = ListenerRegistry()
+
+    def add_listener(self, listener: ToolListener) -> None:
+        """Add a waterfall listener (see micron.tools.pipeline)."""
+        self._listeners.add(listener)
+
+    @property
+    def listeners(self) -> ListenerRegistry:
+        return self._listeners
 
     def register(
         self,
@@ -50,11 +62,40 @@ class ToolRegistry:
         )
         self._tools[name] = tool
 
-    def call(self, name: str, **kwargs) -> Any:
-        """Execute a tool by name."""
+    def call(self, name: str, *, _emit: Callable[[dict], None] | None = None,
+             _call_id: str = "", **kwargs) -> Any:
+        """Execute a tool through the waterfall pipeline.
+
+        Emits pipeline events via ``_emit`` (when given):
+        ``tool_pre`` before pre-execute, ``tool_post`` after post-execute,
+        and ``tool_error`` when a pre-execute listener short-circuits.
+        """
         if name not in self._tools:
             raise ValueError(f"Tool not found: {name}")
-        return self._tools[name].func(**kwargs)
+        emit = _emit or (lambda ev: None)
+        invocation = ToolInvocation(name=name, args=dict(kwargs), call_id=_call_id)
+
+        emit({"type": "tool_pre", "name": name, "call_id": _call_id, "args": invocation.args})
+
+        executed = False
+
+        def execute() -> Any:
+            nonlocal executed
+            executed = True
+            return self._tools[name].func(**kwargs)
+
+        result = self._listeners.run_pre(invocation, execute)
+
+        if not executed:
+            # Short-circuit: denial/approval — no tool ran. Render as
+            # tool_error via ErrorFormat (single error-copy seam).
+            msg = format_error(str(result), tool=name).removeprefix("Error: ").lstrip()
+            emit({"type": "tool_error", "name": name, "call_id": _call_id, "error": msg})
+            return result
+
+        result = self._listeners.run_post(invocation, result)
+        emit({"type": "tool_post", "name": name, "call_id": _call_id, "result": result})
+        return result
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)

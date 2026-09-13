@@ -17,6 +17,8 @@ class EventType:
     TOOL_START = "tool_start"
     TOOL_RESULT = "tool_result"
     TOOL_ERROR = "tool_error"
+    TOOL_PRE = "tool_pre"
+    TOOL_POST = "tool_post"
     ERROR = "error"
     CONFIRMATION_REQUIRED = "confirmation_required"
     DONE = "done"
@@ -37,6 +39,8 @@ def process_events(
     on_tool_start: Callable[[str, str], None] | None = None,
     on_tool_result: Callable[[str, str], None] | None = None,
     on_tool_error: Callable[[str, str], None] | None = None,
+    on_tool_pre: Callable[[str, str], None] | None = None,
+    on_tool_post: Callable[[str, Any], None] | None = None,
     on_error: Callable[[str], None] | None = None,
     on_confirmation_required: Callable[[list[dict]], None] | None = None,
     on_done: Callable[[], None] | None = None,
@@ -53,6 +57,8 @@ def process_events(
         on_tool_start: Called with (tool_name, call_id).
         on_tool_result: Called with (tool_name, summary).
         on_tool_error: Called with (tool_name, error_message).
+        on_tool_pre: Called with (tool_name, call_id) at pre-execute.
+        on_tool_post: Called with (tool_name, result) after post-execute.
         on_error: Called with error message string.
         on_confirmation_required: Called with pending_writes list.
         on_done: Called when the generator ends.
@@ -85,6 +91,14 @@ def process_events(
         elif event_type == EventType.TOOL_ERROR:
             if on_tool_error:
                 on_tool_error(chunk["name"], chunk.get("error", ""))
+
+        elif event_type == EventType.TOOL_PRE:
+            if on_tool_pre:
+                on_tool_pre(chunk["name"], chunk.get("call_id", ""))
+
+        elif event_type == EventType.TOOL_POST:
+            if on_tool_post:
+                on_tool_post(chunk["name"], chunk.get("result"))
 
         elif event_type == EventType.ERROR:
             if on_error:

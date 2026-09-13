@@ -51,6 +51,44 @@ BLOCKED_COMMANDS: set[str] = {
 SHELL_NAMES: frozenset[str] = frozenset({"bash", "sh", "zsh"})
 
 
+def evaluate_command(cmd: str) -> Decision:
+    """Evaluate a raw command string (may contain pipes/&&/;/redirects).
+
+    Single parse+evaluate implementation shared by the waterfall
+    pre-execute listener and ``run_command`` itself, so the blocklist can
+    never drift between the two call sites.
+    """
+    import re
+    import shlex
+
+    if not cmd or not cmd.strip():
+        return Deny(reason="Empty command")
+
+    use_shell = any(op in cmd for op in ("|", "&&", "||", ";", ">", ">>", "<"))
+    try:
+        if use_shell:
+            segments = re.split(r"\s*(?:\|\||&&|\||;|>>|>|<)\s*", cmd)
+            base_cmds = []
+            for seg in segments:
+                seg = seg.strip()
+                if not seg:
+                    continue
+                try:
+                    seg_args = shlex.split(seg)
+                except ValueError:
+                    continue
+                if seg_args:
+                    base_cmds.append(seg_args[0].lower())
+            for base in base_cmds:
+                decision = CommandPolicy().evaluate([base])
+                if isinstance(decision, Deny):
+                    return decision
+            return CommandPolicy().evaluate(base_cmds if base_cmds else ["echo"])
+        return CommandPolicy().evaluate(shlex.split(cmd))
+    except ValueError as e:
+        return Deny(reason=f"Invalid command syntax: {e}")
+
+
 class CommandPolicy:
     """Evaluates whether a parsed command (list of args) should be allowed.
 

@@ -352,5 +352,56 @@ def add_numbers(a: int = 0, b: int = 0) -> int:
         assert result == "Hello, plugin!"
 
 
+def test_listener_short_circuit_yields_tool_error():
+    """A pre-execute listener that short-circuits denies the tool in the loop."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        agent, backend = make_agent(
+            Path(tmpdir),
+            [[
+                LLMResponse(type="tool_call", tool_name="read_file", tool_args={"path": "foo.txt"}, tool_call_id="call_1"),
+                LLMResponse(type="done"),
+            ]],
+        )
+
+        class DenyAll:
+            def pre_execute(self, invocation, next):
+                return "blocked by policy"
+
+            def post_execute(self, invocation, result, next):
+                return next(result)
+
+        agent.tools.add_listener(DenyAll())
+
+        events = list(agent.run("read foo.txt"))
+        types = [e["type"] for e in events]
+        assert "tool_error" in types
+        assert "tool_result" not in types
+        assert "tool_pre" in types
+        err = next(e for e in events if e["type"] == "tool_error")
+        assert "blocked by policy" in err["error"]
+
+
+def test_listener_pipeline_events_visible_in_agent_stream():
+    """tool_pre / tool_post fire around execute in the agent event stream."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        agent, backend = make_agent(
+            Path(tmpdir),
+            [[
+                LLMResponse(type="tool_call", tool_name="read_file", tool_args={"path": "foo.txt"}, tool_call_id="call_1"),
+                LLMResponse(type="done"),
+            ]],
+        )
+        # Stub the tool so the test is hermetic (no real filesystem reads)
+        agent.tools.register("read_file", lambda path: "file contents", "Read", {
+            "type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"],
+        })
+
+        events = list(agent.run("read foo.txt"))
+        types = [e["type"] for e in events]
+        assert "tool_pre" in types
+        assert "tool_post" in types
+        assert "tool_result" in types
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

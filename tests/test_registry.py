@@ -1,4 +1,5 @@
 """Tests for micron tool registry."""
+from micron.tools.pipeline import CommandPolicyListener, ToolListener
 from micron.tools.registry import ToolRegistry
 
 
@@ -122,6 +123,141 @@ def test_auto_detect_required():
     assert set(tool.parameters["required"]) == {"a", "b"}
 
 
+# ---------------------------------------------------------------------------
+# Waterfall pipeline (pre/post-execute with next()/short-circuit)
+# ---------------------------------------------------------------------------
+
+class _Recorder(ToolListener):
+    """Observe-only listener: records calls, always delegates."""
+
+    def __init__(self):
+        self.pre_seen = []
+        self.post_seen = []
+
+    def pre_execute(self, invocation, next):
+        self.pre_seen.append((invocation.name, dict(invocation.args)))
+        return next()
+
+    def post_execute(self, invocation, result, next):
+        self.post_seen.append((invocation.name, result))
+        return next(result)
+
+
+class _Annotator(ToolListener):
+    """Annotate-and-delegate: wraps the delegated result."""
+
+    def post_execute(self, invocation, result, next):
+        return f"annotated({next(result)})"
+
+
+class _Denier(ToolListener):
+    """Owning listener: short-circuits pre-execute without next()."""
+
+    def __init__(self, reason="denied by test"):
+        self.reason = reason
+        self.calls = []
+
+    def pre_execute(self, invocation, next):
+        self.calls.append(invocation.name)
+        return self.reason
+
+
+def _make_registry():
+    registry = ToolRegistry()
+    registry.register("add", lambda a, b: a + b, "Add", {
+        "type": "object",
+        "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+        "required": ["a", "b"],
+    })
+    return registry
+
+
+def test_observe_listener_delegates():
+    events = []
+    registry = _make_registry()
+    recorder = _Recorder()
+    registry.add_listener(recorder)
+
+    result = registry.call("add", _emit=events.append, _call_id="c1", a=2, b=3)
+
+    assert result == 5
+    assert recorder.pre_seen == [("add", {"a": 2, "b": 3})]
+    assert recorder.post_seen == [("add", 5)]
+    types = [e["type"] for e in events]
+    assert types == ["tool_pre", "tool_post"]
+    assert events[0]["call_id"] == "c1"
+    assert events[1]["result"] == 5
+
+
+def test_annotate_and_delegate():
+    registry = _make_registry()
+    registry.add_listener(_Annotator())
+
+    result = registry.call("add", a=2, b=3)
+    assert result == "annotated(5)"
+
+
+def test_short_circuit_deny():
+    events = []
+    registry = _make_registry()
+    denier = _Denier()
+    registry.add_listener(denier)
+
+    result = registry.call("add", _emit=events.append, _call_id="c2", a=2, b=3)
+
+    # Tool never executed; denial rendered as tool_error via ErrorFormat
+    assert result == "denied by test"
+    assert denier.calls == ["add"]
+    types = [e["type"] for e in events]
+    assert types == ["tool_pre", "tool_error"]
+    assert "denied by test" in events[1]["error"]
+    assert not any(e["type"] == "tool_post" for e in events)
+
+
+def test_command_policy_listener_denies_blocked_command():
+    events = []
+    registry = _make_registry()
+    registry.register("run_command", lambda cmd: f"ran {cmd}", "Run", {
+        "type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"],
+    })
+    registry.add_listener(CommandPolicyListener())
+
+    result = registry.call("run_command", _emit=events.append, cmd="rm -rf /")
+
+    assert "blocked" in result
+    assert events[-1]["type"] == "tool_error"
+    assert not any(e["type"] == "tool_post" for e in events)
+
+
+def test_command_policy_listener_allows_safe_command():
+    registry = _make_registry()
+    registry.register("run_command", lambda cmd: f"ran {cmd}", "Run", {
+        "type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"],
+    })
+    registry.add_listener(CommandPolicyListener())
+
+    assert registry.call("run_command", cmd="ls -la") == "ran ls -la"
+
+
+def test_listener_chain_order():
+    """First-added listener is outermost; both must delegate to execute."""
+    order = []
+
+    class _Tag(ToolListener):
+        def __init__(self, tag):
+            self.tag = tag
+
+        def pre_execute(self, invocation, next):
+            order.append(f"pre:{self.tag}")
+            return next()
+
+    registry = _make_registry()
+    registry.add_listener(_Tag("outer"))
+    registry.add_listener(_Tag("inner"))
+    registry.call("add", a=1, b=1)
+    assert order == ["pre:outer", "pre:inner"]
+
+
 if __name__ == "__main__":
     test_register_and_call()
     test_call_nonexistent_tool()
@@ -130,4 +266,10 @@ if __name__ == "__main__":
     test_write_tool_names()
     test_list_method()
     test_auto_detect_required()
+    test_observe_listener_delegates()
+    test_annotate_and_delegate()
+    test_short_circuit_deny()
+    test_command_policy_listener_denies_blocked_command()
+    test_command_policy_listener_allows_safe_command()
+    test_listener_chain_order()
     print("All tool registry tests passed!")

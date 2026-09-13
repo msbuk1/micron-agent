@@ -9,9 +9,10 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from micron.agent import AgentConfig, MicronAgent
+from micron.agent import MicronAgent
 from micron.config import Config
 from micron.events import process_events
+from micron.profiles import boot, build_composition
 from micron.sessions import SessionLogger
 from micron.text_tool_parser import strip_tool_call_markup
 
@@ -23,48 +24,26 @@ def create_agent_and_logger(
     model: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    profile: str | None = None,
 ) -> tuple[MicronAgent, SessionLogger, str]:
-    """Create agent, backend, and session logger from a Config object."""
-    from micron.llm import create_backend
+    """Create agent, backend, and session logger from a Config object.
 
-    rt = config.resolve_runtime(
-        provider_override=provider,
-        model_override=model,
+    Thin adapter over the shared boot composition (micron.profiles) — kept
+    for backwards compatibility with tests and the TUI factory signature.
+    """
+    composition = build_composition(
+        config,
+        profile=profile,
+        provider=provider,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )
-    if temperature is not None:
-        rt["temperature"] = temperature
-    if max_tokens is not None:
-        rt["max_tokens"] = max_tokens
-
-    backend_kwargs = {
-        "n_threads": rt["n_threads"],
-        "n_gpu_layers": rt["n_gpu_layers"],
-        "n_ctx": rt["n_ctx"],
-    }
-    if rt.get("api_key"):
-        backend_kwargs["api_key"] = rt["api_key"]
-    if rt.get("base_url"):
-        backend_kwargs["base_url"] = rt["base_url"]
-
-    backend = create_backend(
-        rt["provider"],
-        rt["model"],
-        **backend_kwargs,
-    )
-
-    agent = MicronAgent(AgentConfig(
-        context_dir=rt["context_dir"],
-        provider=rt["provider"],
-        model=rt["model"],
-        temperature=rt["temperature"],
-        max_tokens=rt["max_tokens"],
-        max_tool_iterations=rt["max_tool_iterations"],
-        llm_kwargs={**backend_kwargs, "backend": backend},
-    ))
-    sessions_dir = Path(agent.context_dir) / "sessions"
-    logger = SessionLogger(sessions_dir)
-    session_id = logger.start_session()
-    return agent, logger, session_id
+    b = boot(composition, config=config)
+    # ServerRuntime already started the session when it built the logger —
+    # read the id, don't start a second session.
+    session_id = b.sessions.session_id if b.sessions is not None else ""
+    return b.agent, b.sessions, session_id
 
 
 class ThinkingIndicator:
@@ -164,6 +143,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, help="Temperature override")
     parser.add_argument("--max-tokens", type=int, help="Max tokens override")
     parser.add_argument("--no-stream", action="store_true", help="Disable streaming output")
+    parser.add_argument(
+        "--profile",
+        help="Boot profile: default (one-shot), tui (interactive), server, headless",
+    )
+    parser.add_argument(
+        "--patch",
+        type=str,
+        help="JSON or YAML file of config rows to overlay on the composition (highest layer)",
+    )
+    parser.add_argument(
+        "--dump-config",
+        action="store_true",
+        help="Print the resolved boot composition and exit",
+    )
     parser.add_argument("--list-tools", action="store_true", help="List available tools and exit")
     parser.add_argument("--list-memories", action="store_true", help="List recent memories and exit")
     parser.add_argument("--add-memory", type=str, help="Add a memory and exit")
@@ -197,30 +190,107 @@ def _upload_file(path: Path, server_url: str) -> dict:
     return resp.json()
 
 
+def _load_overlay_patch(path: str | None) -> dict | None:
+    """Load a --patch overlay file (JSON or YAML) of config rows."""
+    if path is None:
+        return None
+    p = Path(path)
+    if not p.exists():
+        print(f"Patch file not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    text = p.read_text()
+    try:
+        import json as _json
+
+        return _json.loads(text)
+    except ValueError:
+        pass
+    try:
+        import yaml as _yaml
+
+        return _yaml.safe_load(text) or {}
+    except Exception as e:
+        print(f"Could not parse patch file {path}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _home_patch(config: Config) -> dict | None:
+    """Read the ``profiles:`` section from micron.yaml (home patch layer)."""
+    profiles = config.get("profiles") or {}
+    return profiles or None
+
+
 def main():
     args = parse_args()
     config = Config()  # single loader — reads micron.yaml + env + defaults
+
+    # Compose the boot tree once — every profile below shares this wiring.
+    try:
+        composition = build_composition(
+            config,
+            profile=args.profile,
+            home_patch=_home_patch(config),
+            overlay_patch=_load_overlay_patch(args.patch),
+            provider=args.provider,
+            model=args.model,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens,
+        )
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # --dump-config: print the resolved composition and exit (no agent boot).
+    if args.dump_config:
+        print(composition.dump())
+        return
 
     # Ensure context directories exist
     context_dir = Path(config.get("context_dir", "context"))
     for sub in ("skills", "memory", "knowledge", "persona"):
         (context_dir / sub).mkdir(exist_ok=True)
 
-    # Create agent and session logger
-    agent, logger, session_id = create_agent_and_logger(
-        config,
-        provider=args.provider,
-        model=args.model,
-        temperature=args.temperature,
-        max_tokens=args.max_tokens,
-    )
-    print(f"Session: {session_id}")
+    # --upload talks to a running server; no local agent needed.
+    if args.upload:
+        path = Path(args.upload)
+        if not path.exists():
+            print(f"File not found: {path}", file=sys.stderr)
+            sys.exit(1)
+        server_url = _resolve_server_url(config)
+        try:
+            data = _upload_file(path, server_url)
+        except Exception as e:
+            print(f"Upload failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        if "error" in data:
+            print(f"Upload failed: {data['error']}", file=sys.stderr)
+            sys.exit(1)
+        print(data["path"])
+        return
+
+    # One boot path — agent + sessions + limiter/auth composed once.
+    profile = composition.profile
+    headless = profile == "headless"
+    b = boot(composition, config=config, sessions=not headless)
+    agent, logger = b.agent, b.sessions
+    # ServerRuntime already started the session when it built the logger —
+    # read the id, don't start a second session.
+    session_id = logger.session_id if logger is not None else ""
+    if session_id:
+        print(f"Session: {session_id}")
+
     if args.server:
-        rt = config.resolve_runtime()
-        host = args.host or rt.get("host", "[IP_ADDRESS]")
-        port = args.port or rt.get("port", 8000)
+        host = args.host or composition.runtime.host
+        port = args.port or composition.runtime.port
         from micron.server import run_server
-        run_server(agent, host=host, port=port)
+        run_server(
+            agent,
+            host=host,
+            port=port,
+            session_logger_instance=logger,
+            server_runtime=b.server_runtime,
+            config=config,
+        )
         return
 
     if args.list_tools:
@@ -245,23 +315,6 @@ def main():
             print(f"[{r.id[:8]}] score=0 {r.text[:80]}...")
         return
 
-    if args.upload:
-        path = Path(args.upload)
-        if not path.exists():
-            print(f"File not found: {path}", file=sys.stderr)
-            sys.exit(1)
-        server_url = _resolve_server_url(config)
-        try:
-            data = _upload_file(path, server_url)
-        except Exception as e:
-            print(f"Upload failed: {e}", file=sys.stderr)
-            sys.exit(1)
-        if "error" in data:
-            print(f"Upload failed: {data['error']}", file=sys.stderr)
-            sys.exit(1)
-        print(data["path"])
-        return
-
     # Build query
     if args.query:
         query = " ".join(args.query)
@@ -272,13 +325,8 @@ def main():
     if query is None:
         from micron.tui.app import MicronTUI
         def factory():
-            return create_agent_and_logger(
-                config,
-                provider=args.provider,
-                model=args.model,
-                temperature=args.temperature,
-                max_tokens=args.max_tokens,
-            )
+            # Reuse the boot from main() — one composition, one wiring.
+            return agent, logger, session_id
         MicronTUI(factory, config=config).run()
     else:
         run_query(agent, logger, query, args.no_stream)
@@ -320,7 +368,8 @@ def run_query(agent, logger, query: str, no_stream: bool = False):
     cleaned = _strip_thinking(result.text)
     if cleaned:
         print(cleaned)
-    logger.log_turn("assistant", cleaned or result.text)
+    if logger is not None:
+        logger.log_turn("assistant", cleaned or result.text)
 
 
 if __name__ == "__main__":
