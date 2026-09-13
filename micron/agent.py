@@ -56,6 +56,40 @@ FINAL_ITERATION_NUDGE = (
     "do not call more tools. Summarize what you found and answer the user."
 )
 
+
+def _coalesce_for_wire(messages: list[dict]) -> list[dict]:
+    """Merge consecutive same-role messages for strict chat templates.
+
+    Local OpenAI-compatible servers (LM Studio Jinja templates) reject a
+    request with ``500`` when two ``user`` (or two ``assistant``) messages
+    appear back-to-back. The loop legitimately produces those shapes —
+    nudge after a trailing user message, several injected contexts in a
+    row, pivot followed by the last-iteration nudge, resumed history
+    ending in ``user`` — so the wire copy is coalesced at the single send
+    site. History and the session log keep the unmerged entries; only the
+    request changes. ``tool``/``system`` messages are never merged, and
+    ``assistant`` messages carrying ``tool_calls`` are never merged (the
+    calls must stay attached to their message).
+    """
+    out: list[dict] = []
+    for m in messages:
+        role = m.get("role")
+        if (
+            out
+            and out[-1].get("role") == role
+            and role in ("user", "assistant")
+            and not m.get("tool_calls")
+            and not out[-1].get("tool_calls")
+            and role not in ("tool", "system")
+        ):
+            prev_content = out[-1].get("content") or ""
+            content = m.get("content") or ""
+            out[-1] = {**out[-1], "content": f"{prev_content}\n\n{content}" if prev_content and content else (prev_content or content)}
+        else:
+            out.append(dict(m))
+    return out
+
+
 class _LoopController:
     """Owns tool-loop state: iteration count, failure pivot, loop detection."""
 
@@ -499,6 +533,9 @@ class MicronAgent:
                     llm_messages = messages + [{"role": "user", "content": FINAL_ITERATION_NUDGE}]
                 else:
                     llm_messages = messages
+                # Strict-template coalescing happens on the wire copy only —
+                # history and the log keep every entry for replay/verify.
+                llm_messages = _coalesce_for_wire(llm_messages)
                 for response in self._stream_chat_with_retry(
                     messages=llm_messages,
                     tools=self.tools.schemas(),

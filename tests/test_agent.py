@@ -541,5 +541,51 @@ def test_model_timeout_arg_does_not_crash(tmp_path):
     assert any(e["type"] == "tool_result" for e in events)
 
 
+def test_wire_messages_strictly_alternate(tmp_path):
+    """Local chat templates (LM Studio Jinja) 500 on consecutive same-role
+    messages — every wire request must strictly alternate user/assistant
+    (tool messages only adjacent to assistant tool_calls)."""
+    from micron.agent import _coalesce_for_wire  # noqa: F401  (existence pin)
+
+    def roles_ok(messages):
+        last_non_tool = None
+        prev = None
+        for m in messages:
+            if m["role"] == "system":
+                assert prev is None or prev["role"] == "system"
+            elif m["role"] == "tool":
+                assert prev is not None and (
+                    (prev["role"] == "assistant" and prev.get("tool_calls"))
+                    or prev["role"] == "tool"
+                ), f"tool after {prev and prev['role']}"
+            else:
+                assert m["role"] != last_non_tool, f"consecutive {m['role']}"
+                last_non_tool = m["role"]
+            prev = m
+
+    # Case 1: single-iteration nudge lands after the user message.
+    agent, backend = make_agent(
+        tmp_path, [[LLMResponse(type="text", content="hi"), LLMResponse(type="done")]]
+    )
+    agent.config.max_tool_iterations = 1
+    agent._loop.reset(max_iterations=1)
+    list(agent.run("hello"))
+    assert backend.messages_history, "no requests captured"
+    for req in backend.messages_history:
+        roles_ok(req)
+
+    # Case 2: injected context joins as user messages after the user message.
+    agent2, backend2 = make_agent(
+        tmp_path, [[LLMResponse(type="text", content="hi"), LLMResponse(type="done")]]
+    )
+    agent2.config.max_tool_iterations = 1
+    agent2._loop.reset(max_iterations=1)
+    agent2.inject("extra one")
+    agent2.inject("extra two")
+    list(agent2.run("hello"))
+    for req in backend2.messages_history:
+        roles_ok(req)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

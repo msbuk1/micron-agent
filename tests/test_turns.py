@@ -71,8 +71,10 @@ def test_inject_before_run_lands_in_first_request(tmp_path):
     first_request = backend.messages_history[0]
     injected = [m for m in first_request if m["role"] == "user" and "vault code" in m.get("content", "")]
     assert len(injected) == 1
-    # wake message comes before the injected context
-    assert first_request.index({"role": "user", "content": "do it"}) < first_request.index(injected[0])
+    # wake message comes before the injected context (wire request coalesces
+    # consecutive user messages for strict chat templates, so order is
+    # asserted within the merged content, not across entries)
+    assert injected[0]["content"].index("do it") < injected[0]["content"].index("vault code")
 
 
 def test_inject_mid_turn_lands_next_request_never_mid_stream(tmp_path):
