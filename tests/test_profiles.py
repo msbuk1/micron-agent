@@ -211,6 +211,13 @@ class TestBoot:
         assert b.agent is not None
         assert b.sessions is None
 
+    def test_boot_injects_sessions_into_agent(self, tmp_path):
+        """Transports on the truth path: the booted agent holds the session
+        logger, so the log is the authority from the first turn (issue #25)."""
+        b = self._boot(tmp_path)
+        assert b.agent.sessions is b.sessions
+        assert b.agent.sessions.session_id is not None
+
     def test_boot_same_composition_same_wiring_shape(self, tmp_path):
         """Every profile boots through the same ServerRuntime wiring."""
         for profile in (None, "tui", "server"):

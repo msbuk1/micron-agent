@@ -241,9 +241,8 @@ async def generate_sse(message, history, confirm=False, pending_writes=None):
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
     finally:
-        # Persist the full assistant turn once the stream is complete.
-        if session_logger is not None and assistant_text:
-            session_logger.log_turn("assistant", assistant_text)
+        # No transport-side logging: the agent commits settled output to
+        # the session log itself (truth path, issue #25).
         yield "data: [DONE]\n\n"
 
 
@@ -272,11 +271,8 @@ async def chat(request: ChatRequest, req: Request = None):
     if agent.llm is None:
         return {"error": "LLM backend not configured", "response": "Server is running without LLM. Configure via MICRON_PROVIDER and MICRON_MODEL env vars."}
 
-    # Persist the user turn before processing. Sessions are owned by the
-    # server (one per lifetime), so this appends to the active JSONL file.
-    if session_logger is not None:
-        session_logger.log_turn("user", request.message)
-
+    # No transport-side logging: the agent commits the user message to the
+    # session log itself (truth path, issue #25).
     if request.stream:
         return StreamingResponse(
             generate_sse(request.message, request.history, confirm=request.confirm, pending_writes=request.pending_writes),
@@ -290,8 +286,7 @@ async def chat(request: ChatRequest, req: Request = None):
                 agent.run(request.message, history=request.history,
                           confirm=request.confirm, pending_tool_calls=request.pending_writes),
             )
-            if session_logger is not None and result.text:
-                session_logger.log_turn("assistant", result.text)
+            # No transport-side logging (truth path, issue #25).
             return {"response": result.text, "events": []}
         except Exception as e:
             return {"error": str(e), "response": ""}
@@ -348,14 +343,18 @@ async def resume_session_endpoint(session_id: str, request: ResumeRequest):
     if not request.message:
         return {"id": session_id, "history": history}
 
+    # Re-point the logger at the resumed session so the agent's
+    # log-derived history is the resumed one and new turns append to it
+    # (truth path, issue #25).
+    session_logger.resume_session(session_id)
+
     if agent.llm is None:
         return {
             "error": "LLM backend not configured",
             "response": "Server is running without LLM. Configure via MICRON_PROVIDER and MICRON_MODEL env vars.",
         }
 
-    session_logger.log_turn("user", request.message)
-
+    # No transport-side logging (truth path, issue #25).
     if request.stream:
         return StreamingResponse(
             generate_sse(request.message, history),
@@ -365,8 +364,6 @@ async def resume_session_endpoint(session_id: str, request: ResumeRequest):
     from micron.events import process_events
     try:
         result = process_events(agent.run(request.message, history=history))
-        if result.text:
-            session_logger.log_turn("assistant", result.text)
         return {"response": result.text, "history": history}
     except Exception as e:
         return {"error": str(e), "response": ""}

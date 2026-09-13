@@ -375,8 +375,8 @@ def run_query(agent, logger, query: str, no_stream: bool = False):
     cleaned = _strip_thinking(result.text)
     if cleaned:
         print(cleaned)
-    if logger is not None:
-        logger.log_turn("assistant", cleaned or result.text)
+    # No transport-side logging: the agent commits settled output to the
+    # session log itself (truth path, issue #25).
 
 
 if __name__ == "__main__":

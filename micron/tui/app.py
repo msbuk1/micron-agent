@@ -394,8 +394,8 @@ class MicronTUI(App):
 
         chat_log = self.query_one("#chat-log", ChatLog)
         chat_log.add_user(text)
-        if self._session_logger is not None:
-            self._session_logger.log_turn("user", text)
+        # No transport-side logging: the agent commits the user message to
+        # the session log itself (truth path, issue #25).
 
         self.query_one("#input-bar", InputBar).set_pending(True)
         self.query_one("#tool-panel", ToolPanel).clear_calls()
@@ -543,8 +543,8 @@ class MicronTUI(App):
         assistant_text = self._current_assistant_text
         self.conversation_history.append({"role": "user", "content": self._current_user_text})
         self.conversation_history.append({"role": "assistant", "content": assistant_text})
-        if self._session_logger is not None:
-            self._session_logger.log_turn("assistant", assistant_text)
+        # No transport-side logging: the agent commits settled output to
+        # the session log itself (truth path, issue #25).
 
         self._current_assistant_text = ""
         self.query_one("#input-bar", InputBar).set_pending(False)
@@ -695,6 +695,12 @@ class MicronTUI(App):
 
     def on_sidebar_session_selected(self, event: Sidebar.SessionSelected) -> None:
         sid = event.session.get("id", "")
+        # Re-point the logger at the resumed session so the agent's
+        # log-derived history is the resumed one and new turns append to
+        # it (truth path, issue #25).
+        if not self._session_logger.resume_session(sid):
+            self.query_one("#chat-log", ChatLog).add_system(f"Session '{sid[:8]}' not found.")
+            return
         resumed = self._session_logger.get_session_context(sid)
         if resumed:
             self.conversation_history = resumed

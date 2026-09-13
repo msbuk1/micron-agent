@@ -1,6 +1,7 @@
 """Tests for the CLI helpers in micron/__main__.py."""
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -135,3 +136,46 @@ class TestUploadArg:
 
         err = capsys.readouterr().err
         assert "File too large" in err
+
+
+class TestRunQueryTruthPath:
+    """CLI one-shot logs through the agent's truth path — no transport-side
+    double-booking (issue #25)."""
+
+    def test_run_query_logs_once_no_duplicates(self, tmp_path, capsys):
+        from micron.__main__ import run_query
+        from micron.agent import AgentConfig, MicronAgent
+        from micron.llm import LLMResponse
+        from micron.sessions import SessionLogger
+
+        class StubBackend:
+            def is_available(self):
+                return True
+
+            def stream_chat(self, messages, tools=None, temperature=0.1, max_tokens=2048):
+                yield LLMResponse(type="text", content="cli-reply")
+                yield LLMResponse(type="done")
+
+        logger = SessionLogger(tmp_path / "sessions")
+        sid = logger.start_session()
+        agent = MicronAgent(
+            AgentConfig(context_dir=str(tmp_path / "context"), provider="fake", model="fake"),
+            backend=StubBackend(),
+            sessions=logger,
+        )
+
+        run_query(agent, logger, "hello cli")
+
+        lines = [json.loads(l) for l in (tmp_path / "sessions" / f"{sid}.jsonl").read_text().splitlines()]
+        msgs = [e for e in lines if e["type"] == "message"]
+        assert [(e["role"], e["content"]) for e in msgs] == [
+            ("user", "hello cli"),
+            ("assistant", "cli-reply"),
+        ]
+        # No legacy transport-side turn entries.
+        assert not [e for e in lines if e["type"] == "turn"]
+        # Resume projection reads the full exchange with no duplicates.
+        assert logger.derive_messages(sid) == [
+            {"role": "user", "content": "hello cli"},
+            {"role": "assistant", "content": "cli-reply"},
+        ]

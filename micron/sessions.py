@@ -237,6 +237,21 @@ class SessionLogger:
         """
         return self.derive_messages(session_id, max_messages=max_turns)
 
+    def resume_session(self, session_id: str) -> bool:
+        """Re-point the logger at an existing session file (issue #25).
+
+        The log is the authority: after resume, new messages append to the
+        resumed session and :meth:`derive_messages` projects its full
+        history — no side-channel history list needed. Returns True when
+        the session exists.
+        """
+        f = self.sessions_dir / f"{session_id}.jsonl"
+        if not f.exists():
+            return False
+        self._session_id = session_id
+        self._current_file = f
+        return True
+
     def fork_session(
         self,
         parent_id: str,

@@ -186,6 +186,24 @@ async def test_submit_message(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_submit_message_no_transport_side_logging(tmp_path):
+    """The TUI never double-books: logging happens inside the agent's
+    truth path, not via transport-side log_turn calls (issue #25)."""
+    app = MicronTUI(make_factory(tmp_path), thread_workers=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_bar = app.query_one("#input-bar", InputBar)
+        input_bar.query_one("#message-input", Input).value = "hello"
+        await pilot.click("#send-btn")
+        await pilot.pause()
+        await asyncio.sleep(0.3)
+        await pilot.pause()
+        logger = app._session_logger
+        # No legacy transport-side turn entries were written.
+        assert logger._turns == []
+
+
+@pytest.mark.asyncio
 async def test_clear_command(tmp_path):
     app = MicronTUI(make_factory(tmp_path), thread_workers=False)
     async with app.run_test() as pilot:

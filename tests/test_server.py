@@ -146,21 +146,38 @@ class TestSkillsEndpoint:
 
 
 class TestSessionLogging:
-    """Chat exchanges should append to a JSONL session file matching the CLI format."""
+    """Chat exchanges go through the truth path: the agent commits to the
+    session log itself; the transport never double-books (issue #25)."""
 
-    async def test_chat_writes_user_and_assistant_turns(self, client, tmp_path, monkeypatch):
+    async def test_chat_writes_user_and_assistant_messages(self, client, tmp_path, monkeypatch):
+        from micron.llm import LLMResponse
+
         sessions_dir = tmp_path / "sessions"
         logger = SessionLogger(sessions_dir)
         session_id = logger.start_session()
 
+        # Real agent with a stub streaming backend — the truth path runs
+        # inside agent.run, not in the transport.
+        class StubBackend:
+            def is_available(self):
+                return True
+
+            def stream_chat(self, messages, tools=None, temperature=0.1, max_tokens=2048):
+                yield LLMResponse(type="text", content="stubbed-reply")
+                yield LLMResponse(type="done")
+
+        from micron.agent import AgentConfig, MicronAgent
+
+        agent = MicronAgent(
+            AgentConfig(context_dir=str(tmp_path / "context"), provider="fake", model="fake"),
+            backend=StubBackend(),
+            sessions=logger,
+        )
+
         original_logger = srv.session_logger
-        original_run = srv.agent.run
+        original_agent = srv.agent
         srv.session_logger = logger
-        # Stub agent.run so we don't need a working LLM.
-        def fake_run(message, history=None, confirm=False, pending_tool_calls=None, **_):
-            yield {"type": "text", "content": "stubbed-reply"}
-            yield {"type": "done"}
-        monkeypatch.setattr(srv.agent, "run", fake_run)
+        srv.agent = agent
 
         try:
             resp = await client.post(
@@ -168,9 +185,10 @@ class TestSessionLogging:
                 json={"message": "hello server", "stream": False},
             )
             assert resp.status_code == 200
+            assert resp.json()["response"] == "stubbed-reply"
         finally:
             srv.session_logger = original_logger
-            srv.agent.run = original_run
+            srv.agent = original_agent
             logger.end_session()
 
         session_file = sessions_dir / f"{session_id}.jsonl"
@@ -179,14 +197,69 @@ class TestSessionLogging:
         # First line is the CLI-style header.
         assert lines[0]["type"] == "session_start"
         assert lines[0]["id"] == session_id
-        # User turn was logged before processing.
-        user_turn = next(e for e in lines if e["type"] == "turn" and e["role"] == "user")
-        assert user_turn["content"] == "hello server"
-        # Assistant turn was logged after the run completed.
-        assistant_turns = [e for e in lines if e["type"] == "turn" and e["role"] == "assistant"]
-        assert any(e["content"] == "stubbed-reply" for e in assistant_turns)
+        # Exactly one user message and one assistant message — committed by
+        # the agent, no transport-side duplicates.
+        user_msgs = [e for e in lines if e["type"] == "message" and e["role"] == "user"]
+        assistant_msgs = [e for e in lines if e["type"] == "message" and e["role"] == "assistant"]
+        assert [e["content"] for e in user_msgs] == ["hello server"]
+        assert [e["content"] for e in assistant_msgs] == ["stubbed-reply"]
+        # Legacy transport-side 'turn' entries are gone.
+        assert not [e for e in lines if e["type"] == "turn"]
+        # The projection reads back the full exchange with no duplicates.
+        assert logger.derive_messages(session_id) == [
+            {"role": "user", "content": "hello server"},
+            {"role": "assistant", "content": "stubbed-reply"},
+        ]
         # session_end marker is the final line.
         assert lines[-1]["type"] == "session_end"
+
+    async def test_chat_streaming_logs_once(self, client, tmp_path):
+        """Streaming path: same truth path, no duplicate entries."""
+        from micron.llm import LLMResponse
+
+        sessions_dir = tmp_path / "sessions"
+        logger = SessionLogger(sessions_dir)
+        session_id = logger.start_session()
+
+        class StubBackend:
+            def is_available(self):
+                return True
+
+            def stream_chat(self, messages, tools=None, temperature=0.1, max_tokens=2048):
+                yield LLMResponse(type="text", content="stream-reply")
+                yield LLMResponse(type="done")
+
+        from micron.agent import AgentConfig, MicronAgent
+
+        agent = MicronAgent(
+            AgentConfig(context_dir=str(tmp_path / "context"), provider="fake", model="fake"),
+            backend=StubBackend(),
+            sessions=logger,
+        )
+
+        original_logger = srv.session_logger
+        original_agent = srv.agent
+        srv.session_logger = logger
+        srv.agent = agent
+        try:
+            resp = await client.post(
+                "/chat",
+                json={"message": "hi stream", "stream": True},
+                headers={"Accept": "text/event-stream"},
+            )
+            assert resp.status_code == 200
+        finally:
+            srv.session_logger = original_logger
+            srv.agent = original_agent
+            logger.end_session()
+
+        lines = [json.loads(line) for line in (sessions_dir / f"{session_id}.jsonl").read_text().splitlines()]
+        msgs = [e for e in lines if e["type"] == "message"]
+        assert [(e["role"], e["content"]) for e in msgs] == [
+            ("user", "hi stream"),
+            ("assistant", "stream-reply"),
+        ]
+        assert not [e for e in lines if e["type"] == "turn"]
 
     async def test_chat_logging_is_optional(self, client, tmp_path):
         """Server should still respond when no session logger is wired up."""
