@@ -25,6 +25,7 @@ def create_agent_and_logger(
     temperature: float | None = None,
     max_tokens: int | None = None,
     profile: str | None = None,
+    preset: str | None = None,
 ) -> tuple[MicronAgent, SessionLogger, str]:
     """Create agent, backend, and session logger from a Config object.
 
@@ -34,6 +35,7 @@ def create_agent_and_logger(
     composition = build_composition(
         config,
         profile=profile,
+        preset=preset,
         provider=provider,
         model=model,
         temperature=temperature,
@@ -148,6 +150,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Boot profile: default (one-shot), tui (interactive), server, headless",
     )
     parser.add_argument(
+        "--preset",
+        help="Agent preset (tool scope): default (full set), plan (read/search only)",
+    )
+    parser.add_argument(
         "--patch",
         type=str,
         help="JSON or YAML file of config rows to overlay on the composition (highest layer)",
@@ -229,6 +235,7 @@ def main():
         composition = build_composition(
             config,
             profile=args.profile,
+            preset=args.preset,
             home_patch=_home_patch(config),
             overlay_patch=_load_overlay_patch(args.patch),
             provider=args.provider,

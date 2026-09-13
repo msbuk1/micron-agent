@@ -22,6 +22,7 @@ class ServerRuntime:
         sessions: SessionLogger | None | bool = None,
         limiter: RateLimiter | None = None,
         auth: AuthPolicy | None = None,
+        preset: str | None = None,
     ):
         if isinstance(config, RuntimeConfig):
             self._config = None
@@ -29,13 +30,23 @@ class ServerRuntime:
         else:
             self._config = config or Config()
             self.runtime = self._config.runtime()
+        self.preset = preset
         # agent
         if agent is not None:
             self.agent = agent
         else:
             from micron.agent import create_agent
 
-            self.agent = create_agent(**self.runtime.for_agent())
+            if preset is not None and preset != "default":
+                # Scoped preset: compose a ScopedToolRegistry view over the
+                # full set and inject it (issue #22). The default path is
+                # untouched — the agent seeds its own registry.
+                from micron.profiles import compose_tools, full_registry
+
+                tools = compose_tools(full_registry(), preset)
+                self.agent = create_agent(**self.runtime.for_agent(), tools=tools)
+            else:
+                self.agent = create_agent(**self.runtime.for_agent())
             # backend
             try:
                 from micron.llm import create_backend

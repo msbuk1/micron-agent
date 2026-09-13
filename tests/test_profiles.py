@@ -16,12 +16,14 @@ import pytest
 from micron.config import RuntimeConfig
 from micron.llm import LLMResponse
 from micron.profiles import (
+    AGENT_PRESETS,
     Composition,
     apply_patch_layer,
     boot,
     build_composition,
     canonical_profile,
 )
+from micron.tools.registry import ScopedToolRegistry
 
 
 class FakeBackend:
@@ -222,6 +224,66 @@ class TestBoot:
         assert b.agent.config.max_tokens == 1234
 
 
+# ── presets through boot (issue #22) ─────────────────────────────────────
+
+
+class TestPresetComposition:
+    def _comp(self, tmp_path, **kw) -> Composition:
+        cfg = MagicMock()
+        cfg.runtime.return_value = _fake_rt(tmp_path)
+        return build_composition(cfg, **kw)
+
+    def test_default_preset_when_none(self, tmp_path):
+        comp = self._comp(tmp_path)
+        assert comp.preset == "default"
+
+    def test_plan_preset_recorded(self, tmp_path):
+        comp = self._comp(tmp_path, preset="plan")
+        assert comp.preset == "plan"
+
+    def test_unknown_preset_raises_loudly(self, tmp_path):
+        with pytest.raises(ValueError, match="Unknown agent preset"):
+            self._comp(tmp_path, preset="no-such-preset")
+
+    def test_dump_shows_preset_and_effective_tools(self, tmp_path):
+        comp = self._comp(tmp_path, preset="plan")
+        parsed = json.loads(comp.dump())
+        assert parsed["preset"] == "plan"
+        assert parsed["tools"] == sorted(AGENT_PRESETS["plan"].tools)
+
+    def test_dump_default_shows_full_toolset(self, tmp_path):
+        comp = self._comp(tmp_path)
+        parsed = json.loads(comp.dump())
+        assert parsed["preset"] == "default"
+        # The full set — every @tool-decorated builtin is visible.
+        assert "write_file" in parsed["tools"]
+        assert "run_command" in parsed["tools"]
+
+
+class TestBootPreset:
+    def _boot(self, tmp_path, preset=None, **kw):
+        cfg = MagicMock()
+        cfg.runtime.return_value = _fake_rt(tmp_path, **kw)
+        comp = build_composition(cfg, preset=preset)
+        with patch("micron.agent.create_backend", return_value=FakeBackend()):
+            return boot(comp)
+
+    def test_boot_default_keeps_full_toolset(self, tmp_path):
+        b = self._boot(tmp_path)
+        assert not isinstance(b.agent.tools, ScopedToolRegistry)
+        assert len(b.agent.tools.all()) >= 20  # the 24 builtins
+
+    def test_boot_plan_scopes_tools(self, tmp_path):
+        b = self._boot(tmp_path, preset="plan")
+        assert isinstance(b.agent.tools, ScopedToolRegistry)
+        assert {t["name"] for t in b.agent.tools.list()} == set(AGENT_PRESETS["plan"].tools)
+
+    def test_boot_plan_agent_offers_only_scoped_schemas(self, tmp_path):
+        b = self._boot(tmp_path, preset="plan")
+        names = {s["function"]["name"] for s in b.agent.tools.schemas()}
+        assert names == set(AGENT_PRESETS["plan"].tools)
+
+
 # ── CLI --dump-config ────────────────────────────────────────────────────
 
 
@@ -269,3 +331,32 @@ class TestCliDumpConfig:
                 main()
 
         mock_boot.assert_not_called()
+
+
+class TestCliPreset:
+    def test_dump_config_with_preset_plan(self, tmp_path, capsys):
+        from micron.__main__ import main
+
+        with patch("micron.__main__.Config") as MockConfig:
+            MockConfig.return_value.runtime.return_value = _fake_rt(tmp_path)
+            MockConfig.return_value.get.return_value = None
+            with patch("sys.argv", ["micron", "--dump-config", "--preset", "plan"]):
+                main()
+
+        parsed = json.loads(capsys.readouterr().out)
+        assert parsed["preset"] == "plan"
+        assert parsed["tools"] == sorted(AGENT_PRESETS["plan"].tools)
+        assert "write_file" not in parsed["tools"]
+
+    def test_unknown_preset_fails_loudly(self, tmp_path, capsys):
+        from micron.__main__ import main
+
+        with patch("micron.__main__.Config") as MockConfig:
+            MockConfig.return_value.runtime.return_value = _fake_rt(tmp_path)
+            MockConfig.return_value.get.return_value = None
+            with patch("sys.argv", ["micron", "--dump-config", "--preset", "bogus"]):
+                with pytest.raises(SystemExit) as exc:
+                    main()
+
+        assert exc.value.code == 1
+        assert "Unknown agent preset" in capsys.readouterr().err

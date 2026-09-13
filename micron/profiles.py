@@ -3,7 +3,8 @@
 Port of the deepseek-harness profiles/bundles idea, at micron size:
 
 - ``Composition`` is the resolved boot tree: a ``RuntimeConfig`` plus the
-  profile name and the ordered patch layers that produced it.
+  profile name, the agent preset (tool scope), and the ordered patch
+  layers that produced it.
 - ``build_composition`` applies patch layers deterministically:
   base composition → profile patch → home patch → ``--patch`` overlay.
   Later layers replace whole rows by id or insert new rows.
@@ -124,15 +125,54 @@ def compose_tools(registry: ToolRegistry, preset: AgentPreset | str | None) -> T
     if preset is None:
         return registry
     if isinstance(preset, str):
-        if preset not in AGENT_PRESETS:
-            raise ValueError(
-                f"Unknown agent preset: {preset!r}. "
-                f"Known presets: {sorted(AGENT_PRESETS)}"
-            )
-        preset = AGENT_PRESETS[preset]
+        preset = AGENT_PRESETS[canonical_preset(preset)]
     if preset.tools is None:
         return registry
     return ScopedToolRegistry(registry, preset.tools)
+
+
+def canonical_preset(name: str | None) -> str:
+    """Resolve/validate a preset name — unknown names fail loudly."""
+    name = name or "default"
+    if name not in AGENT_PRESETS:
+        raise ValueError(
+            f"Unknown agent preset: {name!r}. "
+            f"Known presets: {sorted(AGENT_PRESETS)}"
+        )
+    return name
+
+
+def full_registry() -> ToolRegistry:
+    """Fresh ToolRegistry seeded from the global ``@tool`` registry.
+
+    The same seeding ``MicronAgent`` does when no registry is injected —
+    factored out so boot paths can compose a scoped view over the full
+    set (``compose_tools(full_registry(), preset)``).
+    """
+    from micron.tools.decorator import _registry
+
+    reg = ToolRegistry()
+    for td in _registry:
+        reg.register(
+            name=td.name, func=td.func, description=td.description,
+            parameters=td.parameters, write=td.write,
+        )
+    return reg
+
+
+def effective_tools(preset: str | None) -> list[str]:
+    """Tool names an agent booted under ``preset`` would see.
+
+    Scoped presets report their scope; full-set presets report every
+    name in the global ``@tool`` registry (no agent boot required, so
+    ``--dump-config`` can show the effective toolset).
+    """
+    p = AGENT_PRESETS[canonical_preset(preset)]
+    if p.tools is None:
+        from micron.tools.decorator import _registry
+
+        return sorted(td.name for td in _registry)
+    return sorted(p.tools)
 
 
 # ── Composition ──────────────────────────────────────────────────────────
@@ -144,6 +184,7 @@ class Composition:
     profile: str
     runtime: RuntimeConfig
     layers: list[dict] = field(default_factory=list)
+    preset: str = "default"
 
     def as_dict(self) -> dict:
         """Serializable view of the resolved composition (api_key redacted)."""
@@ -152,6 +193,8 @@ class Composition:
             d["api_key"] = "***REDACTED***"
         return {
             "profile": self.profile,
+            "preset": self.preset,
+            "tools": effective_tools(self.preset),
             "layers": self.layers,
             "runtime": d,
         }
@@ -165,6 +208,7 @@ def build_composition(
     config: Config | None = None,
     *,
     profile: str | None = None,
+    preset: str | None = None,
     home_patch: dict | None = None,
     overlay_patch: dict | None = None,
     provider: str | None = None,
@@ -177,6 +221,8 @@ def build_composition(
     Args:
         config: Loaded Config (single loader). Defaults to ``Config()``.
         profile: Named profile (``default``/``tui``/``server``/``headless``).
+        preset: Named agent preset (``default``/``plan``) — the tool scope
+            the booted agent runs under. Unknown names raise ``ValueError``.
         home_patch: Rows from the user's micron.yaml ``profiles:`` section.
         overlay_patch: Rows from a ``--patch`` overlay file (highest layer).
         provider/model/temperature/max_tokens: CLI flag overrides, applied
@@ -187,6 +233,7 @@ def build_composition(
     """
     config = config or Config()
     canonical = canonical_profile(profile)
+    preset_name = canonical_preset(preset)
 
     # Base composition: Config.runtime() hoists the provider row; CLI flag
     # overrides fold in here so every later layer sees them.
@@ -226,7 +273,7 @@ def build_composition(
     rt = apply_patch_layer(rt, overlay)
     layers.append({"id": "overlay", "patch": overlay})
 
-    return Composition(profile=canonical, runtime=rt, layers=layers)
+    return Composition(profile=canonical, runtime=rt, layers=layers, preset=preset_name)
 
 
 # ── Boot ─────────────────────────────────────────────────────────────────
@@ -260,6 +307,7 @@ def boot(
     rt = ServerRuntime(
         composition.runtime,
         sessions=None if sessions else False,
+        preset=composition.preset,
     )
     return Boot(
         composition=composition,
