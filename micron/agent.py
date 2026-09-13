@@ -10,6 +10,7 @@ from micron.llm import LLMBackend, LLMResponse, create_backend
 from micron.memory import Memory
 from micron.prompt import PromptBuilder
 from micron.skills import SkillLoader
+from micron.sessions import SessionLogger
 from micron.text_tool_parser import TextToolCallParser
 from micron.tools.registry import ToolRegistry
 from micron.turns import Inbox, TurnHooks, new_turn_id
@@ -141,7 +142,8 @@ class MicronAgent:
         skills: SkillLoader | None = None,
         tools: ToolRegistry | None = None,
         prompt: PromptBuilder | None = None,
-        hooks: "TurnHooks | None" = None,
+        hooks: TurnHooks | None = None,
+        sessions: SessionLogger | None = None,
         **kwargs,
     ):
         # ── ergonomic C compat: MicronAgent(backend=FakeLLM, config=..., memory=...)
@@ -252,6 +254,10 @@ class MicronAgent:
         # inbox holds injected context until the next admitted request.
         self.hooks = hooks if hooks is not None else TurnHooks()
         self._inbox = Inbox()
+        # Session log as source of truth (issue #20): when a SessionLogger
+        # is injected AND a session is active, model history is derived
+        # from the log (derive_messages) — never from a side-channel list.
+        self.sessions = sessions
 
     # Backward-compat shims: tests access agent._tool_history / _consecutive_failures directly
     # These proxy to _loop so both views stay in sync.
@@ -325,8 +331,16 @@ class MicronAgent:
                 yield {"type": "done"}
                 return
             message = claimed
+            # New model-visible input commits to the log as a message
+            # before any model request is built (issue #20).
+            if self._log_active():
+                self.sessions.log_message("user", message)
         yield from self._run_turn(message, history, confirm, pending_tool_calls)
         yield {"type": "turn_end", "turn_id": turn_id}
+
+    def _log_active(self) -> bool:
+        """True when the session log is the authority for model history."""
+        return self.sessions is not None and self.sessions.session_id is not None
 
     def inject(self, text: str) -> None:
         """Queue context for the next admitted request (never mid-stream)."""
@@ -359,14 +373,27 @@ class MicronAgent:
                 # Build messages with the tool results appended
                 system_prompt = self.prompt_builder.build_system_prompt(message)
                 messages = [{"role": "system", "content": system_prompt}]
+                if self._log_active():
+                    # Log-derived history already ends with the assistant
+                    # tool_calls message + the user message from the
+                    # original run — don't re-append the user message.
+                    history = self.sessions.derive_messages()
                 if history:
-                    if self._compactor.should_compress(history):
+                    if self._compactor.should_compress(history) and not self._log_active():
                         history = self._compactor.compress(history)
                     for msg in history[-20:]:
                         messages.append(msg)
-                # Add the user message and tool results
-                messages.append({"role": "user", "content": message})
+                if not self._log_active():
+                    # Add the user message and tool results
+                    messages.append({"role": "user", "content": message})
                 messages.extend(tool_results)
+                # Tool results are model-visible — commit them to the log.
+                if self._log_active():
+                    for tr in tool_results:
+                        self.sessions.log_message(
+                            "tool", tr["content"],
+                            tool_call_id=tr["tool_call_id"], name=tr["name"],
+                        )
 
                 # Continue the conversation
                 yield from self._run_with_messages(messages, skip_write_confirm=True)
@@ -376,14 +403,24 @@ class MicronAgent:
         system_prompt = self.prompt_builder.build_system_prompt(message)
         messages = [{"role": "system", "content": system_prompt}]
 
-        # Compress history if too long (summarize old turns)
-        if self._compactor.should_compress(history):
+        if self._log_active():
+            # The log is the authority: project model history from it and
+            # ignore any side-channel history list. Lossless — no
+            # destructive compaction (issue #20).
+            history = self.sessions.derive_messages()
+
+        # Compress history if too long (summarize old turns) — legacy path
+        # only; the log-derived path stays lossless.
+        if self._compactor.should_compress(history) and not self._log_active():
             history = self._compactor.compress(history)
 
         if history:
             for msg in history[-20:]:
                 messages.append(msg)
-        messages.append({"role": "user", "content": message})
+        if not self._log_active():
+            # With the log as authority the user message is already in the
+            # derived history (committed in run() before this turn).
+            messages.append({"role": "user", "content": message})
 
         yield from self._run_with_messages(messages)
 
@@ -400,182 +437,223 @@ class MicronAgent:
         pending_calls: list[ToolCall] = []
         step = 0
 
-        while tool_iterations < self.config.max_tool_iterations:
-            # Turn-stopping hook: end the turn before the next step.
-            if self.hooks.should_stop():
-                break
-            yield {"type": "step_start", "step": step}
-            full_text = ""
-            pending_calls = []
-            # TextToolCallParser owns the streaming buffer (one per iteration).
-            # Constructed only when the local text-tool format is in use; for
-            # API backends the LLM yields native tool_call events and the
-            # text stream is safe to surface verbatim.
-            text_parser = (
-                TextToolCallParser(self.tools.schemas())
-                if self.use_text_tool_format
-                else None
-            )
-
-            # Injected context lands here — the start of the next admitted
-            # request, after any tool results have settled (never mid-stream).
-            for extra in self._inbox.drain():
-                messages.append({"role": "user", "content": extra})
-
-            for response in self.llm.stream_chat(
-                messages=messages,
-                tools=self.tools.schemas(),
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
-            ):
-                if response.type == "text":
-                    full_text += response.content
-                    if text_parser:
-                        yield from self._consume_parser_events(
-                            text_parser.feed(response.content),
-                            pending_calls,
-                            tools_used_this_turn,
-                        )
-                    else:
-                        yield {"type": "text", "content": response.content}
-                elif response.type == "reasoning":
-                    yield {"type": "thinking", "content": response.content}
-                elif response.type == "tool_call":
-                    pending_calls.append(ToolCall(
-                        name=response.tool_name,
-                        args=response.tool_args or {},
-                        call_id=response.tool_call_id or f"call_{len(pending_calls)}",
-                        is_write=self._is_write_tool(response.tool_name),
-                    ))
-                    yield {"type": "tool_start", "name": response.tool_name, "call_id": pending_calls[-1].call_id, "args": response.tool_args or {}}
-                elif response.type == "done":
-                    if text_parser:
-                        yield from self._consume_parser_events(
-                            text_parser.flush(),
-                            pending_calls,
-                            tools_used_this_turn,
-                        )
+        try:
+            while tool_iterations < self.config.max_tool_iterations:
+                # Turn-stopping hook: end the turn before the next step.
+                if self.hooks.should_stop():
                     break
-                elif response.type == "error":
+                yield {"type": "step_start", "step": step}
+                full_text = ""
+                pending_calls = []
+                # TextToolCallParser owns the streaming buffer (one per iteration).
+                # Constructed only when the local text-tool format is in use; for
+                # API backends the LLM yields native tool_call events and the
+                # text stream is safe to surface verbatim.
+                text_parser = (
+                    TextToolCallParser(self.tools.schemas())
+                    if self.use_text_tool_format
+                    else None
+                )
+
+                # Injected context lands here — the start of the next admitted
+                # request, after any tool results have settled (never mid-stream).
+                for extra in self._inbox.drain():
+                    messages.append({"role": "user", "content": extra})
+                    if self._log_active():
+                        self.sessions.log_message("user", extra)
+
+                # Runtime invariant (issue #20): every model-visible message
+                # must be reconstructable from the session log.
+                self._verify_projection(messages)
+
+                for response in self.llm.stream_chat(
+                    messages=messages,
+                    tools=self.tools.schemas(),
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                ):
+                    if response.type == "text":
+                        full_text += response.content
+                        if text_parser:
+                            yield from self._consume_parser_events(
+                                text_parser.feed(response.content),
+                                pending_calls,
+                                tools_used_this_turn,
+                            )
+                        else:
+                            yield {"type": "text", "content": response.content}
+                    elif response.type == "reasoning":
+                        yield {"type": "thinking", "content": response.content}
+                    elif response.type == "tool_call":
+                        pending_calls.append(ToolCall(
+                            name=response.tool_name,
+                            args=response.tool_args or {},
+                            call_id=response.tool_call_id or f"call_{len(pending_calls)}",
+                            is_write=self._is_write_tool(response.tool_name),
+                        ))
+                        yield {"type": "tool_start", "name": response.tool_name, "call_id": pending_calls[-1].call_id, "args": response.tool_args or {}}
+                    elif response.type == "done":
+                        if text_parser:
+                            yield from self._consume_parser_events(
+                                text_parser.flush(),
+                                pending_calls,
+                                tools_used_this_turn,
+                            )
+                        break
+                    elif response.type == "error":
+                        # Failed stream: log-only attempt, never model history.
+                        if self._log_active() and full_text:
+                            self.sessions.log_attempt("assistant", full_text, reason="failed")
+                        yield {"type": "step_end", "step": step}
+                        yield {"type": "error", "message": response.content}
+                        yield {"type": "done"}
+                        return
+
+                if not pending_calls:
+                    # Settled assistant output commits as one message.
+                    if self._log_active() and full_text:
+                        self.sessions.log_message("assistant", full_text)
                     yield {"type": "step_end", "step": step}
-                    yield {"type": "error", "message": response.content}
                     yield {"type": "done"}
                     return
 
-            if not pending_calls:
-                yield {"type": "step_end", "step": step}
-                yield {"type": "done"}
-                return
+                if self._loop.detect_loop(pending_calls):
+                    if self._log_active() and full_text:
+                        self.sessions.log_attempt("assistant", full_text, reason="loop_detected")
+                    yield {"type": "step_end", "step": step}
+                    yield {"type": "error", "message": "Loop detected. Stopping."}
+                    yield {"type": "done"}
+                    return
 
-            if self._loop.detect_loop(pending_calls):
-                yield {"type": "step_end", "step": step}
-                yield {"type": "error", "message": "Loop detected. Stopping."}
-                yield {"type": "done"}
-                return
+                read_calls = [c for c in pending_calls if not c.is_write]
+                write_calls = [c for c in pending_calls if c.is_write]
 
-            read_calls = [c for c in pending_calls if not c.is_write]
-            write_calls = [c for c in pending_calls if c.is_write]
-
-            if read_calls:
-                tools_used_this_turn = True
-
-                # Build the proper assistant message with tool_calls array.
-                assistant_message: dict = {"role": "assistant", "content": full_text if full_text else None}
                 if read_calls:
-                    assistant_message["tool_calls"] = [
-                        {
-                            "id": tc.call_id,
-                            "type": "function",
-                            "function": {"name": tc.name, "arguments": json.dumps(tc.args)},
-                        }
-                        for tc in read_calls
-                    ]
-                messages.append(assistant_message)
+                    tools_used_this_turn = True
 
-                has_errors = False
-                for tc in read_calls:
-                    pipeline_events: list[dict] = []
-                    try:
-                        result = self.tools.call(
-                            tc.name, _emit=pipeline_events.append, _call_id=tc.call_id, **tc.args
+                    # Build the proper assistant message with tool_calls array.
+                    assistant_message: dict = {"role": "assistant", "content": full_text if full_text else None}
+                    if read_calls:
+                        assistant_message["tool_calls"] = [
+                            {
+                                "id": tc.call_id,
+                                "type": "function",
+                                "function": {"name": tc.name, "arguments": json.dumps(tc.args)},
+                            }
+                            for tc in read_calls
+                        ]
+                    messages.append(assistant_message)
+                    if self._log_active():
+                        self.sessions.log_message(
+                            "assistant", assistant_message["content"],
+                            tool_calls=assistant_message.get("tool_calls"),
                         )
-                    except Exception as e:
-                        friendly = self._friendly_error(tc.name, e)
-                        has_errors = True
+
+                    has_errors = False
+                    for tc in read_calls:
+                        pipeline_events: list[dict] = []
+                        try:
+                            result = self.tools.call(
+                                tc.name, _emit=pipeline_events.append, _call_id=tc.call_id, **tc.args
+                            )
+                        except Exception as e:
+                            friendly = self._friendly_error(tc.name, e)
+                            has_errors = True
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.call_id,
+                                "name": tc.name,
+                                "content": f"Error: {friendly}",
+                            })
+                            if self._log_active():
+                                self.sessions.log_message(
+                                    "tool", f"Error: {friendly}",
+                                    tool_call_id=tc.call_id, name=tc.name,
+                                )
+                            yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": friendly}
+                            continue
+
+                        # Waterfall pipeline visibility: pre/post-execute events.
+                        for ev in pipeline_events:
+                            if ev["type"] in ("tool_pre", "tool_post"):
+                                yield ev
+
+                        short_circuited = any(
+                            ev["type"] == "tool_error" for ev in pipeline_events
+                        )
+                        summary = self._summarize_result(result)
+                        # Check if the tool returned an error string or was denied
+                        is_error = short_circuited or (
+                            isinstance(result, str) and result.startswith("Error:")
+                        )
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc.call_id,
                             "name": tc.name,
-                            "content": f"Error: {friendly}",
+                            "content": summary,
                         })
-                        yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": friendly}
-                        continue
+                        if self._log_active():
+                            self.sessions.log_message(
+                                "tool", summary, tool_call_id=tc.call_id, name=tc.name,
+                            )
+                        if is_error:
+                            has_errors = True
+                            error = next(
+                                (ev["error"] for ev in pipeline_events if ev["type"] == "tool_error"),
+                                summary,
+                            )
+                            yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": error}
+                        else:
+                            yield {"type": "tool_result", "name": tc.name, "call_id": tc.call_id, "summary": summary, "result": result}
 
-                    # Waterfall pipeline visibility: pre/post-execute events.
-                    for ev in pipeline_events:
-                        if ev["type"] in ("tool_pre", "tool_post"):
-                            yield ev
+                    pivot = self._loop.record_result(has_errors)
+                    if pivot:
+                        messages.append({"role": "user", "content": pivot})
+                        if self._log_active():
+                            self.sessions.log_message("user", pivot)
 
-                    short_circuited = any(
-                        ev["type"] == "tool_error" for ev in pipeline_events
-                    )
-                    summary = self._summarize_result(result)
-                    # Check if the tool returned an error string or was denied
-                    is_error = short_circuited or (
-                        isinstance(result, str) and result.startswith("Error:")
-                    )
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.call_id,
-                        "name": tc.name,
-                        "content": summary,
-                    })
-                    if is_error:
-                        has_errors = True
-                        error = next(
-                            (ev["error"] for ev in pipeline_events if ev["type"] == "tool_error"),
-                            summary,
+                    tool_iterations += 1
+                    step += 1
+                    yield {"type": "step_end", "step": step - 1}
+                    continue
+
+                if write_calls:
+                    # For write tools, emit confirmation_required event and pause
+                    # This allows the caller (CLI or server) to handle confirmation
+                    tools_used_this_turn = True
+                    assistant_message: dict = {"role": "assistant", "content": full_text if full_text else None}
+                    assistant_message["tool_calls"] = [
+                        {"id": tc.call_id, "type": "function",
+                         "function": {"name": tc.name, "arguments": json.dumps(tc.args)}}
+                        for tc in write_calls
+                    ]
+                    messages.append(assistant_message)
+                    if self._log_active():
+                        self.sessions.log_message(
+                            "assistant", assistant_message["content"],
+                            tool_calls=assistant_message["tool_calls"],
                         )
-                        yield {"type": "tool_error", "name": tc.name, "call_id": tc.call_id, "error": error}
-                    else:
-                        yield {"type": "tool_result", "name": tc.name, "call_id": tc.call_id, "summary": summary, "result": result}
 
-                pivot = self._loop.record_result(has_errors)
-                if pivot:
-                    messages.append({"role": "user", "content": pivot})
+                    # Emit confirmation_required event with pending write calls
+                    pending_writes = [
+                        {"tool_name": tc.name, "args": tc.args, "call_id": tc.call_id}
+                        for tc in write_calls
+                    ]
+                    yield {"type": "confirmation_required", "pending_writes": pending_writes}
 
-                tool_iterations += 1
-                step += 1
-                yield {"type": "step_end", "step": step - 1}
-                continue
+                    # Add tool_start events for consistency
+                    for tc in write_calls:
+                        yield {"type": "tool_start", "name": tc.name, "call_id": tc.call_id, "args": tc.args}
 
-            if write_calls:
-                # For write tools, emit confirmation_required event and pause
-                # This allows the caller (CLI or server) to handle confirmation
-                tools_used_this_turn = True
-                assistant_message: dict = {"role": "assistant", "content": full_text if full_text else None}
-                assistant_message["tool_calls"] = [
-                    {"id": tc.call_id, "type": "function",
-                     "function": {"name": tc.name, "arguments": json.dumps(tc.args)}}
-                    for tc in write_calls
-                ]
-                messages.append(assistant_message)
-                
-                # Emit confirmation_required event with pending write calls
-                pending_writes = [
-                    {"tool_name": tc.name, "args": tc.args, "call_id": tc.call_id}
-                    for tc in write_calls
-                ]
-                yield {"type": "confirmation_required", "pending_writes": pending_writes}
-                
-                # Add tool_start events for consistency
-                for tc in write_calls:
-                    yield {"type": "tool_start", "name": tc.name, "call_id": tc.call_id, "args": tc.args}
-
-                tool_iterations += 1
-                yield {"type": "step_end", "step": step}
-                yield {"type": "done"}
-                return
+                    tool_iterations += 1
+                    yield {"type": "step_end", "step": step}
+                    yield {"type": "done"}
+                    return
+        except GeneratorExit:
+            # Cancelled stream: log-only attempt, never model history.
+            if self._log_active() and full_text:
+                self.sessions.log_attempt("assistant", full_text, reason="cancelled")
+            raise
 
         yield {"type": "done"}
 
@@ -630,6 +708,29 @@ class MicronAgent:
                 yield {"type": "tool_result", "name": tc.name, "call_id": tc.call_id, "summary": summary, "result": result}
         # Return tool_results by attaching to the generator (hacky but works)
         self._last_tool_results = tool_results
+
+    def _verify_projection(self, messages: list[dict]) -> None:
+        """Runtime check: model-visible content is reconstructable from the log.
+
+        Every non-system message about to be sent to the model must appear
+        in the log projection. Raises RuntimeError on violation — a message
+        that is not logged must never reach the model (issue #20).
+        """
+        if not self._log_active():
+            return
+        logged = {
+            json.dumps(m, sort_keys=True, ensure_ascii=False)
+            for m in self.sessions.derive_messages(max_messages=None)
+        }
+        for m in messages:
+            if m.get("role") == "system":
+                continue
+            key = json.dumps(m, sort_keys=True, ensure_ascii=False)
+            if key not in logged:
+                raise RuntimeError(
+                    "model-visible message not reconstructable from session "
+                    f"log: {key[:200]}"
+                )
 
     def _friendly_error(self, tool_name: str, error: Exception) -> str:
         """Convert a tool error into a user-friendly message."""
@@ -801,7 +902,7 @@ def create_agent(**kwargs) -> MicronAgent:
     # Ergonomic factory — supports both legacy AgentConfig(**kwargs) and
     # direct injection: create_agent(backend=fake, memory=..., tools=...)
     # Extract injectable seams if provided as kwargs.
-    inject_keys = {"backend", "memory", "skills", "tools", "prompt", "hooks"}
+    inject_keys = {"backend", "memory", "skills", "tools", "prompt", "hooks", "sessions"}
     injected = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k in inject_keys}
     # Also handle llm_kwargs backend passed via Config-style call
     if "backend" not in injected and "llm_kwargs" in kwargs and isinstance(kwargs["llm_kwargs"], dict) and "backend" in kwargs["llm_kwargs"]:
