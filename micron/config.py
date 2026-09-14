@@ -286,18 +286,15 @@ class Config:
                     "api_key": "no_key",
                     "base_url": "http://localhost:1234/v1",
                     "model": "mistralai/ministral-3-3b",
-                    "chat_format": "gemmaml",
                 },
                 "ollama": {
                     "base_url": "http://localhost:11434",
                     "model": "llama3",
-                    "chat_format": "chatml",
                 },
                 "openai": {
                     "api_key": "",
                     "base_url": "https://api.openai.com/v1",
                     "model": "gpt-4o-mini",
-                    "chat_format": "chatml",
                 },
             },
         }

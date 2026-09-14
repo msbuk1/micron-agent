@@ -72,13 +72,18 @@ max_tool_iterations: 10   # hard cap on tool-call rounds per turn
 tool_timeout: 120.0       # seconds before a hung tool call is killed (MICRON_TOOL_TIMEOUT)
 llm_retries: 2            # retries for transient LLM failures, setup-time only (MICRON_LLM_RETRIES)
 llm_retry_base_delay: 0.25  # first backoff delay in seconds, doubles per retry
-history_keep_recent: 8    # recent messages kept verbatim when compressing history (MICRON_HISTORY_KEEP_RECENT)
 ```
+
+`chat_format` applies to the **local `llamacpp` backend only** (prompt
+handler, auto-detected from the model filename: qwen/gemma/llama-3/
+mistral-instruct/smollm, else chatml — set it explicitly only if the guess
+is wrong for your model). Server-side providers (`lmstudio`, `ollama`,
+`openrouter`, `openai`) ignore it — the server applies the model's own
+template — and setting it there prints a startup warning.
 
 API keys live in `auth.yaml` (gitignored) so `micron.yaml` stays shareable.
 It is merged over `micron.yaml` per-provider, so only the key needs to be
 listed. Copy `auth.example.yaml` → `auth.yaml` and fill in the values:
-
 ```yaml
 providers:
   openrouter:

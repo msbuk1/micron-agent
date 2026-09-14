@@ -27,6 +27,20 @@ port: 8000
 firecrawl_url: http://localhost:3002
 
 # Provider configurations
+#
+# chat_format: LOCAL llamacpp backend ONLY. It selects the llama-cpp-python
+# prompt handler and is auto-detected from the model filename when omitted:
+#   qwen*            -> qwen
+#   gemma*           -> gemma
+#   llama-3*         -> llama-3
+#   mistral*/mixtral*-> mistral-instruct
+#   smollm*          -> smollm
+#   anything else    -> chatml
+# Set it explicitly only if the guess is wrong for your model family
+# (wrong value = garbled prompts, no error message).
+# Server-side providers (lmstudio, ollama, openrouter, openai, vllm) IGNORE
+# this key: the server applies the model's own template. Setting it there
+# only prints a startup warning.
 providers:
   llamacpp:
     model: models/MiniCPM5-1B-Q8_0.gguf
@@ -46,15 +60,15 @@ providers:
     # model: gemma-4-12b-it-qat
     # model: minicpm5-1b
     model: mistralai/ministral-3-14b-reasoning
-    chat_format: gemmaml
+    # NOTE: no chat_format here — LM Studio applies the model's own template.
 
   ollama:
     base_url: http://192.168.1.163:11434
     model: llama3
-    chat_format: chatml
+    # NOTE: no chat_format here — Ollama applies the model's own template.
 
   openai:
     api_key: <your-api-key>
     base_url: https://api.openai.com/v1
     model: gpt-4o-mini
-    chat_format: chatml
+    # NOTE: no chat_format here — the API owns the template.

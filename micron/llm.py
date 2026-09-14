@@ -437,7 +437,17 @@ def create_backend(provider: str, model: str, **kwargs) -> LLMBackend:
 
     if provider == "llamacpp":
         return LlamaCppBackend(model_path=model, **kwargs)
-    elif provider == "ollama":
+    if "chat_format" in kwargs:
+        # Server-side providers apply their own chat template (the model's
+        # Jinja template on LM Studio / Ollama / hosted APIs) — a client
+        # chat_format is meaningless there. Warn instead of swallowing it
+        # silently; only the local llamacpp backend honors this key.
+        print(
+            f"[config] Ignoring chat_format={kwargs.pop('chat_format')!r} "
+            f"for provider '{provider}': the server applies its own chat "
+            "template; chat_format only affects the local llamacpp backend."
+        )
+    if provider == "ollama":
         return OllamaBackend(model=model, **kwargs)
     elif provider in ("openrouter", "openai", "vllm", "lmstudio"):
         return OpenAICompatibleBackend(model=model, **kwargs)
