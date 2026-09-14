@@ -143,9 +143,24 @@ class FakeLogger:
     def list_sessions(self, n=10):
         return self._sessions[:n]
 
+    def resume_session(self, sid):
+        return sid == "abc123"
+
     def get_session_context(self, sid):
         if sid == "abc123":
-            return [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+            return [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "c1", "type": "function",
+                         "function": {"name": "list_files", "arguments": '{"path": "."}'}}
+                    ],
+                },
+                {"role": "tool", "content": "a\nb", "tool_call_id": "c1", "name": "list_files"},
+            ]
         return []
 
 
@@ -435,3 +450,18 @@ async def test_dynamic_markup_with_brackets_does_not_crash(tmp_path):
         # If we got here without WorkerFailed / MarkupError, the regression is fixed.
         assert chat_log.query("Static")
         assert tool_panel.query("ListItem")
+
+
+@pytest.mark.asyncio
+async def test_resume_renders_tool_call_message_without_crash(tmp_path):
+    """Resuming a session whose transcript holds an assistant tool_calls
+    message (content None) must not crash on msg['content'][:200]."""
+    app = MicronTUI(make_factory(tmp_path), thread_workers=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.post_message(Sidebar.SessionSelected({"id": "abc123"}))
+        await pilot.pause()
+        await pilot.pause()
+        chat_log = app.query_one("#chat-log", ChatLog)
+        # user + assistant-text + tool-call summary + resumed marker
+        assert len(list(chat_log.children)) >= 3

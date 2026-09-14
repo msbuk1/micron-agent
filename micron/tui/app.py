@@ -707,7 +707,17 @@ class MicronTUI(App):
                 if msg["role"] == "user":
                     chat_log.add_user(msg["content"])
                 elif msg["role"] == "assistant":
-                    chat_log.add_system(f"\\[PROMPT_INJECTION]: {msg['content'][:200]}")
+                    content = msg.get("content") or ""
+                    if msg.get("tool_calls"):
+                        # Tool-call message: content is None by shape —
+                        # render the invoked tool names, never subscript None.
+                        names = ", ".join(
+                            tc["function"]["name"] for tc in msg["tool_calls"]
+                        )
+                        detail = f" {content[:200]}" if content else ""
+                        chat_log.add_system(f"[tools called: {names}]{detail}")
+                    else:
+                        chat_log.add_system(f"\\[PROMPT_INJECTION]: {content[:200]}")
             chat_log.add_system(f"Resumed session {sid[:8]} ({len(resumed)} turns loaded).")
         else:
             self.query_one("#chat-log", ChatLog).add_system(f"Session '{sid[:8]}' not found.")
